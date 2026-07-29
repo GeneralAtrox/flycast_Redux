@@ -63,6 +63,10 @@ Deliverables:
 
 Deliverables:
 
+- game-agnostic, bounded memory-range manifests with one-shot interpreter-PC
+  triggers and exact executable/static-analysis/hook-manifest bindings;
+- typed `memory-ranges-v1` snapshots and an independent validator that reject
+  address/hash mismatches without relocation search;
 - instruction hooks with explicit executed-PC and delay-slot semantics;
 - typed call/return/exception events without patching guest opcodes;
 - range watchpoints for interpreter and dynarec paths;
