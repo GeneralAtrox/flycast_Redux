@@ -41,6 +41,7 @@
 #include "serialize.h"
 #include "hw/pvr/pvr.h"
 #include "profiler/fc_profiler.h"
+#include "research/maple_runtime.h"
 #include "oslib/storage.h"
 #include "wsi/context.h"
 #include <chrono>
@@ -591,6 +592,7 @@ void Emulator::loadGame(const char *path, LoadProgress *progress)
 
 		config::Settings::instance().reset();
 		config::Settings::instance().load(false);
+		research::configureRuntime();
 		dc_reset(true);
 		memset(&settings.network.md5, 0, sizeof(settings.network.md5));
 
@@ -671,6 +673,7 @@ void Emulator::loadGame(const char *path, LoadProgress *progress)
 		}
 		// reload settings so that all settings can be overridden
 		loadGameSpecificSettings();
+		research::startRuntime();
 		NetworkHandshake::init();
 		settings.input.fastForwardMode = false;
 		EventManager::event(Event::Start);
@@ -696,6 +699,7 @@ void Emulator::loadGame(const char *path, LoadProgress *progress)
 
 		state = Loaded;
 	} catch (...) {
+		research::abortRuntime();
 		state = Error;
 		throw;
 	}
@@ -747,6 +751,11 @@ void Emulator::unloadGame()
 	} catch (...) { }
 	if (state == Loaded || state == Error)
 	{
+		try {
+			research::stopRuntime(state == Loaded);
+		} catch (const std::exception& e) {
+			ERROR_LOG(COMMON, "Research runtime finalization failed: %s", e.what());
+		}
 #ifndef LIBRETRO
 		if (state == Loaded && config::AutoSaveState && !settings.content.path.empty()
 				&& !settings.naomi.multiboard && !config::GGPOEnable && !naomiNetworkSupported())

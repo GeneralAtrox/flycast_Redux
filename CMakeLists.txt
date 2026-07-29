@@ -103,6 +103,7 @@ option(USE_LUA "Build with Lua support" ON)
 option(ENABLE_GDB_SERVER "Build with GDB debugging support" OFF)
 option(ENABLE_DC_PROFILER "Build with support for target machine (SH4) profiler" OFF)
 option(ENABLE_FC_PROFILER "Build with support for host app (Flycast) profiler" OFF)
+option(BUILD_RESEARCH_TOOLS "Build standalone reverse-engineering evidence validators" OFF)
 option(USE_DISCORD "Use Discord Presence API" OFF)
 option(USE_LIBCDIO "Use libcdio for CDROM access" OFF)
 
@@ -330,6 +331,17 @@ if(NOT "${SENTRY_UPLOAD_URL}" STREQUAL "")
 endif()
 
 target_include_directories(${PROJECT_NAME} PRIVATE core core/deps core/deps/stb core/deps/json core/deps/asio/asio/include)
+if(NOT LIBRETRO)
+	target_sources(${PROJECT_NAME} PRIVATE
+			core/research/identity_manifest.cpp
+			core/research/identity_manifest.h
+			core/research/maple_runtime.cpp
+			core/research/maple_runtime.h
+			core/research/maple_trace.cpp
+			core/research/maple_trace.h
+			core/research/sha256.cpp
+			core/research/sha256.h)
+endif()
 if(LIBRETRO)
 	target_include_directories(${PROJECT_NAME} PRIVATE shell/libretro)
 endif()
@@ -1474,6 +1486,95 @@ endif()
 if(BUILD_TESTING)
 	add_subdirectory(core/deps/googletest EXCLUDE_FROM_ALL)
 	add_subdirectory(tests)
+endif()
+
+if(BUILD_RESEARCH_TOOLS AND NOT LIBRETRO)
+	add_executable(flycast-research-validate-maple
+			tools/research/validate_maple_trace.cpp
+			core/research/identity_manifest.cpp
+			core/research/maple_trace.cpp
+			core/research/sha256.cpp)
+	target_include_directories(flycast-research-validate-maple PRIVATE core core/deps/json)
+	set_target_properties(flycast-research-validate-maple PROPERTIES
+			CXX_STANDARD 17
+			CXX_STANDARD_REQUIRED ON
+			CXX_EXTENSIONS OFF)
+	if(MSVC)
+		target_compile_definitions(flycast-research-validate-maple PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS)
+		target_compile_options(flycast-research-validate-maple PRIVATE /utf-8 /W4)
+	else()
+		target_compile_options(flycast-research-validate-maple PRIVATE -Wall -Wextra -Wpedantic)
+	endif()
+
+	add_executable(flycast-research-validate-capture
+			tools/research/validate_capture.cpp
+			core/research/identity_manifest.cpp
+			core/research/maple_trace.cpp
+			core/research/sha256.cpp)
+	target_include_directories(flycast-research-validate-capture PRIVATE core core/deps/json)
+	set_target_properties(flycast-research-validate-capture PROPERTIES
+			CXX_STANDARD 17
+			CXX_STANDARD_REQUIRED ON
+			CXX_EXTENSIONS OFF)
+	if(MSVC)
+		target_compile_definitions(flycast-research-validate-capture PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS)
+		target_compile_options(flycast-research-validate-capture PRIVATE /utf-8 /W4)
+	else()
+		target_compile_options(flycast-research-validate-capture PRIVATE -Wall -Wextra -Wpedantic)
+	endif()
+endif()
+
+if(BUILD_RESEARCH_TOOLS AND BUILD_TESTING AND NOT LIBRETRO)
+	add_executable(flycast-research-tests
+			tests/src/research/MapleTraceTest.cpp
+			tests/src/research/ResearchRuntimeStubs.cpp
+			core/research/identity_manifest.cpp
+			core/research/maple_runtime.cpp
+			core/research/maple_trace.cpp
+			core/research/sha256.cpp)
+	target_include_directories(flycast-research-tests PRIVATE core core/deps/json)
+	target_link_libraries(flycast-research-tests PRIVATE GTest::gtest_main nowide::nowide)
+	set_target_properties(flycast-research-tests PROPERTIES
+			CXX_STANDARD 17
+			CXX_STANDARD_REQUIRED ON
+			CXX_EXTENSIONS OFF)
+	if(MSVC)
+		target_compile_definitions(flycast-research-tests PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS)
+		target_compile_options(flycast-research-tests PRIVATE /utf-8)
+	endif()
+	add_test(NAME flycast-research-tests COMMAND flycast-research-tests)
+
+	add_executable(flycast-research-capture-fixture
+			tests/src/research/CaptureProcessFixture.cpp
+			core/research/identity_manifest.cpp
+			core/research/maple_trace.cpp
+			core/research/sha256.cpp)
+	target_include_directories(flycast-research-capture-fixture PRIVATE core core/deps/json)
+	set_target_properties(flycast-research-capture-fixture PROPERTIES
+			CXX_STANDARD 17
+			CXX_STANDARD_REQUIRED ON
+			CXX_EXTENSIONS OFF)
+	if(MSVC)
+		target_compile_definitions(flycast-research-capture-fixture PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS)
+		target_compile_options(flycast-research-capture-fixture PRIVATE /utf-8 /W4)
+	else()
+		target_compile_options(flycast-research-capture-fixture PRIVATE -Wall -Wextra -Wpedantic)
+	endif()
+
+	if(WIN32)
+		find_program(FLYCAST_RESEARCH_POWERSHELL NAMES pwsh)
+		if(FLYCAST_RESEARCH_POWERSHELL)
+			add_test(NAME flycast-research-capture-transaction
+				COMMAND ${FLYCAST_RESEARCH_POWERSHELL} -NoProfile -File
+						${CMAKE_CURRENT_SOURCE_DIR}/tests/research/test_capture_transaction.ps1
+						-Driver ${CMAKE_CURRENT_SOURCE_DIR}/tools/research/flycast-capture-maple.ps1
+						-Fixture $<TARGET_FILE:flycast-research-capture-fixture>
+						-MapleValidator $<TARGET_FILE:flycast-research-validate-maple>
+						-CaptureValidator $<TARGET_FILE:flycast-research-validate-capture>
+						-TranscriptSchema ${CMAKE_CURRENT_SOURCE_DIR}/docs/research/flycast-research-capture-transcript-v1.schema.json)
+			set_tests_properties(flycast-research-capture-transaction PROPERTIES TIMEOUT 180)
+		endif()
+	endif()
 endif()
 
 if(NINTENDO_SWITCH)

@@ -7,6 +7,7 @@
 #include "hw/sh4/sh4_sched.h"
 #include "network/ggpo.h"
 #include "hw/naomi/card_reader.h"
+#include "research/maple_runtime.h"
 
 #include <memory>
 
@@ -32,7 +33,7 @@ int maple_schid;
 	DMA continuation on suspect, etc ...
 */
 
-static void maple_DoDma();
+static void maple_DoDma(research::MapleDmaTrigger trigger);
 static void maple_handle_reconnect();
 static int maple_schd(int tag, int cycles, int jitter, void *arg);
 
@@ -44,6 +45,45 @@ bool maple_ddt_pending_reset;
 // pending DMA xfers
 std::vector<std::pair<u32, std::vector<u32>>> mapleDmaOut;
 bool SDCKBOccupied;
+static u64 researchPendingDma = UINT64_MAX;
+
+static std::vector<u8> mapleWordsToLittleEndian(const u32 *words, u32 size)
+{
+	verify(size % sizeof(u32) == 0);
+	std::vector<u8> bytes(size);
+	for (u32 offset = 0; offset < size; offset += sizeof(u32))
+	{
+		const u32 word = words[offset / sizeof(u32)];
+		bytes[offset] = word;
+		bytes[offset + 1] = word >> 8;
+		bytes[offset + 2] = word >> 16;
+		bytes[offset + 3] = word >> 24;
+	}
+	return bytes;
+}
+
+static void mapleLittleEndianToWords(const std::vector<u8>& bytes, u32 *words)
+{
+	verify(bytes.size() % sizeof(u32) == 0);
+	for (size_t offset = 0; offset < bytes.size(); offset += sizeof(u32))
+	{
+		words[offset / sizeof(u32)] = bytes[offset]
+				| (static_cast<u32>(bytes[offset + 1]) << 8)
+				| (static_cast<u32>(bytes[offset + 2]) << 16)
+				| (static_cast<u32>(bytes[offset + 3]) << 24);
+	}
+}
+
+static void researchAbortDma(u64 dmaOrdinal, research::MapleDmaAbortReason reason,
+		u32 stage)
+{
+	research::MapleDmaAbortEvent event;
+	event.dmaOrdinal = dmaOrdinal;
+	event.tick = sh4_sched_now64();
+	event.reason = reason;
+	event.stage = stage;
+	research::mapleAbortDma(event);
+}
 
 void maple_vblank()
 {
@@ -59,7 +99,7 @@ void maple_vblank()
 			{
 				//DEBUG_LOG(MAPLE, "DDT vblank");
 				SB_MDST = 1;
-				maple_DoDma();
+				maple_DoDma(research::MapleDmaTrigger::VBlank);
 				// if trigger reset is manual, mark it as pending
 				if ((SB_MSYS >> 12) & 1)
 					maple_ddt_pending_reset = true;
@@ -90,7 +130,7 @@ static void maple_SB_MDST_Write(u32 addr, u32 data)
 		if (SB_MDEN & 1)
 		{
 			SB_MDST = 1;
-			maple_DoDma();
+			maple_DoDma(research::MapleDmaTrigger::Software);
 		}
 	}
 }
@@ -134,7 +174,7 @@ static u32 getPort(u32 addr)
 	return 5;
 }
 
-static void maple_DoDma()
+static void maple_DoDma(research::MapleDmaTrigger trigger)
 {
 	verify(SB_MDEN & 1);
 	verify(SB_MDST & 1);
@@ -146,6 +186,11 @@ static void maple_DoDma()
 	{
 		asic_RaiseInterrupt(holly_MAPLE_ILLADDR);
 		SB_MDST = 0;
+		if (research::runtimeActive())
+		{
+			research::abortRuntime();
+			throw FlycastException("Maple research DMA descriptor table is invalid");
+		}
 		return;
 	}
 #endif
@@ -165,18 +210,35 @@ static void maple_DoDma()
 	}
 
 	const bool swap_msb = (SB_MMSEL == 0);
+	research::MapleDmaBeginEvent beginEvent;
+	beginEvent.tick = sh4_sched_now64();
+	beginEvent.descriptorAddress = SB_MDSTAR;
+	beginEvent.mden = SB_MDEN;
+	beginEvent.mdst = SB_MDST;
+	beginEvent.mmsel = SB_MMSEL;
+	beginEvent.trigger = trigger;
+	beginEvent.swapMsb = swap_msb;
+	const u64 researchDma = research::mapleBeginDma(beginEvent);
 	u32 xferOut = 0;
 	u32 xferIn = 0;
 	bool last = false;
 	while (!last)
 	{
 		u32 header_1 = ReadMem32_nommu(addr);
-		u32 header_2 = ReadMem32_nommu(addr + 4) & 0x1FFFFFE0;
+		const u32 raw_header_2 = ReadMem32_nommu(addr + 4);
+		u32 header_2 = raw_header_2 & 0x1FFFFFE0;
 
 		last = (header_1 >> 31) == 1;				// is last transfer ?
 		u32 plen = (header_1 & 0xFF) + 1;			// transfer length (32-bit unit)
 		const u32 maple_op = (header_1 >> 8) & 7;	// Pattern selection: 0 - START, 2 - SDCKB occupy permission, 3 - RESET, 4 - SDCKB occupy cancel, 7 - NOP
 		const u32 bus = (header_1 >> 16) & 3;		// maple bus [0..3]
+		if (researchDma != UINT64_MAX && maple_op != MP_Start)
+		{
+			researchAbortDma(researchDma,
+					research::MapleDmaAbortReason::UnsupportedDescriptor, maple_op);
+			throw FlycastException(
+					"Maple research trace v1 does not support control descriptors");
+		}
 
 		//this is kinda wrong .. but meh
 		//really need to properly process the commands at some point
@@ -199,9 +261,18 @@ static void maple_DoDma()
 			if (p_data == nullptr)
 			{
 				WARN_LOG(MAPLE, "MAPLE ERROR : INVALID SB_MDSTAR value 0x%X", addr);
+				if (researchDma != UINT64_MAX)
+					researchAbortDma(researchDma,
+							research::MapleDmaAbortReason::InvalidSource, 1);
 				SB_MDST = 0;
 				mapleDmaOut.clear();
 				return;
+			}
+			if (header_2 == 0 && researchDma != UINT64_MAX)
+			{
+				researchAbortDma(researchDma,
+						research::MapleDmaAbortReason::InvalidDestination, 2);
+				throw FlycastException("Maple research DMA destination is invalid");
 			}
 			const u32 frame_header = swap_msb ? SWAP32(p_data[0]) : p_data[0];
 
@@ -226,40 +297,78 @@ static void maple_DoDma()
 					pDevice = MapleDevices[bus][port];
 			}
 
+			if (swap_msb)
+			{
+				static u32 maple_in_buf[1024 / sizeof(u32)];
+				maple_in_buf[0] = frame_header;
+				for (u32 i = 1; i < plen; i++)
+					maple_in_buf[i] = SWAP32(p_data[i]);
+				p_data = maple_in_buf;
+			}
+			std::vector<u8> researchRequest;
+			if (research::runtimeActive())
+				researchRequest = mapleWordsToLittleEndian(p_data, plen * sizeof(u32));
+
+			u32 outbuf[1024 / sizeof(u32)];
+			u32 outlen;
 			if (pDevice != nullptr)
 			{
-				if (swap_msb)
-				{
-					static u32 maple_in_buf[1024 / sizeof(u32)];
-					maple_in_buf[0] = frame_header;
-					for (u32 i = 1; i < plen; i++)
-						maple_in_buf[i] = SWAP32(p_data[i]);
-					p_data = maple_in_buf;
-				}
-				u32 outbuf[1024 / sizeof(u32)];
-				u32 outlen = pDevice->RawDma(&p_data[0], plen * sizeof(u32), outbuf);
-				xferIn += plen * sizeof(u32) + 3; // start, parity and stop bytes
-				xferOut += outlen + 3;
+				outlen = pDevice->RawDma(&p_data[0], plen * sizeof(u32), outbuf);
 #ifdef STRICT_MODE
 				if (!check_mdapro(header_2 + outlen - 1))
 				{
+					if (researchDma != UINT64_MAX)
+						researchAbortDma(researchDma,
+								research::MapleDmaAbortReason::Overrun, 2);
 					asic_RaiseInterrupt(holly_MAPLE_OVERRUN);
 					SB_MDST = 0;
 					mapleDmaOut.clear();
 					return;
 				}
 #endif
-				if (swap_msb)
-					for (u32 i = 0; i < outlen / 4; i++)
-						outbuf[i] = SWAP32(outbuf[i]);
-				mapleDmaOut.emplace_back(header_2, std::vector<u32>(outbuf, outbuf + outlen / 4));
 			}
 			else
 			{
 				if (port != 5 && command != 1)
 					INFO_LOG(MAPLE, "MAPLE: Unknown device bus %d port %d cmd %d reci %d", bus, port, command, reci);
-				mapleDmaOut.emplace_back(header_2, std::vector<u32>(1, 0xFFFFFFFF));
+				outbuf[0] = 0xFFFFFFFF;
+				outlen = sizeof(u32);
 			}
+
+			if (research::runtimeActive())
+			{
+				research::MapleTransactionEvent transaction;
+				transaction.dmaOrdinal = researchDma;
+				transaction.tick = sh4_sched_now64();
+				transaction.descriptorAddress = addr;
+				transaction.destinationAddress = header_2;
+				transaction.descriptorHeader1 = header_1;
+				transaction.descriptorHeader2 = raw_header_2;
+				transaction.deviceType = pDevice == nullptr
+						? UINT32_MAX : static_cast<u32>(pDevice->get_device_type());
+				transaction.bus = static_cast<u8>(bus);
+				transaction.port = static_cast<u8>(port);
+				transaction.command = static_cast<u8>(command);
+				transaction.flags = static_cast<u8>(pDevice == nullptr
+						? 0 : research::MapleTransactionDevicePresent);
+				transaction.request = std::move(researchRequest);
+				transaction.response = mapleWordsToLittleEndian(outbuf, outlen);
+				const std::vector<u8> response = research::mapleTransaction(std::move(transaction));
+				if (response.size() > sizeof(outbuf))
+					throw FlycastException("Maple research replay response exceeds the device buffer");
+				outlen = static_cast<u32>(response.size());
+				mapleLittleEndianToWords(response, outbuf);
+			}
+
+			if (pDevice != nullptr)
+			{
+				xferIn += plen * sizeof(u32) + 3; // start, parity and stop bytes
+				xferOut += outlen + 3;
+			}
+			if (swap_msb)
+				for (u32 i = 0; i < outlen / 4; i++)
+					outbuf[i] = SWAP32(outbuf[i]);
+			mapleDmaOut.emplace_back(header_2, std::vector<u32>(outbuf, outbuf + outlen / 4));
 
 			//goto next command
 			addr += (2 + plen) * sizeof(u32);
@@ -308,7 +417,31 @@ static void maple_DoDma()
 		// 740 Kb/s from devices
 		cycles += sh4CyclesForXfer(xferOut, 740'000 / 8);
 		cycles = std::min<u32>(cycles, SH4_MAIN_CLOCK);
+		if (researchDma != UINT64_MAX)
+		{
+			research::MapleDmaScheduleEvent scheduleEvent;
+			scheduleEvent.dmaOrdinal = researchDma;
+			scheduleEvent.tick = sh4_sched_now64();
+			scheduleEvent.inputWireBytes = xferIn;
+			scheduleEvent.outputWireBytes = xferOut;
+			scheduleEvent.scheduledCycles = cycles;
+			scheduleEvent.responseCount = static_cast<u32>(mapleDmaOut.size());
+			research::mapleScheduleDma(scheduleEvent);
+			researchPendingDma = researchDma;
+		}
 		sh4_sched_request(maple_schid, cycles);
+	}
+	else if (researchDma != UINT64_MAX)
+	{
+		research::MapleDmaScheduleEvent scheduleEvent;
+		scheduleEvent.dmaOrdinal = researchDma;
+		scheduleEvent.tick = sh4_sched_now64();
+		scheduleEvent.inputWireBytes = xferIn;
+		scheduleEvent.outputWireBytes = xferOut;
+		scheduleEvent.responseCount = static_cast<u32>(mapleDmaOut.size());
+		scheduleEvent.flags = research::MapleScheduleDeferredUntilVBlank;
+		research::mapleScheduleDma(scheduleEvent);
+		researchPendingDma = researchDma;
 	}
 }
 
@@ -329,9 +462,27 @@ static int maple_schd(int tag, int cycles, int jitter, void *arg)
 		}
 		SB_MDST = 0;
 		asic_RaiseInterrupt(holly_MAPLE_DMA);
+		if (researchPendingDma != UINT64_MAX)
+		{
+			research::MapleDmaCommitEvent commitEvent;
+			commitEvent.dmaOrdinal = researchPendingDma;
+			commitEvent.tick = sh4_sched_now64();
+			commitEvent.callbackCycles = cycles;
+			commitEvent.jitter = jitter;
+			commitEvent.responseCount = static_cast<u32>(mapleDmaOut.size());
+			commitEvent.flags = research::MapleCommitInterruptRaised;
+			research::mapleCommitDma(commitEvent);
+			researchPendingDma = UINT64_MAX;
+		}
 	}
 	else
 	{
+		if (researchPendingDma != UINT64_MAX)
+		{
+			researchAbortDma(researchPendingDma,
+					research::MapleDmaAbortReason::Shutdown, 3);
+			researchPendingDma = UINT64_MAX;
+		}
 		INFO_LOG(MAPLE, "WARNING: MAPLE DMA ABORT");
 		SB_MDST = 0; //I really wonder what this means, can the DMA be continued ?
 	}
@@ -364,6 +515,10 @@ static u64 reconnect_time;
 
 void maple_Reset(bool hard)
 {
+	const bool invalidatedResearchCapture = research::runtimeActive();
+	if (invalidatedResearchCapture)
+		research::abortRuntime();
+	researchPendingDma = UINT64_MAX;
 	maple_ddt_pending_reset = false;
 	SB_MDTSEL = 0;
 	SB_MDEN   = 0;
@@ -374,6 +529,8 @@ void maple_Reset(bool hard)
 	SB_MMSEL  = 1;
 	mapleDmaOut.clear();
 	reconnect_time = 0;
+	if (invalidatedResearchCapture)
+		throw FlycastException("Maple reset invalidated the active research session");
 }
 
 void maple_Term()
@@ -385,12 +542,24 @@ void maple_Term()
 
 void maple_ReconnectDevices()
 {
+	if (research::runtimeActive())
+	{
+		research::abortRuntime();
+		throw FlycastException(
+				"Maple topology changes are not supported by research trace v1");
+	}
 	mcfg_DestroyDevices();
 	reconnect_time = sh4_sched_now64() + SH4_MAIN_CLOCK / 10;
 }
 
 void maple_ReconnectDevice(int bus, int port)
 {
+	if (research::runtimeActive())
+	{
+		research::abortRuntime();
+		throw FlycastException(
+				"Maple topology changes are not supported by research trace v1");
+	}
 	if (port == 5)
 	{
 		// main device

@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://flycast-redux.invalid/schemas/flycast-research-quarantine-v1.schema.json",
+  "title": "Flycast Research Quarantine v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "schema_version",
+    "capture_id",
+    "quarantined_utc",
+    "source_directory",
+    "quarantine_directory",
+    "failure",
+    "cleanup_failure",
+    "accepted_output_absent"
+  ],
+  "properties": {
+    "schema": { "const": "flycast-research-quarantine" },
+    "schema_version": { "const": 1 },
+    "capture_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "quarantined_utc": { "type": "string", "format": "date-time" },
+    "source_directory": { "type": "string", "minLength": 1 },
+    "quarantine_directory": { "type": "string", "minLength": 1 },
+    "failure": { "type": "string", "minLength": 1 },
+    "cleanup_failure": { "type": ["string", "null"] },
+    "accepted_output_absent": { "type": "boolean" }
+  }
+}

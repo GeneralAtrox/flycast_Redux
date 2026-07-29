@@ -158,6 +158,12 @@ Option<bool, false> UseSafFilePicker("UseSafFilePicker", true);
 #endif
 OptionString LogServer("LogServer", "", "log");
 
+// Research toolkit
+Option<std::string, false> ResearchIdentityManifestPath("IdentityManifest", "", "research");
+Option<std::string, false> ResearchMapleRecordPath("MapleRecord", "", "research");
+Option<std::string, false> ResearchMapleReplayPath("MapleReplay", "", "research");
+Option<int64_t, false> ResearchMapleTraceMaxBytes("MapleTraceMaxBytes", 512_MB, "research");
+
 // Profiler
 Option<bool> ProfilerEnabled("Profiler.Enabled");
 Option<bool> ProfilerDrawToGUI("Profiler.DrawGUI");

@@ -1,0 +1,364 @@
+#include "research/identity_manifest.h"
+
+#include "json.hpp"
+
+#include <algorithm>
+#include <cwctype>
+#include <fstream>
+#include <limits>
+#include <set>
+#include <stdexcept>
+
+namespace research
+{
+namespace
+{
+
+using json = nlohmann::json;
+
+[[noreturn]] void invalid(const std::string& reason)
+{
+	throw std::runtime_error("invalid research identity manifest: " + reason);
+}
+
+const json& requiredObject(const json& parent, const char *name)
+{
+	if (!parent.contains(name) || !parent.at(name).is_object())
+		invalid(std::string("missing object '") + name + "'");
+	return parent.at(name);
+}
+
+const json& requiredArray(const json& parent, const char *name)
+{
+	if (!parent.contains(name) || !parent.at(name).is_array())
+		invalid(std::string("missing array '") + name + "'");
+	return parent.at(name);
+}
+
+void validateSha256(const json& value, const std::string& field)
+{
+	if (!value.is_string())
+		invalid(field + " must be a lowercase SHA-256 string");
+	Sha256Digest digest {};
+	if (!sha256FromHex(value.get<std::string>(), digest))
+		invalid(field + " must be a lowercase SHA-256 string");
+}
+
+void validateBlob(const json& value, const std::string& field)
+{
+	if (!value.is_object())
+		invalid(field + " must be an object");
+	if (!value.contains("size") || !value.at("size").is_number_unsigned())
+		invalid(field + ".size must be an unsigned integer");
+	if (!value.contains("sha256"))
+		invalid(field + ".sha256 is missing");
+	validateSha256(value.at("sha256"), field + ".sha256");
+	if (value.contains("path") && !value.at("path").is_string())
+		invalid(field + ".path must be a string");
+}
+
+const json& requiredConfigurationValue(const json& values, const char *name)
+{
+	if (!values.contains(name))
+		invalid(std::string("configuration.values.") + name + " is missing");
+	return values.at(name);
+}
+
+struct ValidatedIdentity
+{
+	IdentityRuntimeConfiguration runtimeConfiguration;
+	std::string mediaKind;
+	std::size_t mediaTrackCount = 0;
+};
+
+ValidatedIdentity validateIdentityJson(const json& root)
+{
+	if (!root.is_object())
+		invalid("root must be an object");
+	const std::set<std::string> allowedTopLevel {
+		"schema",
+		"schema_version",
+		"media",
+		"firmware",
+		"persistent_devices",
+		"emulator",
+		"configuration",
+		"static_analysis",
+	};
+	for (const auto& item : root.items())
+		if (allowedTopLevel.find(item.key()) == allowedTopLevel.end())
+			invalid("unknown top-level field '" + item.key() + "'");
+
+	if (!root.contains("schema") || root.at("schema") != "flycast-research-identity")
+		invalid("unsupported schema");
+	if (!root.contains("schema_version") || !root.at("schema_version").is_number_unsigned()
+			|| root.at("schema_version").get<std::uint64_t>() != 1)
+		invalid("unsupported schema_version");
+
+	const json& media = requiredObject(root, "media");
+	if (!media.contains("kind") || !media.at("kind").is_string())
+		invalid("media.kind is missing");
+	const std::set<std::string> mediaKinds {
+		"gdi", "cue", "chd", "cdi", "elf", "bios", "arcade",
+	};
+	const std::string mediaKind = media.at("kind").get<std::string>();
+	if (mediaKinds.find(mediaKind) == mediaKinds.end())
+		invalid("media.kind is unsupported");
+	validateBlob(media.contains("source") ? media.at("source") : json(), "media.source");
+	validateBlob(media.contains("ip_bin") ? media.at("ip_bin") : json(), "media.ip_bin");
+	validateBlob(media.contains("boot_executable") ? media.at("boot_executable") : json(),
+			"media.boot_executable");
+	if (!media.at("boot_executable").contains("name")
+			|| !media.at("boot_executable").at("name").is_string()
+			|| media.at("boot_executable").at("name").get<std::string>().empty())
+		invalid("media.boot_executable.name is missing");
+	if (media.contains("tracks"))
+	{
+		if (!media.at("tracks").is_array())
+			invalid("media.tracks must be an array");
+		std::uint64_t previousTrack = 0;
+		for (std::size_t i = 0; i < media.at("tracks").size(); ++i)
+		{
+			const json& track = media.at("tracks").at(i);
+			const std::string field = "media.tracks[" + std::to_string(i) + "]";
+			validateBlob(track, field);
+			for (const char *number : {"track", "start_fad", "sector_size", "offset"})
+				if (!track.contains(number) || !track.at(number).is_number_unsigned())
+					invalid(field + "." + number + " must be an unsigned integer");
+			const std::uint64_t trackNumber = track.at("track").get<std::uint64_t>();
+			if (trackNumber == 0 || trackNumber > 99 || trackNumber <= previousTrack)
+				invalid(field + ".track must be strictly increasing in [1, 99]");
+			previousTrack = trackNumber;
+		}
+	}
+
+	const json& firmware = requiredObject(root, "firmware");
+	if (!firmware.contains("mode") || !firmware.at("mode").is_string())
+		invalid("firmware.mode is missing");
+	const std::string firmwareMode = firmware.at("mode").get<std::string>();
+	if (firmwareMode != "real" && firmwareMode != "hle")
+		invalid("firmware.mode must be 'real' or 'hle'");
+	validateBlob(firmware.contains("flash_initial") ? firmware.at("flash_initial") : json(),
+			"firmware.flash_initial");
+	if (firmwareMode == "real")
+	{
+		if (!firmware.contains("bios") || firmware.at("bios").is_null())
+			invalid("real firmware requires firmware.bios");
+		validateBlob(firmware.at("bios"), "firmware.bios");
+	}
+	else if (!firmware.contains("hle_identity") || !firmware.at("hle_identity").is_string()
+			|| firmware.at("hle_identity").get<std::string>().empty())
+	{
+		invalid("HLE firmware requires firmware.hle_identity");
+	}
+
+	const json& devices = requiredArray(root, "persistent_devices");
+	for (std::size_t i = 0; i < devices.size(); ++i)
+	{
+		const json& device = devices.at(i);
+		const std::string field = "persistent_devices[" + std::to_string(i) + "]";
+		validateBlob(device, field);
+		if (!device.contains("kind") || !device.at("kind").is_string()
+				|| device.at("kind").get<std::string>().empty())
+			invalid(field + ".kind is missing");
+		for (const char *number : {"bus", "port"})
+			if (!device.contains(number) || !device.at(number).is_number_unsigned())
+				invalid(field + "." + number + " must be an unsigned integer");
+		if (device.at("bus").get<std::uint64_t>() > 3
+				|| device.at("port").get<std::uint64_t>() > 5)
+			invalid(field + " bus/port is out of range");
+	}
+
+	const json& emulator = requiredObject(root, "emulator");
+	if (!emulator.contains("git_commit") || !emulator.at("git_commit").is_string())
+		invalid("emulator.git_commit is missing");
+	const std::string commit = emulator.at("git_commit").get<std::string>();
+	if (commit.size() != 40
+			|| !std::all_of(commit.begin(), commit.end(), [](char c) {
+				return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+			}))
+		invalid("emulator.git_commit must be 40 lowercase hexadecimal characters");
+	validateBlob(emulator.contains("executable") ? emulator.at("executable") : json(),
+			"emulator.executable");
+
+	const json& configuration = requiredObject(root, "configuration");
+	if (!configuration.contains("values") || !configuration.at("values").is_object())
+		invalid("configuration.values must be an object");
+	const json& values = configuration.at("values");
+	IdentityRuntimeConfiguration runtimeConfiguration;
+	const json& cpuBackend = requiredConfigurationValue(values, "cpu_backend");
+	if (!cpuBackend.is_string() || cpuBackend.get<std::string>() != "interpreter")
+		invalid("configuration.values.cpu_backend must be 'interpreter'");
+	runtimeConfiguration.cpuBackend = cpuBackend.get<std::string>();
+	for (const auto& [name, destination] : {
+			std::pair<const char *, bool *>("threaded_rendering",
+					&runtimeConfiguration.threadedRendering),
+			std::pair<const char *, bool *>("autoload_state",
+					&runtimeConfiguration.autoLoadState),
+			std::pair<const char *, bool *>("autosave_state",
+					&runtimeConfiguration.autoSaveState),
+			std::pair<const char *, bool *>("ggpo", &runtimeConfiguration.ggpo),
+	})
+	{
+		const json& value = requiredConfigurationValue(values, name);
+		if (!value.is_boolean() || value.get<bool>())
+			invalid(std::string("configuration.values.") + name + " must be false");
+		*destination = false;
+	}
+	if (!configuration.contains("sha256"))
+		invalid("configuration.sha256 is missing");
+	validateSha256(configuration.at("sha256"), "configuration.sha256");
+	const std::string canonicalConfiguration = configuration.at("values").dump();
+	const Sha256Digest computedConfiguration = sha256(canonicalConfiguration.data(),
+			canonicalConfiguration.size());
+	Sha256Digest declaredConfiguration {};
+	if (!sha256FromHex(configuration.at("sha256").get<std::string>(), declaredConfiguration)
+			|| !sha256Equal(computedConfiguration, declaredConfiguration))
+		invalid("configuration.sha256 does not match canonical configuration.values bytes");
+
+	if (root.contains("static_analysis"))
+	{
+		const json& staticAnalysis = requiredObject(root, "static_analysis");
+		for (const char *field : {"program_sha256", "export_sha256"})
+		{
+			if (!staticAnalysis.contains(field))
+				invalid(std::string("static_analysis.") + field + " is missing");
+			validateSha256(staticAnalysis.at(field), std::string("static_analysis.") + field);
+		}
+		if (staticAnalysis.contains("hook_manifest_sha256"))
+			validateSha256(staticAnalysis.at("hook_manifest_sha256"),
+					"static_analysis.hook_manifest_sha256");
+		if (!staticAnalysis.contains("image_base") || !staticAnalysis.at("image_base").is_string())
+			invalid("static_analysis.image_base is missing");
+	}
+	ValidatedIdentity result;
+	result.runtimeConfiguration = runtimeConfiguration;
+	result.mediaKind = mediaKind;
+	result.mediaTrackCount = media.contains("tracks") ? media.at("tracks").size() : 0;
+	return result;
+}
+
+std::uint64_t stableFileSize(const std::filesystem::path& path)
+{
+	std::error_code error;
+	const std::uintmax_t size = std::filesystem::file_size(path, error);
+	if (error)
+		throw std::runtime_error("cannot stat file '" + path.string() + "': " + error.message());
+	if (size > std::numeric_limits<std::uint64_t>::max())
+		throw std::runtime_error("file is too large: " + path.string());
+	return static_cast<std::uint64_t>(size);
+}
+
+} // namespace
+
+std::vector<std::uint8_t> readFileExact(const std::filesystem::path& path,
+		std::uint64_t maximumBytes)
+{
+	const std::uint64_t sizeBefore = stableFileSize(path);
+	if (sizeBefore > maximumBytes || sizeBefore > std::numeric_limits<std::size_t>::max())
+		throw std::runtime_error("file exceeds size limit: " + path.string());
+
+	std::ifstream input(path, std::ios::binary);
+	if (!input)
+		throw std::runtime_error("cannot open file for reading: " + path.string());
+	std::vector<std::uint8_t> bytes(static_cast<std::size_t>(sizeBefore));
+	if (!bytes.empty())
+	{
+		input.read(reinterpret_cast<char *>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+		if (input.gcount() != static_cast<std::streamsize>(bytes.size()) || !input)
+			throw std::runtime_error("file shrank or read failed: " + path.string());
+	}
+	char extra = 0;
+	input.read(&extra, 1);
+	if (input.gcount() != 0)
+		throw std::runtime_error("file grew while reading: " + path.string());
+	const std::uint64_t sizeAfter = stableFileSize(path);
+	if (sizeBefore != sizeAfter)
+		throw std::runtime_error("file size changed while reading: " + path.string());
+	return bytes;
+}
+
+Sha256Digest hashFileExact(const std::filesystem::path& path, std::uint64_t maximumBytes)
+{
+	const std::uint64_t sizeBefore = stableFileSize(path);
+	if (sizeBefore > maximumBytes)
+		throw std::runtime_error("file exceeds size limit: " + path.string());
+
+	std::ifstream input(path, std::ios::binary);
+	if (!input)
+		throw std::runtime_error("cannot open file for reading: " + path.string());
+	constexpr std::size_t HashWindowBytes = 64 * 1024;
+	std::vector<std::uint8_t> window(HashWindowBytes);
+	Sha256 hasher;
+	std::uint64_t remaining = sizeBefore;
+	while (remaining != 0)
+	{
+		const std::size_t count = static_cast<std::size_t>(
+				std::min<std::uint64_t>(remaining, window.size()));
+		input.read(reinterpret_cast<char *>(window.data()), static_cast<std::streamsize>(count));
+		if (input.gcount() != static_cast<std::streamsize>(count) || !input)
+			throw std::runtime_error("file shrank or read failed: " + path.string());
+		hasher.update(window.data(), count);
+		remaining -= count;
+	}
+	char extra = 0;
+	input.read(&extra, 1);
+	if (input.gcount() != 0)
+		throw std::runtime_error("file grew while reading: " + path.string());
+	const std::uint64_t sizeAfter = stableFileSize(path);
+	if (sizeBefore != sizeAfter)
+		throw std::runtime_error("file size changed while reading: " + path.string());
+	return hasher.finalize();
+}
+
+IdentityManifest loadIdentityManifest(const std::filesystem::path& path)
+{
+	IdentityManifest manifest;
+	manifest.path = path;
+	manifest.bytes = readFileExact(path, MaxIdentityManifestBytes);
+	if (manifest.bytes.empty())
+		invalid("file is empty");
+	try
+	{
+		const json root = json::parse(manifest.bytes.begin(), manifest.bytes.end());
+		const ValidatedIdentity validated = validateIdentityJson(root);
+		manifest.runtimeConfiguration = validated.runtimeConfiguration;
+		manifest.mediaKind = validated.mediaKind;
+		manifest.mediaTrackCount = validated.mediaTrackCount;
+	}
+	catch (const nlohmann::json::exception& exception)
+	{
+		invalid(std::string("JSON parse/type error: ") + exception.what());
+	}
+	manifest.digest = sha256(manifest.bytes.data(), manifest.bytes.size());
+	return manifest;
+}
+
+void requireCaptureV1Identity(const IdentityManifest& manifest)
+{
+	if (manifest.mediaKind != "gdi")
+		invalid("capture-v1 requires media.kind 'gdi'");
+	if (manifest.mediaTrackCount == 0)
+		invalid("capture-v1 requires at least one media track");
+}
+
+bool pathsAlias(const std::filesystem::path& lhs, const std::filesystem::path& rhs)
+{
+	std::error_code lhsError;
+	std::error_code rhsError;
+	const std::filesystem::path lhsCanonical = std::filesystem::weakly_canonical(lhs, lhsError);
+	const std::filesystem::path rhsCanonical = std::filesystem::weakly_canonical(rhs, rhsError);
+	if (lhsError || rhsError)
+		throw std::runtime_error("cannot canonicalize research artifact paths");
+#ifdef _WIN32
+	std::wstring lhsText = lhsCanonical.native();
+	std::wstring rhsText = rhsCanonical.native();
+	std::transform(lhsText.begin(), lhsText.end(), lhsText.begin(), ::towlower);
+	std::transform(rhsText.begin(), rhsText.end(), rhsText.begin(), ::towlower);
+	return lhsText == rhsText;
+#else
+	return lhsCanonical == rhsCanonical;
+#endif
+}
+
+} // namespace research

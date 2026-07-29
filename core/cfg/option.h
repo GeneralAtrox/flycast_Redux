@@ -514,6 +514,12 @@ extern Option<bool, false> UseSafFilePicker;
 #endif
 extern OptionString LogServer;
 
+// Research toolkit (command-line/transient configuration only)
+extern Option<std::string, false> ResearchIdentityManifestPath;
+extern Option<std::string, false> ResearchMapleRecordPath;
+extern Option<std::string, false> ResearchMapleReplayPath;
+extern Option<int64_t, false> ResearchMapleTraceMaxBytes;
+
 // Profiling
 extern Option<bool> ProfilerEnabled;
 extern Option<bool> ProfilerDrawToGUI;

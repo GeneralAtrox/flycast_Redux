@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://flycast-redux.invalid/schemas/flycast-research-capture-validation-v1.schema.json",
+  "title": "Flycast Research Capture Validation v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "schema_version",
+    "accepted",
+    "validated_utc",
+    "transcript",
+    "artifact",
+    "validator",
+    "claim_limit"
+  ],
+  "properties": {
+    "schema": { "const": "flycast-research-capture-validation" },
+    "schema_version": { "const": 1 },
+    "accepted": { "const": true },
+    "validated_utc": { "type": "string", "format": "date-time" },
+    "transcript": { "$ref": "#/$defs/blob" },
+    "artifact": { "$ref": "#/$defs/blob" },
+    "validator": { "$ref": "#/$defs/blob" },
+    "claim_limit": { "type": "string", "minLength": 1 }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "blob": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "size", "sha256"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "size": { "type": "integer", "minimum": 0 },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    }
+  }
+}
