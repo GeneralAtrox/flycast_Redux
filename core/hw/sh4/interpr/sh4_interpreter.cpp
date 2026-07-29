@@ -14,6 +14,7 @@
 #include "debug/gdb_server.h"
 #include "../sh4_cycles.h"
 #include "research/memory_ranges_runtime.h"
+#include "research/sh4_events_runtime.h"
 
 Sh4ICache icache;
 Sh4OCache ocache;
@@ -21,11 +22,32 @@ Sh4Interpreter *Sh4Interpreter::Instance;
 
 void Sh4Interpreter::ExecuteOpcode(u16 op)
 {
-	research::memoryRangesInstructionBoundary(ctx->pc - 2, sh4cycles.now());
-	if (ctx->sr.FD == 1 && OpDesc[op]->IsFloatingPoint())
-		throw SH4ThrownException(ctx->pc - 2, Sh4Ex_FpuDisabled);
-	OpPtr[op](ctx, op);
-	sh4cycles.executeCycles(op);
+	const u32 executedPc = ctx->pc - 2;
+	try
+	{
+		research::sh4EventsInstructionBegin(executedPc, op, sh4cycles.now(), *ctx);
+		research::memoryRangesInstructionBoundary(executedPc, sh4cycles.now());
+		if (ctx->sr.FD == 1 && OpDesc[op]->IsFloatingPoint())
+			throw SH4ThrownException(executedPc, Sh4Ex_FpuDisabled);
+		OpPtr[op](ctx, op);
+		sh4cycles.executeCycles(op);
+		research::sh4EventsInstructionEnd(executedPc, op, sh4cycles.now(), *ctx);
+	}
+	catch (const SH4ThrownException& exception)
+	{
+		const u32 vectorPc = ctx->vbr
+				+ (exception.expEvn == Sh4Ex_TlbMissRead
+						|| exception.expEvn == Sh4Ex_TlbMissWrite ? 0x400 : 0x100);
+		research::sh4EventsException(exception.epc, vectorPc,
+				static_cast<u32>(exception.expEvn), sh4cycles.now(), *ctx);
+		research::sh4EventsInstructionAbort();
+		throw;
+	}
+	catch (...)
+	{
+		research::sh4EventsInstructionAbort();
+		throw;
+	}
 }
 
 u16 Sh4Interpreter::ReadNexOp()

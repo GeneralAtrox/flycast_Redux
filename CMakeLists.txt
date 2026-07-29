@@ -347,6 +347,15 @@ if(NOT LIBRETRO)
 			core/research/memory_ranges_manifest.h
 			core/research/memory_ranges_runtime.cpp
 			core/research/memory_ranges_runtime.h
+			core/research/sh4_events_artifact.cpp
+			core/research/sh4_events_artifact.h
+			core/research/sh4_events_capture.cpp
+			core/research/sh4_events_capture.h
+			core/research/sh4_events_manifest.cpp
+			core/research/sh4_events_manifest.h
+			core/research/sh4_events_memory.h
+			core/research/sh4_events_runtime.cpp
+			core/research/sh4_events_runtime.h
 			core/research/sha256.cpp
 			core/research/sha256.h)
 endif()
@@ -1550,12 +1559,33 @@ if(BUILD_RESEARCH_TOOLS AND NOT LIBRETRO)
 		target_compile_options(flycast-research-validate-memory-ranges PRIVATE
 				-Wall -Wextra -Wpedantic)
 	endif()
+
+	add_executable(flycast-research-validate-sh4-events
+			tools/research/validate_sh4_events.cpp
+			core/research/identity_manifest.cpp
+			core/research/sh4_events_artifact.cpp
+			core/research/sh4_events_manifest.cpp
+			core/research/sha256.cpp)
+	target_include_directories(flycast-research-validate-sh4-events PRIVATE core core/deps/json)
+	set_target_properties(flycast-research-validate-sh4-events PROPERTIES
+			CXX_STANDARD 17
+			CXX_STANDARD_REQUIRED ON
+			CXX_EXTENSIONS OFF)
+	if(MSVC)
+		target_compile_definitions(flycast-research-validate-sh4-events PRIVATE
+				NOMINMAX _CRT_SECURE_NO_WARNINGS)
+		target_compile_options(flycast-research-validate-sh4-events PRIVATE /utf-8 /W4)
+	else()
+		target_compile_options(flycast-research-validate-sh4-events PRIVATE
+				-Wall -Wextra -Wpedantic)
+	endif()
 endif()
 
 if(BUILD_RESEARCH_TOOLS AND BUILD_TESTING AND NOT LIBRETRO)
 	add_executable(flycast-research-tests
 			tests/src/research/MapleTraceTest.cpp
 			tests/src/research/MemoryRangesTest.cpp
+			tests/src/research/Sh4EventsTest.cpp
 			tests/src/research/ResearchRuntimeStubs.cpp
 			core/research/identity_manifest.cpp
 			core/research/maple_runtime.cpp
@@ -1564,6 +1594,10 @@ if(BUILD_RESEARCH_TOOLS AND BUILD_TESTING AND NOT LIBRETRO)
 			core/research/memory_ranges_capture.cpp
 			core/research/memory_ranges_manifest.cpp
 			core/research/memory_ranges_runtime.cpp
+			core/research/sh4_events_artifact.cpp
+			core/research/sh4_events_capture.cpp
+			core/research/sh4_events_manifest.cpp
+			core/research/sh4_events_runtime.cpp
 			core/research/sha256.cpp)
 	target_include_directories(flycast-research-tests PRIVATE core core/deps core/deps/json)
 	target_link_libraries(flycast-research-tests PRIVATE GTest::gtest_main nowide::nowide)

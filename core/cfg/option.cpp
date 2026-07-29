@@ -167,6 +167,10 @@ Option<std::string, false> ResearchMemoryRangesManifestPath("MemoryRangesManifes
 Option<std::string, false> ResearchMemoryRangesRecordPath("MemoryRangesRecord", "", "research");
 Option<int64_t, false> ResearchMemoryRangesMaxBytes("MemoryRangesMaxBytes",
 		1025ll * 1024 * 1024, "research");
+Option<std::string, false> ResearchSh4EventsManifestPath("Sh4EventsManifest", "", "research");
+Option<std::string, false> ResearchSh4EventsRecordPath("Sh4EventsRecord", "", "research");
+Option<int64_t, false> ResearchSh4EventsMaxBytes("Sh4EventsMaxBytes",
+		256ll * 1024 * 1024, "research");
 
 // Profiler
 Option<bool> ProfilerEnabled("Profiler.Enabled");

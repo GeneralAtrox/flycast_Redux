@@ -11,12 +11,22 @@
 #include "debug/gdb_server.h"
 #include "hw/sh4/dyna/decoder.h"
 #include "emulator.h"
+#include "research/sh4_events_memory.h"
 
 #ifdef STRICT_MODE
 #include "hw/sh4/sh4_cache.h"
 #endif
 
 //Read Mem macros
+
+#define ReadMem8 research::observedSh4Read8
+#define ReadMem16 research::observedSh4Read16
+#define ReadMem32 research::observedSh4Read32
+#define ReadMem64 research::observedSh4Read64
+#define WriteMem8 research::observedSh4Write8
+#define WriteMem16 research::observedSh4Write16
+#define WriteMem32 research::observedSh4Write32
+#define WriteMem64 research::observedSh4Write64
 
 #define ReadMemU32(to,addr) to=ReadMem32(addr)
 #define ReadMemS32(to,addr) to=(s32)ReadMem32(addr)

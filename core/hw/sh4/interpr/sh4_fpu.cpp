@@ -5,6 +5,16 @@
 #include "hw/sh4/sh4_core.h"
 #include "hw/sh4/sh4_rom.h"
 #include "hw/sh4/sh4_mem.h"
+#include "research/sh4_events_memory.h"
+
+#define ReadMem8 research::observedSh4Read8
+#define ReadMem16 research::observedSh4Read16
+#define ReadMem32 research::observedSh4Read32
+#define ReadMem64 research::observedSh4Read64
+#define WriteMem8 research::observedSh4Write8
+#define WriteMem16 research::observedSh4Write16
+#define WriteMem32 research::observedSh4Write32
+#define WriteMem64 research::observedSh4Write64
 
 static u32 GetN(u32 op) {
 	return (op >> 8) & 0xf;

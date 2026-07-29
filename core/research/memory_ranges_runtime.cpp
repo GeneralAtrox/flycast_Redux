@@ -114,6 +114,12 @@ void startMemoryRangesRuntime()
 		paths.emplace_back("Maple record", researchPath(config::ResearchMapleRecordPath.get()));
 	if (!config::ResearchMapleReplayPath.get().empty())
 		paths.emplace_back("Maple replay", researchPath(config::ResearchMapleReplayPath.get()));
+	if (!config::ResearchSh4EventsManifestPath.get().empty())
+		paths.emplace_back("SH-4 events manifest",
+				researchPath(config::ResearchSh4EventsManifestPath.get()));
+	if (!config::ResearchSh4EventsRecordPath.get().empty())
+		paths.emplace_back("SH-4 events output",
+				researchPath(config::ResearchSh4EventsRecordPath.get()));
 	requireDistinctPaths(paths);
 
 	const IdentityManifest identity = loadIdentityManifest(identityPath);

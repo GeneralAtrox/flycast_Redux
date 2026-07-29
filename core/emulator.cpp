@@ -43,6 +43,7 @@
 #include "profiler/fc_profiler.h"
 #include "research/maple_runtime.h"
 #include "research/memory_ranges_runtime.h"
+#include "research/sh4_events_runtime.h"
 #include "oslib/storage.h"
 #include "wsi/context.h"
 #include <chrono>
@@ -595,6 +596,7 @@ void Emulator::loadGame(const char *path, LoadProgress *progress)
 		config::Settings::instance().load(false);
 		research::configureRuntime();
 		research::configureMemoryRangesRuntime();
+		research::configureSh4EventsRuntime();
 		dc_reset(true);
 		memset(&settings.network.md5, 0, sizeof(settings.network.md5));
 
@@ -677,6 +679,7 @@ void Emulator::loadGame(const char *path, LoadProgress *progress)
 		loadGameSpecificSettings();
 		research::startRuntime();
 		research::startMemoryRangesRuntime();
+		research::startSh4EventsRuntime();
 		NetworkHandshake::init();
 		settings.input.fastForwardMode = false;
 		EventManager::event(Event::Start);
@@ -702,6 +705,7 @@ void Emulator::loadGame(const char *path, LoadProgress *progress)
 
 		state = Loaded;
 	} catch (...) {
+		research::abortSh4EventsRuntime();
 		research::abortMemoryRangesRuntime();
 		research::abortRuntime();
 		state = Error;
@@ -735,6 +739,7 @@ void Emulator::runInternal()
 
 				if (resetRequested)
 				{
+					research::abortSh4EventsRuntime();
 					research::abortMemoryRangesRuntime();
 					nvmem::saveFiles();
 					dc_reset(false);
@@ -760,6 +765,11 @@ void Emulator::unloadGame()
 			research::stopRuntime(state == Loaded);
 		} catch (const std::exception& e) {
 			ERROR_LOG(COMMON, "Research runtime finalization failed: %s", e.what());
+		}
+		try {
+			research::stopSh4EventsRuntime(state == Loaded);
+		} catch (const std::exception& e) {
+			ERROR_LOG(COMMON, "SH-4 events finalization failed: %s", e.what());
 		}
 		try {
 			research::stopMemoryRangesRuntime(state == Loaded);
