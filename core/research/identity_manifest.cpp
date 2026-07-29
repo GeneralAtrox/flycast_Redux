@@ -69,6 +69,12 @@ struct ValidatedIdentity
 	IdentityRuntimeConfiguration runtimeConfiguration;
 	std::string mediaKind;
 	std::size_t mediaTrackCount = 0;
+	Sha256Digest bootExecutableDigest {};
+	bool hasStaticAnalysis = false;
+	Sha256Digest staticAnalysisProgramDigest {};
+	Sha256Digest staticAnalysisExportDigest {};
+	bool hasHookManifestDigest = false;
+	Sha256Digest hookManifestDigest {};
 };
 
 ValidatedIdentity validateIdentityJson(const json& root)
@@ -108,6 +114,10 @@ ValidatedIdentity validateIdentityJson(const json& root)
 	validateBlob(media.contains("ip_bin") ? media.at("ip_bin") : json(), "media.ip_bin");
 	validateBlob(media.contains("boot_executable") ? media.at("boot_executable") : json(),
 			"media.boot_executable");
+	Sha256Digest bootExecutableDigest {};
+	if (!sha256FromHex(media.at("boot_executable").at("sha256").get<std::string>(),
+			bootExecutableDigest))
+		invalid("media.boot_executable.sha256 must be a lowercase SHA-256 string");
 	if (!media.at("boot_executable").contains("name")
 			|| !media.at("boot_executable").at("name").is_string()
 			|| media.at("boot_executable").at("name").get<std::string>().empty())
@@ -216,8 +226,14 @@ ValidatedIdentity validateIdentityJson(const json& root)
 			|| !sha256Equal(computedConfiguration, declaredConfiguration))
 		invalid("configuration.sha256 does not match canonical configuration.values bytes");
 
+	bool hasStaticAnalysis = false;
+	Sha256Digest staticAnalysisProgramDigest {};
+	Sha256Digest staticAnalysisExportDigest {};
+	bool hasHookManifestDigest = false;
+	Sha256Digest hookManifestDigest {};
 	if (root.contains("static_analysis"))
 	{
+		hasStaticAnalysis = true;
 		const json& staticAnalysis = requiredObject(root, "static_analysis");
 		for (const char *field : {"program_sha256", "export_sha256"})
 		{
@@ -230,11 +246,29 @@ ValidatedIdentity validateIdentityJson(const json& root)
 					"static_analysis.hook_manifest_sha256");
 		if (!staticAnalysis.contains("image_base") || !staticAnalysis.at("image_base").is_string())
 			invalid("static_analysis.image_base is missing");
+		if (!sha256FromHex(staticAnalysis.at("program_sha256").get<std::string>(),
+				staticAnalysisProgramDigest)
+				|| !sha256FromHex(staticAnalysis.at("export_sha256").get<std::string>(),
+						staticAnalysisExportDigest))
+			invalid("static_analysis digest conversion failed");
+		if (staticAnalysis.contains("hook_manifest_sha256"))
+		{
+			hasHookManifestDigest = true;
+			if (!sha256FromHex(staticAnalysis.at("hook_manifest_sha256").get<std::string>(),
+					hookManifestDigest))
+				invalid("static_analysis.hook_manifest_sha256 conversion failed");
+		}
 	}
 	ValidatedIdentity result;
 	result.runtimeConfiguration = runtimeConfiguration;
 	result.mediaKind = mediaKind;
 	result.mediaTrackCount = media.contains("tracks") ? media.at("tracks").size() : 0;
+	result.bootExecutableDigest = bootExecutableDigest;
+	result.hasStaticAnalysis = hasStaticAnalysis;
+	result.staticAnalysisProgramDigest = staticAnalysisProgramDigest;
+	result.staticAnalysisExportDigest = staticAnalysisExportDigest;
+	result.hasHookManifestDigest = hasHookManifestDigest;
+	result.hookManifestDigest = hookManifestDigest;
 	return result;
 }
 
@@ -325,6 +359,12 @@ IdentityManifest loadIdentityManifest(const std::filesystem::path& path)
 		manifest.runtimeConfiguration = validated.runtimeConfiguration;
 		manifest.mediaKind = validated.mediaKind;
 		manifest.mediaTrackCount = validated.mediaTrackCount;
+		manifest.bootExecutableDigest = validated.bootExecutableDigest;
+		manifest.hasStaticAnalysis = validated.hasStaticAnalysis;
+		manifest.staticAnalysisProgramDigest = validated.staticAnalysisProgramDigest;
+		manifest.staticAnalysisExportDigest = validated.staticAnalysisExportDigest;
+		manifest.hasHookManifestDigest = validated.hasHookManifestDigest;
+		manifest.hookManifestDigest = validated.hookManifestDigest;
 	}
 	catch (const nlohmann::json::exception& exception)
 	{

@@ -163,6 +163,10 @@ Option<std::string, false> ResearchIdentityManifestPath("IdentityManifest", "", 
 Option<std::string, false> ResearchMapleRecordPath("MapleRecord", "", "research");
 Option<std::string, false> ResearchMapleReplayPath("MapleReplay", "", "research");
 Option<int64_t, false> ResearchMapleTraceMaxBytes("MapleTraceMaxBytes", 512_MB, "research");
+Option<std::string, false> ResearchMemoryRangesManifestPath("MemoryRangesManifest", "", "research");
+Option<std::string, false> ResearchMemoryRangesRecordPath("MemoryRangesRecord", "", "research");
+Option<int64_t, false> ResearchMemoryRangesMaxBytes("MemoryRangesMaxBytes",
+		1025ll * 1024 * 1024, "research");
 
 // Profiler
 Option<bool> ProfilerEnabled("Profiler.Enabled");

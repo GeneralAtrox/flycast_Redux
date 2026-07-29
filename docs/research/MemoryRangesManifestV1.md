@@ -43,9 +43,12 @@ reject duplicate range ids, overlapping or wrapping guest ranges, an
 empty/inverted trigger, a range sum above `maximum_total_bytes`, or a ceiling
 above the implementation's own stricter limit.
 
-The initial runtime implementation is interpreter-only. Dynarec capture is not
-admissible until its PC-boundary and memory-read semantics are proven
-equivalent.
+The initial runtime implementation is interpreter-only and accepts contiguous
+Dreamcast main-RAM ranges through Flycast's side-effect-free `GetMemPtr` path.
+An MMIO, P4, wrapping, mirrored-end, or otherwise unsupported range fails the
+capture rather than invoking a potentially side-effecting guest read. Dynarec
+capture is not admissible until its PC-boundary and memory-read semantics are
+proven equivalent.
 
 ## Acceptance boundary
 
@@ -64,3 +67,5 @@ the exact five-entry Maple capture transaction v1 remains unchanged.
 
 The normative JSON shape is
 [`flycast-research-memory-ranges-manifest-v1.schema.json`](flycast-research-memory-ranges-manifest-v1.schema.json).
+The produced binary, operator workflow, and independent validator are specified
+in [`MemoryRangesV1.md`](MemoryRangesV1.md).

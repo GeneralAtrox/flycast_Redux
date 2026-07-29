@@ -42,6 +42,7 @@
 #include "hw/pvr/pvr.h"
 #include "profiler/fc_profiler.h"
 #include "research/maple_runtime.h"
+#include "research/memory_ranges_runtime.h"
 #include "oslib/storage.h"
 #include "wsi/context.h"
 #include <chrono>
@@ -593,6 +594,7 @@ void Emulator::loadGame(const char *path, LoadProgress *progress)
 		config::Settings::instance().reset();
 		config::Settings::instance().load(false);
 		research::configureRuntime();
+		research::configureMemoryRangesRuntime();
 		dc_reset(true);
 		memset(&settings.network.md5, 0, sizeof(settings.network.md5));
 
@@ -674,6 +676,7 @@ void Emulator::loadGame(const char *path, LoadProgress *progress)
 		// reload settings so that all settings can be overridden
 		loadGameSpecificSettings();
 		research::startRuntime();
+		research::startMemoryRangesRuntime();
 		NetworkHandshake::init();
 		settings.input.fastForwardMode = false;
 		EventManager::event(Event::Start);
@@ -699,6 +702,7 @@ void Emulator::loadGame(const char *path, LoadProgress *progress)
 
 		state = Loaded;
 	} catch (...) {
+		research::abortMemoryRangesRuntime();
 		research::abortRuntime();
 		state = Error;
 		throw;
@@ -731,6 +735,7 @@ void Emulator::runInternal()
 
 				if (resetRequested)
 				{
+					research::abortMemoryRangesRuntime();
 					nvmem::saveFiles();
 					dc_reset(false);
 					if (!restartCpu())
@@ -755,6 +760,11 @@ void Emulator::unloadGame()
 			research::stopRuntime(state == Loaded);
 		} catch (const std::exception& e) {
 			ERROR_LOG(COMMON, "Research runtime finalization failed: %s", e.what());
+		}
+		try {
+			research::stopMemoryRangesRuntime(state == Loaded);
+		} catch (const std::exception& e) {
+			ERROR_LOG(COMMON, "Memory-ranges finalization failed: %s", e.what());
 		}
 #ifndef LIBRETRO
 		if (state == Loaded && config::AutoSaveState && !settings.content.path.empty()

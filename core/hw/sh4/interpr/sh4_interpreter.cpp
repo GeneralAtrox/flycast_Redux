@@ -13,6 +13,7 @@
 #include "../sh4_cache.h"
 #include "debug/gdb_server.h"
 #include "../sh4_cycles.h"
+#include "research/memory_ranges_runtime.h"
 
 Sh4ICache icache;
 Sh4OCache ocache;
@@ -20,6 +21,7 @@ Sh4Interpreter *Sh4Interpreter::Instance;
 
 void Sh4Interpreter::ExecuteOpcode(u16 op)
 {
+	research::memoryRangesInstructionBoundary(ctx->pc - 2, sh4cycles.now());
 	if (ctx->sr.FD == 1 && OpDesc[op]->IsFloatingPoint())
 		throw SH4ThrownException(ctx->pc - 2, Sh4Ex_FpuDisabled);
 	OpPtr[op](ctx, op);

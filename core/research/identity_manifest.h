@@ -30,6 +30,12 @@ struct IdentityManifest
 	IdentityRuntimeConfiguration runtimeConfiguration;
 	std::string mediaKind;
 	std::size_t mediaTrackCount = 0;
+	Sha256Digest bootExecutableDigest {};
+	bool hasStaticAnalysis = false;
+	Sha256Digest staticAnalysisProgramDigest {};
+	Sha256Digest staticAnalysisExportDigest {};
+	bool hasHookManifestDigest = false;
+	Sha256Digest hookManifestDigest {};
 };
 
 IdentityManifest loadIdentityManifest(const std::filesystem::path& path);

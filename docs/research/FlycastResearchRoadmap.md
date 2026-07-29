@@ -79,6 +79,13 @@ The interpreter is the first authoritative execution backend. Dynarec evidence
 is admitted only after equivalence tests cover block boundaries, exceptions,
 delay slots, self-modifying code, and memory access width/order.
 
+The first Phase 3 vertical slice is implemented: strict generic manifest
+parsing, exact identity cross-binding, a one-shot pre-instruction interpreter
+trigger, raw main-RAM range events, incomplete/complete binary finalization,
+and the standalone streaming `flycast-research-validate-memory-ranges`
+validator. Capture-package v2, call/return events, watchpoints, bounded register
+or stack snapshots, Ghidra export schemas, and Lua subscriptions remain open.
+
 ## Phase 4: PowerVR causal ownership
 
 Deliverables:

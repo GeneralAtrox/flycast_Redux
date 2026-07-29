@@ -8,6 +8,7 @@
 #include "network/ggpo.h"
 #include "hw/naomi/card_reader.h"
 #include "research/maple_runtime.h"
+#include "research/memory_ranges_runtime.h"
 
 #include <memory>
 
@@ -515,9 +516,13 @@ static u64 reconnect_time;
 
 void maple_Reset(bool hard)
 {
-	const bool invalidatedResearchCapture = research::runtimeActive();
+	const bool invalidatedResearchCapture = research::runtimeActive()
+			|| research::memoryRangesRuntimeActive();
 	if (invalidatedResearchCapture)
+	{
+		research::abortMemoryRangesRuntime();
 		research::abortRuntime();
+	}
 	researchPendingDma = UINT64_MAX;
 	maple_ddt_pending_reset = false;
 	SB_MDTSEL = 0;
@@ -542,11 +547,14 @@ void maple_Term()
 
 void maple_ReconnectDevices()
 {
-	if (research::runtimeActive())
+	const bool mapleResearchActive = research::runtimeActive();
+	if (mapleResearchActive || research::memoryRangesRuntimeActive())
 	{
+		research::abortMemoryRangesRuntime();
 		research::abortRuntime();
-		throw FlycastException(
-				"Maple topology changes are not supported by research trace v1");
+		throw FlycastException(mapleResearchActive
+				? "Maple topology changes are not supported by research trace v1"
+				: "Maple topology changes are not supported by an active memory-ranges capture");
 	}
 	mcfg_DestroyDevices();
 	reconnect_time = sh4_sched_now64() + SH4_MAIN_CLOCK / 10;
@@ -554,11 +562,14 @@ void maple_ReconnectDevices()
 
 void maple_ReconnectDevice(int bus, int port)
 {
-	if (research::runtimeActive())
+	const bool mapleResearchActive = research::runtimeActive();
+	if (mapleResearchActive || research::memoryRangesRuntimeActive())
 	{
+		research::abortMemoryRangesRuntime();
 		research::abortRuntime();
-		throw FlycastException(
-				"Maple topology changes are not supported by research trace v1");
+		throw FlycastException(mapleResearchActive
+				? "Maple topology changes are not supported by research trace v1"
+				: "Maple topology changes are not supported by an active memory-ranges capture");
 	}
 	if (port == 5)
 	{

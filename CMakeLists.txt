@@ -339,6 +339,14 @@ if(NOT LIBRETRO)
 			core/research/maple_runtime.h
 			core/research/maple_trace.cpp
 			core/research/maple_trace.h
+			core/research/memory_ranges_artifact.cpp
+			core/research/memory_ranges_artifact.h
+			core/research/memory_ranges_capture.cpp
+			core/research/memory_ranges_capture.h
+			core/research/memory_ranges_manifest.cpp
+			core/research/memory_ranges_manifest.h
+			core/research/memory_ranges_runtime.cpp
+			core/research/memory_ranges_runtime.h
 			core/research/sha256.cpp
 			core/research/sha256.h)
 endif()
@@ -1522,17 +1530,42 @@ if(BUILD_RESEARCH_TOOLS AND NOT LIBRETRO)
 	else()
 		target_compile_options(flycast-research-validate-capture PRIVATE -Wall -Wextra -Wpedantic)
 	endif()
+
+	add_executable(flycast-research-validate-memory-ranges
+			tools/research/validate_memory_ranges.cpp
+			core/research/identity_manifest.cpp
+			core/research/memory_ranges_artifact.cpp
+			core/research/memory_ranges_manifest.cpp
+			core/research/sha256.cpp)
+	target_include_directories(flycast-research-validate-memory-ranges PRIVATE core core/deps/json)
+	set_target_properties(flycast-research-validate-memory-ranges PROPERTIES
+			CXX_STANDARD 17
+			CXX_STANDARD_REQUIRED ON
+			CXX_EXTENSIONS OFF)
+	if(MSVC)
+		target_compile_definitions(flycast-research-validate-memory-ranges PRIVATE
+				NOMINMAX _CRT_SECURE_NO_WARNINGS)
+		target_compile_options(flycast-research-validate-memory-ranges PRIVATE /utf-8 /W4)
+	else()
+		target_compile_options(flycast-research-validate-memory-ranges PRIVATE
+				-Wall -Wextra -Wpedantic)
+	endif()
 endif()
 
 if(BUILD_RESEARCH_TOOLS AND BUILD_TESTING AND NOT LIBRETRO)
 	add_executable(flycast-research-tests
 			tests/src/research/MapleTraceTest.cpp
+			tests/src/research/MemoryRangesTest.cpp
 			tests/src/research/ResearchRuntimeStubs.cpp
 			core/research/identity_manifest.cpp
 			core/research/maple_runtime.cpp
 			core/research/maple_trace.cpp
+			core/research/memory_ranges_artifact.cpp
+			core/research/memory_ranges_capture.cpp
+			core/research/memory_ranges_manifest.cpp
+			core/research/memory_ranges_runtime.cpp
 			core/research/sha256.cpp)
-	target_include_directories(flycast-research-tests PRIVATE core core/deps/json)
+	target_include_directories(flycast-research-tests PRIVATE core core/deps core/deps/json)
 	target_link_libraries(flycast-research-tests PRIVATE GTest::gtest_main nowide::nowide)
 	set_target_properties(flycast-research-tests PROPERTIES
 			CXX_STANDARD 17

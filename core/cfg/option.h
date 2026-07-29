@@ -519,6 +519,9 @@ extern Option<std::string, false> ResearchIdentityManifestPath;
 extern Option<std::string, false> ResearchMapleRecordPath;
 extern Option<std::string, false> ResearchMapleReplayPath;
 extern Option<int64_t, false> ResearchMapleTraceMaxBytes;
+extern Option<std::string, false> ResearchMemoryRangesManifestPath;
+extern Option<std::string, false> ResearchMemoryRangesRecordPath;
+extern Option<int64_t, false> ResearchMemoryRangesMaxBytes;
 
 // Profiling
 extern Option<bool> ProfilerEnabled;
