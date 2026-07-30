@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <map>
 #include <string>
 #include <vector>
@@ -755,4 +756,302 @@ TEST(ResearchSh4Events, RuntimeArmsCapturesAndFinalizesOnlyOnCleanExit)
 			artifactPath, identity, manifest);
 	EXPECT_EQ(6u, summary.eventCount);
 	EXPECT_EQ(0u, summary.droppedEvents);
+}
+
+TEST(ResearchSh4Events, RuntimeFinalizationWaitsForActiveInstruction)
+{
+	Sh4EventsTemporaryDirectory directory;
+	Sh4FixtureData fixture;
+	const auto identityPath = writeIdentity(directory, fixture);
+	const auto manifestPath = writeManifest(directory, fixture);
+	const auto artifactPath = directory.file("instruction-boundary.fcsh4");
+	const research::IdentityManifest identity = research::loadIdentityManifest(identityPath);
+	const research::Sh4EventsManifest manifest =
+			research::loadSh4EventsManifest(manifestPath);
+
+	research_test::clearGuestRam();
+	ASSERT_TRUE(research_test::writeGuestRam(0x8c001000, fixture.callBytes));
+	ASSERT_TRUE(research_test::writeGuestRam(0x8c001100, fixture.returnBytes));
+	config::ResearchIdentityManifestPath = identityPath.string();
+	config::ResearchSh4EventsManifestPath = manifestPath.string();
+	config::ResearchSh4EventsRecordPath = artifactPath.string();
+	config::ResearchSh4EventsMaxBytes = research::DefaultMaximumSh4EventsArtifactBytes;
+
+	research::configureSh4EventsRuntime();
+	research::startSh4EventsRuntime();
+	Sh4Context context {};
+	recordRuntimeFixture(context);
+	context.pc = 0x8c030002;
+	research::sh4EventsInstructionBegin(0x8c030000, 0x0009, 130, context);
+
+	auto finalization = std::async(std::launch::async, [] {
+		research::stopSh4EventsRuntime(true);
+	});
+	EXPECT_EQ(std::future_status::timeout, finalization.wait_for(std::chrono::milliseconds(20)));
+	context.pc = 0x8c030002;
+	research::sh4EventsInstructionEnd(0x8c030000, 0x0009, 131, context);
+	EXPECT_EQ(std::future_status::ready, finalization.wait_for(std::chrono::seconds(2)));
+	EXPECT_NO_THROW(finalization.get());
+
+	const auto summary = research::validateProductionSh4EventsArtifactFile(
+			artifactPath, identity, manifest);
+	EXPECT_EQ(6u, summary.eventCount);
+	EXPECT_EQ(0u, summary.droppedEvents);
+}
+
+TEST(ResearchSh4Events, RuntimeDefersReentrantFinalizationToInstructionEnd)
+{
+	Sh4EventsTemporaryDirectory directory;
+	Sh4FixtureData fixture;
+	const auto identityPath = writeIdentity(directory, fixture);
+	const auto manifestPath = writeManifest(directory, fixture);
+	const auto artifactPath = directory.file("reentrant-boundary.fcsh4");
+	const research::IdentityManifest identity = research::loadIdentityManifest(identityPath);
+	const research::Sh4EventsManifest manifest =
+			research::loadSh4EventsManifest(manifestPath);
+
+	research_test::clearGuestRam();
+	ASSERT_TRUE(research_test::writeGuestRam(0x8c001000, fixture.callBytes));
+	ASSERT_TRUE(research_test::writeGuestRam(0x8c001100, fixture.returnBytes));
+	config::ResearchIdentityManifestPath = identityPath.string();
+	config::ResearchSh4EventsManifestPath = manifestPath.string();
+	config::ResearchSh4EventsRecordPath = artifactPath.string();
+	config::ResearchSh4EventsMaxBytes = research::DefaultMaximumSh4EventsArtifactBytes;
+
+	research::configureSh4EventsRuntime();
+	research::startSh4EventsRuntime();
+	Sh4Context context {};
+	recordRuntimeFixture(context);
+	context.pc = 0x8c030002;
+	research::sh4EventsInstructionBegin(0x8c030000, 0x0009, 130, context);
+	research::stopSh4EventsRuntime(true);
+	EXPECT_TRUE(research::sh4EventsRuntimeActive());
+	context.pc = 0x8c030002;
+	research::sh4EventsInstructionEnd(0x8c030000, 0x0009, 131, context);
+	EXPECT_FALSE(research::sh4EventsRuntimeActive());
+
+	const auto summary = research::validateProductionSh4EventsArtifactFile(
+			artifactPath, identity, manifest);
+	EXPECT_EQ(6u, summary.eventCount);
+	EXPECT_EQ(0u, summary.droppedEvents);
+}
+
+TEST(ResearchSh4Events, RuntimeRejectsDeferredCleanStopAfterInstructionAbort)
+{
+	Sh4EventsTemporaryDirectory directory;
+	Sh4FixtureData fixture;
+	const auto identityPath = writeIdentity(directory, fixture);
+	const auto manifestPath = writeManifest(directory, fixture);
+	const auto artifactPath = directory.file("aborted-boundary.fcsh4");
+	const research::IdentityManifest identity = research::loadIdentityManifest(identityPath);
+	const research::Sh4EventsManifest manifest =
+			research::loadSh4EventsManifest(manifestPath);
+
+	research_test::clearGuestRam();
+	ASSERT_TRUE(research_test::writeGuestRam(0x8c001000, fixture.callBytes));
+	ASSERT_TRUE(research_test::writeGuestRam(0x8c001100, fixture.returnBytes));
+	config::ResearchIdentityManifestPath = identityPath.string();
+	config::ResearchSh4EventsManifestPath = manifestPath.string();
+	config::ResearchSh4EventsRecordPath = artifactPath.string();
+	config::ResearchSh4EventsMaxBytes = research::DefaultMaximumSh4EventsArtifactBytes;
+
+	research::configureSh4EventsRuntime();
+	research::startSh4EventsRuntime();
+	Sh4Context context {};
+	recordRuntimeFixture(context);
+	context.pc = 0x8c030002;
+	research::sh4EventsInstructionBegin(0x8c030000, 0x0009, 130, context);
+	research::stopSh4EventsRuntime(true);
+	research::sh4EventsInstructionAbort();
+	EXPECT_FALSE(research::sh4EventsRuntimeActive());
+	EXPECT_THROW(research::validateProductionSh4EventsArtifactFile(
+			artifactPath, identity, manifest), std::runtime_error);
+}
+
+TEST(ResearchSh4Events, RuntimeRejectsCrossThreadCleanStopAfterInstructionAbort)
+{
+	Sh4EventsTemporaryDirectory directory;
+	Sh4FixtureData fixture;
+	const auto identityPath = writeIdentity(directory, fixture);
+	const auto manifestPath = writeManifest(directory, fixture);
+	const auto artifactPath = directory.file("cross-thread-abort.fcsh4");
+	const research::IdentityManifest identity = research::loadIdentityManifest(identityPath);
+	const research::Sh4EventsManifest manifest =
+			research::loadSh4EventsManifest(manifestPath);
+
+	research_test::clearGuestRam();
+	ASSERT_TRUE(research_test::writeGuestRam(0x8c001000, fixture.callBytes));
+	ASSERT_TRUE(research_test::writeGuestRam(0x8c001100, fixture.returnBytes));
+	config::ResearchIdentityManifestPath = identityPath.string();
+	config::ResearchSh4EventsManifestPath = manifestPath.string();
+	config::ResearchSh4EventsRecordPath = artifactPath.string();
+	config::ResearchSh4EventsMaxBytes = research::DefaultMaximumSh4EventsArtifactBytes;
+
+	research::configureSh4EventsRuntime();
+	research::startSh4EventsRuntime();
+	Sh4Context context {};
+	recordRuntimeFixture(context);
+	context.pc = 0x8c030002;
+	research::sh4EventsInstructionBegin(0x8c030000, 0x0009, 130, context);
+
+	std::promise<void> cleanStopInvoked;
+	auto cleanStopStarted = cleanStopInvoked.get_future();
+	auto cleanStop = std::async(std::launch::async, [&cleanStopInvoked] {
+		cleanStopInvoked.set_value();
+		research::stopSh4EventsRuntime(true);
+	});
+	ASSERT_EQ(std::future_status::ready,
+			cleanStopStarted.wait_for(std::chrono::seconds(2)));
+	EXPECT_EQ(std::future_status::timeout,
+			cleanStop.wait_for(std::chrono::milliseconds(100)));
+	research::sh4EventsInstructionAbort();
+	ASSERT_EQ(std::future_status::ready, cleanStop.wait_for(std::chrono::seconds(2)));
+	EXPECT_NO_THROW(cleanStop.get());
+
+	EXPECT_THROW(research::validateProductionSh4EventsArtifactFile(
+			artifactPath, identity, manifest), std::runtime_error);
+}
+
+TEST(ResearchSh4Events, RuntimeDirtyStopPreemptsDeferredCleanPublication)
+{
+	Sh4EventsTemporaryDirectory directory;
+	Sh4FixtureData fixture;
+	const auto identityPath = writeIdentity(directory, fixture);
+	const auto manifestPath = writeManifest(directory, fixture);
+	const auto artifactPath = directory.file("dirty-preemption.fcsh4");
+	const research::IdentityManifest identity = research::loadIdentityManifest(identityPath);
+	const research::Sh4EventsManifest manifest =
+			research::loadSh4EventsManifest(manifestPath);
+
+	research_test::clearGuestRam();
+	ASSERT_TRUE(research_test::writeGuestRam(0x8c001000, fixture.callBytes));
+	ASSERT_TRUE(research_test::writeGuestRam(0x8c001100, fixture.returnBytes));
+	config::ResearchIdentityManifestPath = identityPath.string();
+	config::ResearchSh4EventsManifestPath = manifestPath.string();
+	config::ResearchSh4EventsRecordPath = artifactPath.string();
+	config::ResearchSh4EventsMaxBytes = research::DefaultMaximumSh4EventsArtifactBytes;
+
+	research::configureSh4EventsRuntime();
+	research::startSh4EventsRuntime();
+	Sh4Context context {};
+	recordRuntimeFixture(context);
+	context.pc = 0x8c030002;
+	research::sh4EventsInstructionBegin(0x8c030000, 0x0009, 130, context);
+	research::stopSh4EventsRuntime(true);
+
+	std::promise<void> dirtyStopInvoked;
+	auto dirtyStopStarted = dirtyStopInvoked.get_future();
+	auto dirtyStop = std::async(std::launch::async, [&dirtyStopInvoked] {
+		dirtyStopInvoked.set_value();
+		research::stopSh4EventsRuntime(false);
+	});
+	ASSERT_EQ(std::future_status::ready,
+			dirtyStopStarted.wait_for(std::chrono::seconds(2)));
+	EXPECT_EQ(std::future_status::timeout,
+			dirtyStop.wait_for(std::chrono::milliseconds(100)));
+	context.pc = 0x8c030002;
+	research::sh4EventsInstructionEnd(0x8c030000, 0x0009, 131, context);
+	ASSERT_EQ(std::future_status::ready, dirtyStop.wait_for(std::chrono::seconds(2)));
+	EXPECT_NO_THROW(dirtyStop.get());
+
+	EXPECT_THROW(research::validateProductionSh4EventsArtifactFile(
+			artifactPath, identity, manifest), std::runtime_error);
+}
+
+TEST(ResearchSh4Events, RuntimeDeferredFinalizationFailureDoesNotEscapeInstructionHook)
+{
+	Sh4EventsTemporaryDirectory directory;
+	Sh4FixtureData fixture;
+	const auto identityPath = writeIdentity(directory, fixture);
+	const auto manifestPath = writeManifest(directory, fixture);
+	const auto artifactPath = directory.file("deferred-failure.fcsh4");
+	const research::IdentityManifest identity = research::loadIdentityManifest(identityPath);
+	const research::Sh4EventsManifest manifest =
+			research::loadSh4EventsManifest(manifestPath);
+
+	config::ResearchIdentityManifestPath = identityPath.string();
+	config::ResearchSh4EventsManifestPath = manifestPath.string();
+	config::ResearchSh4EventsRecordPath = artifactPath.string();
+	config::ResearchSh4EventsMaxBytes = research::DefaultMaximumSh4EventsArtifactBytes;
+
+	research::configureSh4EventsRuntime();
+	research::startSh4EventsRuntime();
+	Sh4Context context {};
+	context.pc = 0x8c030002;
+	research::sh4EventsInstructionBegin(0x8c030000, 0x0009, 130, context);
+	research::stopSh4EventsRuntime(true);
+	EXPECT_NO_THROW(research::sh4EventsInstructionEnd(
+			0x8c030000, 0x0009, 131, context));
+	EXPECT_FALSE(research::sh4EventsRuntimeActive());
+	EXPECT_THROW(research::validateProductionSh4EventsArtifactFile(
+			artifactPath, identity, manifest), std::runtime_error);
+}
+
+TEST(ResearchSh4Events, RuntimeCaptureFailureOwnsInstructionScopeCleanup)
+{
+	Sh4EventsTemporaryDirectory directory;
+	Sh4FixtureData fixture;
+	const auto identityPath = writeIdentity(directory, fixture);
+	json limitedManifestJson = manifestJson(fixture);
+	limitedManifestJson["limits"]["maximum_open_invocations"] = 1;
+	const auto manifestPath = directory.file("limited-manifest.json");
+	writeText(manifestPath, limitedManifestJson.dump(2));
+	const auto artifactPath = directory.file("capture-failure.fcsh4");
+
+	research_test::clearGuestRam();
+	ASSERT_TRUE(research_test::writeGuestRam(0x8c001000, fixture.callBytes));
+	config::ResearchIdentityManifestPath = identityPath.string();
+	config::ResearchSh4EventsManifestPath = manifestPath.string();
+	config::ResearchSh4EventsRecordPath = artifactPath.string();
+	config::ResearchSh4EventsMaxBytes = research::DefaultMaximumSh4EventsArtifactBytes;
+
+	research::configureSh4EventsRuntime();
+	research::startSh4EventsRuntime();
+	Sh4Context context {};
+	context.r[1] = 0x8c010100;
+	context.r[15] = 0;
+	context.pc = 0x8c020002;
+	research::sh4EventsInstructionBegin(0x8c020000, 0x410b, 100, context);
+	context.pc = 0x8c010100;
+	research::sh4EventsInstructionEnd(0x8c020000, 0x410b, 101, context);
+	context.pc = 0x8c010106;
+	EXPECT_THROW(research::sh4EventsInstructionBegin(
+			0x8c010104, 0x410b, 102, context), std::runtime_error);
+	EXPECT_FALSE(research::sh4EventsRuntimeActive());
+	// Keeps this proof safe against the reviewed implementation's caller-owned cleanup.
+	research::sh4EventsInstructionAbort();
+}
+
+TEST(ResearchSh4Events, RuntimeExceptionFailureOwnsInstructionScopeCleanup)
+{
+	Sh4EventsTemporaryDirectory directory;
+	Sh4FixtureData fixture;
+	const auto identityPath = writeIdentity(directory, fixture);
+	json limitedManifestJson = manifestJson(fixture);
+	limitedManifestJson["limits"]["maximum_events"] = 1;
+	limitedManifestJson["acceptance"]["minimum_call_events"] = 0;
+	limitedManifestJson["acceptance"]["minimum_watch_events"] = 1;
+	const auto manifestPath = directory.file("exception-limit-manifest.json");
+	writeText(manifestPath, limitedManifestJson.dump(2));
+	const auto artifactPath = directory.file("exception-failure.fcsh4");
+
+	config::ResearchIdentityManifestPath = identityPath.string();
+	config::ResearchSh4EventsManifestPath = manifestPath.string();
+	config::ResearchSh4EventsRecordPath = artifactPath.string();
+	config::ResearchSh4EventsMaxBytes = research::DefaultMaximumSh4EventsArtifactBytes;
+
+	research::configureSh4EventsRuntime();
+	research::startSh4EventsRuntime();
+	Sh4Context context {};
+	context.vbr = 0x8c000000;
+	context.pc = 0x8c010102;
+	research::sh4EventsInstructionBegin(0x8c010100, 0x0009, 100, context);
+	research::sh4EventsMemoryAccess(0x8c002000, 1,
+			research::Sh4MemoryAccessKind::Read, 0x12);
+	EXPECT_THROW(research::sh4EventsException(
+			0x8c010100, context.vbr + 0x100, 0x180, 101, context),
+			std::runtime_error);
+	EXPECT_FALSE(research::sh4EventsRuntimeActive());
+	// Keeps this proof safe against the implementation that delegates cleanup.
+	research::sh4EventsInstructionAbort();
 }

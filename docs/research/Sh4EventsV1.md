@@ -31,6 +31,28 @@ the resumed PC. Data accesses made by a delay-slot instruction carry depth 1.
 An exception in a delay slot is emitted once while the nested interpreter
 frames unwind.
 
+Normal unload finalization synchronizes with the interpreter's current nested
+instruction scope. If another host thread requests unload while an opcode or
+its delay slot is active, finalization waits for that scope to end before it
+checks balanced invocations and publishes the complete header. If host event
+handling requests unload reentrantly from the interpreter thread, publication
+is deferred to the successful end of the outermost instruction scope. Every
+stop request is generation-stamped before it can wait on the instruction
+scope. An instruction abort after such a request, or a dirty request observed
+before deferred publication, downgrades the candidate to incomplete. Dirty
+unload, reset, and capture-hook failures abandon the candidate; a hook failure
+also releases its runtime-owned instruction scope before it is rethrown.
+
+Capture configuration forces interpreter execution with threaded rendering
+disabled, and normal emulator unload stops the SH-4 executor before requesting
+finalization. A clean request from another host thread may therefore wait for
+the bounded current instruction scope; there is deliberately no timeout path
+that could destroy a session while the interpreter still owns it. If deferred
+finalization itself fails, the candidate remains incomplete and the failure is
+logged instead of being injected into interpreter dispatch. When no session is
+armed, an atomic fast path keeps ordinary interpreter memory accesses from
+taking the lifecycle mutex.
+
 ## Identity join
 
 The manifest is read as exact bytes and its SHA-256 is embedded in the
