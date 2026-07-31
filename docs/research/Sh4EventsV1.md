@@ -265,5 +265,6 @@ An incompatible binary or validation change requires a new artifact version
 and validator path.
 
 The candidate alone is not an atomic multi-artifact evidence package.
-Capture-package v2 will bind this artifact to the existing immutable Maple v1
-record without changing Maple v1 or capture-transaction v1.
+[Capture package v2](CapturePackageV2.md) binds it to an existing immutable
+Maple v1 record and exact Ghidra export without changing Maple v1 or capture
+transaction v1.

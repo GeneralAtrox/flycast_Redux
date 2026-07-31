@@ -85,6 +85,14 @@ invalidates the candidate. Override it transiently when needed:
 research:MapleTraceMaxBytes=1073741824
 ```
 
+For automated paired captures, the optional transient
+`research:MapleDmaCheckpoint=N` pauses Flycast immediately after the Nth DMA
+commit has been recorded or replayed. A nonzero value must be present as
+`configuration.values.maple_dma_checkpoint` in the bound identity. Recording
+and both backend replays use the same value, so clean unload occurs at one
+exact scheduler boundary rather than at an operator-timed window close. Zero
+keeps the existing behavior and adds no checkpoint work to normal execution.
+
 ## Replay
 
 Use the same identity, media, firmware, initial persistent devices, controller

@@ -519,12 +519,19 @@ extern Option<std::string, false> ResearchIdentityManifestPath;
 extern Option<std::string, false> ResearchMapleRecordPath;
 extern Option<std::string, false> ResearchMapleReplayPath;
 extern Option<int64_t, false> ResearchMapleTraceMaxBytes;
+extern Option<int64_t, false> ResearchMapleDmaCheckpoint;
 extern Option<std::string, false> ResearchMemoryRangesManifestPath;
 extern Option<std::string, false> ResearchMemoryRangesRecordPath;
 extern Option<int64_t, false> ResearchMemoryRangesMaxBytes;
 extern Option<std::string, false> ResearchSh4EventsManifestPath;
 extern Option<std::string, false> ResearchSh4EventsRecordPath;
 extern Option<int64_t, false> ResearchSh4EventsMaxBytes;
+extern Option<bool, false> ResearchDynarecObservation;
+extern Option<std::string, false> ResearchSh4ObservationRecordPath;
+extern Option<std::string, false> ResearchSh4ObservationManifestSetPath;
+extern Option<int64_t, false> ResearchSh4ObservationMaxBytes;
+extern Option<int64_t, false> ResearchSh4ObservationStartDma;
+extern Option<int64_t, false> ResearchDreamcastRtcSeed;
 
 // Profiling
 extern Option<bool> ProfilerEnabled;

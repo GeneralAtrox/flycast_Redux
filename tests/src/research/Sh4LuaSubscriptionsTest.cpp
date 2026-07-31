@@ -1,0 +1,352 @@
+#include "research/sh4_lua_subscriptions.h"
+#include "research/sh4_observation_trace.h"
+
+#include <gtest/gtest.h>
+
+#include <atomic>
+#include <filesystem>
+#include <fstream>
+#include <memory>
+#include <stdexcept>
+#include <thread>
+#include <vector>
+
+namespace
+{
+
+class NativeSubscription
+{
+public:
+	explicit NativeSubscription(research::Sh4ObservationSubscription token = 0)
+		: token(token)
+	{
+	}
+
+	~NativeSubscription()
+	{
+		if (token != 0)
+			research::unsubscribeSh4Observations(token);
+	}
+
+	NativeSubscription(const NativeSubscription&) = delete;
+	NativeSubscription& operator=(const NativeSubscription&) = delete;
+
+private:
+	research::Sh4ObservationSubscription token;
+};
+
+class TemporaryDirectory
+{
+public:
+	TemporaryDirectory()
+	{
+		static std::atomic<unsigned> sequence {0};
+		path = std::filesystem::temp_directory_path()
+				/ ("flycast-sh4-lua-subscription-test-"
+						+ std::to_string(sequence.fetch_add(1)));
+		std::error_code error;
+		std::filesystem::remove_all(path, error);
+		std::filesystem::create_directories(path);
+	}
+
+	~TemporaryDirectory()
+	{
+		std::error_code error;
+		std::filesystem::remove_all(path, error);
+	}
+
+	std::filesystem::path file(const char *name) const { return path / name; }
+
+private:
+	std::filesystem::path path;
+};
+
+research::Sh4Observation instruction(std::uint32_t pc)
+{
+	research::Sh4Observation observation;
+	observation.backend = research::Sh4ObservationBackend::Interpreter;
+	observation.type = research::Sh4ObservationType::InstructionEnd;
+	observation.tick = pc;
+	observation.instructionPc = pc;
+	observation.opcode = 0x0009;
+	return observation;
+}
+
+research::Sh4Observation memory(research::Sh4ObservationType type,
+		std::uint32_t address, std::uint8_t width, std::uint64_t value)
+{
+	research::Sh4Observation observation = instruction(0x8c010000);
+	observation.type = type;
+	observation.memoryAddress = address;
+	observation.memoryWidth = width;
+	observation.memoryValue = value;
+	return observation;
+}
+
+research::Sh4ObservationFilter interpreterInstructions()
+{
+	research::Sh4ObservationFilter filter;
+	filter.backendMask = research::sh4ObservationBackendBit(
+			research::Sh4ObservationBackend::Interpreter);
+	filter.typeMask = research::sh4ObservationTypeBit(
+			research::Sh4ObservationType::InstructionEnd);
+	return filter;
+}
+
+std::vector<std::uint8_t> recordInstructionPair(
+		const std::filesystem::path& path, bool withDiscoverySubscriber)
+{
+	research::Sh4ObservationTraceBinding binding;
+	binding.backend = research::Sh4ObservationBackend::Interpreter;
+	research::Sh4ObservationTraceWriter writer(path, binding);
+	{
+		research::Sh4ObservationFilter recorderFilter;
+		recorderFilter.backendMask = research::sh4ObservationBackendBit(
+				research::Sh4ObservationBackend::Interpreter);
+		NativeSubscription recorder(research::subscribeSh4Observations(
+				recorderFilter,
+				[&writer](const research::Sh4Observation& observation) {
+					writer.write(observation);
+				}));
+		std::unique_ptr<research::Sh4LuaSubscriptionQueue> discovery;
+		if (withDiscoverySubscriber)
+		{
+			discovery = std::make_unique<research::Sh4LuaSubscriptionQueue>();
+			discovery->subscribe(interpreterInstructions(),
+					[](research::Sh4LuaSubscriptionQueue::Token,
+							const research::Sh4Observation&) {});
+		}
+
+		research::Sh4Observation begin = instruction(0x8c010000);
+		begin.type = research::Sh4ObservationType::InstructionBegin;
+		begin.availableFields = research::Sh4Observation::HasNextPc
+				| research::Sh4Observation::HasRegisters;
+		begin.nextPc = 0x8c010002;
+		research::publishSh4Observation(begin);
+	research::Sh4Observation end = begin;
+	end.type = research::Sh4ObservationType::InstructionEnd;
+	end.tick = begin.tick + 1;
+		research::publishSh4Observation(end);
+		if (discovery != nullptr)
+			EXPECT_EQ(1u, discovery->pendingCount());
+	}
+	writer.finalize();
+	std::ifstream input(path, std::ios::binary);
+	return std::vector<std::uint8_t>(std::istreambuf_iterator<char>(input),
+			std::istreambuf_iterator<char>());
+}
+
+TEST(ResearchSh4LuaSubscriptions, NoSubscriberLeavesCanonicalFastPathInactive)
+{
+	ASSERT_EQ(0u, research::sh4ObservationSubscriberCount());
+	research::Sh4LuaSubscriptionQueue queue;
+	EXPECT_EQ(0u, queue.subscriptionCount());
+	EXPECT_EQ(0u, queue.pendingCount());
+	EXPECT_FALSE(research::publishSh4Observation(instruction(0x8c010000)));
+	EXPECT_FALSE(research::sh4ObservationBusActive());
+}
+
+TEST(ResearchSh4LuaSubscriptions, FiltersBeforeQueueAndPreservesCanonicalCopy)
+{
+	std::vector<research::Sh4Observation> canonical;
+	NativeSubscription recorder(research::subscribeSh4Observations(
+			research::Sh4ObservationFilter {},
+			[&canonical](const research::Sh4Observation& observation) {
+				canonical.push_back(observation);
+			}));
+
+	research::Sh4LuaSubscriptionQueue queue;
+	research::Sh4ObservationFilter filter;
+	filter.backendMask = research::sh4ObservationBackendBit(
+			research::Sh4ObservationBackend::Interpreter);
+	filter.typeMask = research::sh4ObservationTypeBit(
+			research::Sh4ObservationType::MemoryWrite);
+	filter.hasMemoryRange = true;
+	filter.memoryStart = 0x2000;
+	filter.memoryEndExclusive = 0x2010;
+	std::vector<research::Sh4Observation> delivered;
+	queue.subscribe(filter,
+			[&delivered](research::Sh4LuaSubscriptionQueue::Token,
+					const research::Sh4Observation& observation) {
+				delivered.push_back(observation);
+			});
+
+	research::publishSh4Observation(memory(
+			research::Sh4ObservationType::MemoryRead, 0x2000, 4, 1));
+	research::publishSh4Observation(memory(
+			research::Sh4ObservationType::MemoryWrite, 0x3000, 4, 2));
+	research::Sh4Observation source = memory(
+			research::Sh4ObservationType::MemoryWrite, 0x1ffe, 4,
+			0x1122334455667788ull);
+	research::publishSh4Observation(source);
+	source.memoryValue = 0;
+
+	ASSERT_EQ(1u, queue.pendingCount());
+	ASSERT_EQ(1u, queue.drain());
+	ASSERT_EQ(1u, delivered.size());
+	ASSERT_EQ(3u, canonical.size());
+	EXPECT_EQ(canonical.back().emissionOrdinal, delivered[0].emissionOrdinal);
+	EXPECT_EQ(0x1122334455667788ull, delivered[0].memoryValue);
+}
+
+TEST(ResearchSh4LuaSubscriptions,
+		DiscoverySubscriberCannotChangeNativeTraceBytes)
+{
+	TemporaryDirectory directory;
+	const std::vector<std::uint8_t> withoutDiscovery = recordInstructionPair(
+			directory.file("without-discovery.fcso"), false);
+	const std::vector<std::uint8_t> withDiscovery = recordInstructionPair(
+			directory.file("with-discovery.fcso"), true);
+	EXPECT_EQ(withoutDiscovery, withDiscovery);
+}
+
+TEST(ResearchSh4LuaSubscriptions, OverflowDropsNewestAndReportsStablePrefix)
+{
+	research::Sh4LuaSubscriptionQueue queue;
+	std::vector<std::uint32_t> deliveredPcs;
+	const auto token = queue.subscribe(interpreterInstructions(),
+			[&deliveredPcs](research::Sh4LuaSubscriptionQueue::Token,
+					const research::Sh4Observation& observation) {
+				deliveredPcs.push_back(observation.instructionPc);
+			}, 2);
+	for (std::uint32_t index = 0; index < 4; ++index)
+		research::publishSh4Observation(instruction(0x8c010000 + index * 2));
+
+	const auto before = queue.stats(token);
+	ASSERT_TRUE(before.has_value());
+	EXPECT_EQ(2u, before->capacity);
+	EXPECT_EQ(2u, before->queued);
+	EXPECT_EQ(2u, before->dropped);
+	EXPECT_EQ(2u, queue.drain());
+	EXPECT_EQ((std::vector<std::uint32_t> {0x8c010000, 0x8c010002}), deliveredPcs);
+	const auto after = queue.stats(token);
+	ASSERT_TRUE(after.has_value());
+	EXPECT_EQ(0u, after->queued);
+	EXPECT_EQ(2u, after->delivered);
+}
+
+TEST(ResearchSh4LuaSubscriptions, CallbackCanUnsubscribeAndCannotReenterDrain)
+{
+	research::Sh4LuaSubscriptionQueue queue;
+	research::Sh4LuaSubscriptionQueue::Token token = 0;
+	std::size_t callbackCount = 0;
+	std::size_t nestedDeliveries = 99;
+	token = queue.subscribe(interpreterInstructions(),
+			[&](research::Sh4LuaSubscriptionQueue::Token callbackToken,
+					const research::Sh4Observation&) {
+				++callbackCount;
+				nestedDeliveries = queue.drain();
+				EXPECT_EQ(token, callbackToken);
+				EXPECT_TRUE(queue.unsubscribe(callbackToken));
+			});
+	research::publishSh4Observation(instruction(0x8c010000));
+	research::publishSh4Observation(instruction(0x8c010002));
+
+	EXPECT_EQ(1u, queue.drain());
+	EXPECT_EQ(1u, callbackCount);
+	EXPECT_EQ(0u, nestedDeliveries);
+	EXPECT_EQ(0u, queue.pendingCount());
+	EXPECT_EQ(0u, queue.subscriptionCount());
+	EXPECT_FALSE(queue.stats(token).has_value());
+}
+
+TEST(ResearchSh4LuaSubscriptions, CallbackFailureIsIsolatedPerSubscriber)
+{
+	research::Sh4LuaSubscriptionQueue queue;
+	std::size_t laterCalls = 0;
+	std::size_t reportedFailures = 0;
+	const auto failing = queue.subscribe(interpreterInstructions(),
+			[](research::Sh4LuaSubscriptionQueue::Token,
+					const research::Sh4Observation&) {
+				throw std::runtime_error("fixture callback failure");
+			}, research::Sh4LuaSubscriptionQueue::DefaultCapacity,
+			[&reportedFailures](research::Sh4LuaSubscriptionQueue::Token,
+					std::exception_ptr) {
+				++reportedFailures;
+			});
+	queue.subscribe(interpreterInstructions(),
+			[&laterCalls](research::Sh4LuaSubscriptionQueue::Token,
+					const research::Sh4Observation&) {
+				++laterCalls;
+			});
+	research::publishSh4Observation(instruction(0x8c010000));
+
+	EXPECT_EQ(2u, queue.drain());
+	EXPECT_EQ(1u, laterCalls);
+	EXPECT_EQ(1u, reportedFailures);
+	const auto stats = queue.stats(failing);
+	ASSERT_TRUE(stats.has_value());
+	EXPECT_EQ(1u, stats->callbackFailures);
+	EXPECT_EQ(1u, stats->delivered);
+}
+
+TEST(ResearchSh4LuaSubscriptions, ClearDropsQueuedWorkAndDetachesNativeBus)
+{
+	ASSERT_EQ(0u, research::sh4ObservationSubscriberCount());
+	research::Sh4LuaSubscriptionQueue queue;
+	queue.subscribe(interpreterInstructions(),
+			[](research::Sh4LuaSubscriptionQueue::Token,
+					const research::Sh4Observation&) {});
+	research::publishSh4Observation(instruction(0x8c010000));
+	ASSERT_EQ(1u, queue.pendingCount());
+	queue.clear();
+	EXPECT_EQ(0u, queue.pendingCount());
+	EXPECT_EQ(0u, queue.subscriptionCount());
+	EXPECT_EQ(0u, research::sh4ObservationSubscriberCount());
+	EXPECT_EQ(0u, queue.drain());
+	EXPECT_FALSE(research::publishSh4Observation(instruction(0x8c010002)));
+}
+
+TEST(ResearchSh4LuaSubscriptions, DeliveryRejectsNonOwningThread)
+{
+	research::Sh4LuaSubscriptionQueue queue;
+	queue.subscribe(interpreterInstructions(),
+			[](research::Sh4LuaSubscriptionQueue::Token,
+					const research::Sh4Observation&) {});
+	research::publishSh4Observation(instruction(0x8c010000));
+	std::atomic<bool> rejected {false};
+	std::thread other([&] {
+		try
+		{
+			queue.drain();
+		}
+		catch (const std::logic_error&)
+		{
+			rejected.store(true, std::memory_order_release);
+		}
+	});
+	other.join();
+	EXPECT_TRUE(rejected.load(std::memory_order_acquire));
+	EXPECT_EQ(1u, queue.drain());
+}
+
+TEST(ResearchSh4LuaSubscriptions, ConcurrentShutdownCannotQueueAfterDetach)
+{
+	ASSERT_EQ(0u, research::sh4ObservationSubscriberCount());
+	research::Sh4LuaSubscriptionQueue queue;
+	queue.subscribe(interpreterInstructions(),
+			[](research::Sh4LuaSubscriptionQueue::Token,
+					const research::Sh4Observation&) {});
+	std::atomic<bool> run {true};
+	std::atomic<std::uint32_t> published {0};
+	std::thread producer([&] {
+		while (run.load(std::memory_order_acquire))
+		{
+			research::publishSh4Observation(instruction(
+					0x8c010000 + (published.fetch_add(1,
+							std::memory_order_relaxed) & 0xffu) * 2));
+		}
+	});
+	while (published.load(std::memory_order_acquire) < 100)
+		std::this_thread::yield();
+	queue.clear();
+	run.store(false, std::memory_order_release);
+	producer.join();
+
+	EXPECT_EQ(0u, queue.subscriptionCount());
+	EXPECT_EQ(0u, queue.pendingCount());
+	EXPECT_EQ(0u, research::sh4ObservationSubscriberCount());
+	EXPECT_FALSE(research::publishSh4Observation(instruction(0x8c020000)));
+}
+
+} // namespace

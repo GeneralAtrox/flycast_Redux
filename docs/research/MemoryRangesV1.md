@@ -133,8 +133,9 @@ The default artifact ceiling is 1,025 MiB, which covers the manifest's 1 GiB
 raw-byte ceiling plus bounded event metadata. Override it transiently with
 `research:MemoryRangesMaxBytes=<count>`. Close or unload Flycast normally only
 after the requested snapshot has occurred. The candidate alone does not prove
-external process ownership or atomic multi-artifact publication; those belong
-to capture package v2.
+external process ownership or atomic multi-artifact publication. A validated
+candidate can be composed with the immutable Maple v1 base through
+[capture package v2](CapturePackageV2.md).
 
 ## Validate independently
 

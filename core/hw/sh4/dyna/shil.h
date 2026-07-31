@@ -155,6 +155,46 @@ enum shil_param_type
 #define SHIL_MODE 0
 #include "shil_canonical.h"
 
+inline bool shilIsResearchInstructionMarker(shilop op)
+{
+	switch (op)
+	{
+	case shop_research_begin:
+	case shop_research_end:
+	case shop_research_conditional_end:
+	case shop_research_conditional_before_delay:
+	case shop_research_conditional_after_delay:
+	case shop_research_fpu_guard:
+		return true;
+	default:
+		return false;
+	}
+}
+
+inline bool shilIsResearchMemoryMarker(shilop op)
+{
+	switch (op)
+	{
+	case shop_research_memory_begin_read:
+	case shop_research_memory_begin_write:
+	case shop_research_memory_end_read:
+	case shop_research_memory_end_write:
+		return true;
+	default:
+		return false;
+	}
+}
+
+inline bool shilIsResearchMarker(shilop op)
+{
+	return shilIsResearchInstructionMarker(op) || shilIsResearchMemoryMarker(op);
+}
+
+inline bool shilIsFullContextCall(shilop op)
+{
+	return op == shop_ifb || shilIsResearchMarker(op);
+}
+
 struct shil_param
 {
 	shil_param()

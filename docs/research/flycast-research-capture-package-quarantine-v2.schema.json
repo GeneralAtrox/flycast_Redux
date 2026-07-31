@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://flycast.example/research/flycast-research-capture-package-quarantine-v2.schema.json",
+  "title": "Flycast Research Capture Package Quarantine v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "schema_version", "package_id", "accepted_directory", "failure"],
+  "properties": {
+    "schema": { "const": "flycast-research-capture-package-quarantine" },
+    "schema_version": { "const": 2 },
+    "package_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "accepted_directory": { "type": "string", "minLength": 1, "maxLength": 4096 },
+    "failure": { "type": "string", "minLength": 1, "maxLength": 65536 }
+  }
+}

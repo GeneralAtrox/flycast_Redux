@@ -25,6 +25,7 @@
 #include "decoder.h"
 #include "hw/sh4/modules/mmu.h"
 #include "hw/sh4/sh4_mem.h"
+#include "cfg/option.h"
 
 #define SHIL_MODE 2
 #include "shil_canonical.h"
@@ -46,7 +47,8 @@ void SSAOptimizer::Optimize()
 	CombineShiftsPass();
 	DeadRegisterPass();
 	IdentityMovePass();
-	SingleBranchTargetPass();
+	if (!config::ResearchDynarecObservation.get())
+		SingleBranchTargetPass();
 
 #if 0
 	if (stats.prop_constants > 0 || stats.dead_code_ops > 0 || stats.constant_ops_replaced > 0
@@ -262,6 +264,8 @@ bool SSAOptimizer::ExecuteConstOp(shil_opcode* op)
 
 		case shop_jdyn:
 			{
+				if (config::ResearchDynarecObservation.get())
+					return false;
 				verify(BET_GET_CLS(block->BlockType) == BET_CLS_Dynamic);
 				rs1 += rs2;
 				switch ((block->BlockType >> 1) & 3)
@@ -293,6 +297,8 @@ bool SSAOptimizer::ExecuteConstOp(shil_opcode* op)
 			}
 		case shop_jcond:
 			{
+				if (config::ResearchDynarecObservation.get())
+					return false;
 				if (rs1 != (block->BlockType & 1))
 				{
 					block->BranchBlock = block->NextBlock;
@@ -437,7 +443,7 @@ void SSAOptimizer::ConstPropPass()
 		if (op.op != shop_fmac && op.op != shop_adc)
 			ConstPropOperand(op.rs3);
 
-		if (op.op == shop_ifb)
+		if (shilIsFullContextCall(op.op))
 		{
 			constprop_values.clear();
 		}
@@ -488,7 +494,8 @@ void SSAOptimizer::ConstPropPass()
 				// If we know the address to read and it's in the same memory page(s) as the block
 				// and if those pages are read-only, then we can directly read the memory at compile time
 				// and propagate the read value as a constant.
-				if (op.op == shop_readm  && block->read_only
+				if (!config::ResearchDynarecObservation.get()
+						&& op.op == shop_readm  && block->read_only
 						&& (op.rs1._imm >> 12) >= (block->vaddr >> 12)
 						&& (op.rs1._imm >> 12) <= ((block->vaddr + block->sh4_code_size - 1) >> 12)
 						&& op.size <= 4)
@@ -595,7 +602,7 @@ void SSAOptimizer::DeadCodeRemovalPass()
 		shil_opcode& op = block->oplist[opnum];
 		bool dead_code = false;
 
-		if (op.op == shop_ifb || (mmu_enabled() && (op.op == shop_readm || op.op == shop_writem)))
+		if (shilIsFullContextCall(op.op) || (mmu_enabled() && (op.op == shop_readm || op.op == shop_writem)))
 		{
 			// if mmu enabled, mem accesses can throw an exception
 			// so last_versions must be reset so the regs are correctly saved beforehand
@@ -838,7 +845,7 @@ void SSAOptimizer::DeadRegisterPass()
 					aliasdef = opnum;
 				else if (DefinesHigherVersion(op->rd2, alias.second))
 					aliasdef = opnum;
-				else if (op->op == shop_ifb)
+				else if (shilIsFullContextCall(op->op))
 					aliasdef = opnum;
 			}
 

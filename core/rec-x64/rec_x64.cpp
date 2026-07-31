@@ -21,6 +21,7 @@ using namespace Xbyak::util;
 #include "oslib/unwind_info.h"
 #include "oslib/virtmem.h"
 #include "cfg/option.h"
+#include "research/sh4_observation_runtime.h"
 
 static void (*mainloop)();
 static void (*handleException)();
@@ -133,7 +134,8 @@ public:
 
 		sub(rsp, STACK_ALIGN);
 
-		if (mmu_enabled() && block->has_fpu_op)
+		if (mmu_enabled() && block->has_fpu_op
+				&& !config::ResearchDynarecObservation.get())
 		{
 			Xbyak::Label fpu_enabled;
 			mov(rax, (uintptr_t)&sh4ctx.sr.status);
@@ -145,8 +147,11 @@ public:
 			jmp(exit_block, T_NEAR);
 			L(fpu_enabled);
 		}
-		mov(rax, (uintptr_t)&sh4ctx.cycle_counter);
-		sub(dword[rax], block->guest_cycles);
+		if (!config::ResearchDynarecObservation.get())
+		{
+			mov(rax, (uintptr_t)&sh4ctx.cycle_counter);
+			sub(dword[rax], block->guest_cycles);
+		}
 
 		regalloc.DoAlloc(block);
 
@@ -159,7 +164,7 @@ public:
 			switch (op.op)
 			{
 			case shop_ifb:
-				if (mmu_enabled())
+				if (mmu_enabled() || config::ResearchDynarecObservation.get())
 				{
 					mov(call_regs64[2], reinterpret_cast<uintptr_t>(*OpDesc[op.rs3._imm]->oph));	// op handler
 					mov(call_regs[3], block->vaddr + op.guest_offs - (op.delay_slot ? 1 : 0));	// pc
@@ -174,12 +179,107 @@ public:
 				mov(call_regs[1], op.rs3._imm);
 				mov(call_regs64[0], (uintptr_t)&sh4ctx);
 
-				if (!mmu_enabled())
+				if (!mmu_enabled() && !config::ResearchDynarecObservation.get())
 					GenCall(OpDesc[op.rs3._imm]->oph);
 				else
 					GenCall(interpreter_fallback);
 
 				break;
+
+			case shop_research_begin:
+			case shop_research_end:
+			case shop_research_conditional_end:
+			case shop_research_conditional_before_delay:
+			case shop_research_conditional_after_delay:
+			{
+				const auto marker = research::sh4DynarecObservationMarkerFor(op.op);
+				verify(marker != nullptr && op.size <= 0xffffu);
+				mov(call_regs64[0], reinterpret_cast<uintptr_t>(&sh4ctx));
+				mov(call_regs[1], op.rs1._imm);
+				mov(call_regs[2], op.rs2._imm | (op.size << 16));
+				mov(call_regs[3], op.rs3._imm);
+				GenCall(marker);
+				break;
+			}
+
+			case shop_research_fpu_guard:
+			{
+				Xbyak::Label fpu_enabled;
+				mov(rax, reinterpret_cast<uintptr_t>(&sh4ctx.sr.status));
+				test(dword[rax], 0x8000);
+				jz(fpu_enabled);
+				mov(call_regs[0], op.delay_slot ? op.rs1._imm - 2u : op.rs1._imm);
+				mov(call_regs[1], op.delay_slot ? Sh4Ex_SlotFpuDisabled
+						: Sh4Ex_FpuDisabled);
+				GenCall((void (*)())Do_Exception);
+				jmp(exit_block, T_NEAR);
+				L(fpu_enabled);
+				break;
+			}
+
+			case shop_research_memory_begin_read:
+			case shop_research_memory_begin_write:
+			{
+				auto load32 = [this](const shil_param& param,
+						const Xbyak::Reg32& destination) {
+					if (param.is_imm())
+						mov(destination, param._imm);
+					else
+					{
+						verify(param.is_reg());
+						mov(rax, reinterpret_cast<uintptr_t>(param.reg_ptr(sh4ctx)));
+						mov(destination, dword[rax]);
+					}
+				};
+				load32(op.rs1, call_regs[0]);
+				if (!op.rs2.is_null())
+				{
+					if (op.rs2.is_imm())
+						add(call_regs[0], op.rs2._imm);
+					else
+					{
+						mov(rax, reinterpret_cast<uintptr_t>(op.rs2.reg_ptr(sh4ctx)));
+						add(call_regs[0], dword[rax]);
+					}
+				}
+				const bool write = op.op == shop_research_memory_begin_write;
+				mov(call_regs[1], op.size | (write ? 0x100u : 0u));
+				if (!write)
+					xor_(call_regs[2], call_regs[2]);
+				else if (op.rs3.is_imm())
+					mov(call_regs[2], op.rs3._imm);
+				else
+				{
+					mov(rax, reinterpret_cast<uintptr_t>(op.rs3.reg_ptr(sh4ctx)));
+					if (op.size == 8)
+						mov(call_regs64[2], qword[rax]);
+					else
+						mov(call_regs[2], dword[rax]);
+				}
+				GenCall(research::sh4DynarecObservationMemoryBegin);
+				break;
+			}
+
+			case shop_research_memory_end_read:
+			case shop_research_memory_end_write:
+			{
+				xor_(call_regs[0], call_regs[0]);
+				xor_(call_regs[1], call_regs[1]);
+				if (op.op == shop_research_memory_end_write)
+					xor_(call_regs[2], call_regs[2]);
+				else if (op.rs3.is_imm())
+					mov(call_regs[2], op.rs3._imm);
+				else
+				{
+					mov(rax, reinterpret_cast<uintptr_t>(op.rs3.reg_ptr(sh4ctx)));
+					if (op.size == 8)
+						mov(call_regs64[2], qword[rax]);
+					else
+						mov(call_regs[2], dword[rax]);
+				}
+				GenCall(research::sh4DynarecObservationMemoryEnd);
+				break;
+			}
 
 			case shop_mov64:
 			{

@@ -70,7 +70,7 @@ std::string zeroDigest()
 }
 
 std::filesystem::path writeIdentity(const TemporaryDirectory& directory,
-		const char *name = "identity.json")
+		const char *name = "identity.json", std::uint64_t dmaCheckpoint = 0)
 {
 	json values {
 		{"cpu_backend", "interpreter"},
@@ -79,6 +79,8 @@ std::filesystem::path writeIdentity(const TemporaryDirectory& directory,
 		{"autosave_state", false},
 		{"ggpo", false},
 	};
+	if (dmaCheckpoint != 0)
+		values["maple_dma_checkpoint"] = dmaCheckpoint;
 	const std::string canonicalValues = values.dump();
 	const std::string valuesDigest = research::sha256ToHex(
 			research::sha256(canonicalValues.data(), canonicalValues.size()));
@@ -478,6 +480,13 @@ TEST(ResearchMapleTrace, IndependentValidationRejectsAbortAndWireMismatch)
 }
 
 #ifndef RESEARCH_FORMAT_ONLY
+unsigned checkpointCalls = 0;
+
+void countCheckpoint()
+{
+	++checkpointCalls;
+}
+
 TEST(ResearchMapleReplay, RejectsFirstRequestDivergence)
 {
 	TemporaryDirectory directory;
@@ -501,5 +510,53 @@ TEST(ResearchMapleReplay, RejectsFirstRequestDivergence)
 	events.transaction.request.back() ^= 1;
 	EXPECT_THROW(research::mapleTransaction(events.transaction), FlycastException);
 	research::abortRuntime();
+}
+
+TEST(ResearchMapleReplay, DmaCheckpointStopsRecordAndReplayAtTerminalCommit)
+{
+	TemporaryDirectory directory;
+	const std::filesystem::path identityPath = writeIdentity(
+			directory, "checkpoint-identity.json", 1);
+	const research::IdentityManifest identity = research::loadIdentityManifest(identityPath);
+	const std::filesystem::path tracePath = directory.file("checkpoint.fcmt");
+	FixtureEvents events;
+
+	checkpointCalls = 0;
+	research::setMapleCheckpointHandler(countCheckpoint);
+	config::ResearchIdentityManifestPath = identityPath.string();
+	config::ResearchMapleRecordPath = tracePath.string();
+	config::ResearchMapleReplayPath = "";
+	config::ResearchMapleDmaCheckpoint = 1;
+	config::ResearchMapleTraceMaxBytes = research::DefaultMaximumMapleTraceBytes;
+	config::setTransient("research", "IdentityManifest", identityPath.string());
+	config::setTransient("research", "MapleRecord", tracePath.string());
+	config::setTransient("research", "MapleDmaCheckpoint", "1");
+	research::configureRuntime();
+	research::startRuntime();
+	EXPECT_EQ(0u, research::mapleBeginDma(events.begin));
+	research::mapleTransaction(events.transaction);
+	research::mapleScheduleDma(events.schedule);
+	EXPECT_EQ(0u, checkpointCalls);
+	research::mapleCommitDma(events.commit);
+	EXPECT_EQ(1u, checkpointCalls);
+	EXPECT_NO_THROW(research::stopRuntime(true));
+	EXPECT_EQ(1u, research::validateProductionMapleTraceFile(
+			tracePath, identity.digest).dmaCount);
+
+	checkpointCalls = 0;
+	config::ResearchMapleRecordPath = "";
+	config::ResearchMapleReplayPath = tracePath.string();
+	config::setTransient("research", "MapleReplay", tracePath.string());
+	research::configureRuntime();
+	research::startRuntime();
+	EXPECT_EQ(0u, research::mapleBeginDma(events.begin));
+	research::mapleTransaction(events.transaction);
+	research::mapleScheduleDma(events.schedule);
+	research::mapleCommitDma(events.commit);
+	EXPECT_EQ(1u, checkpointCalls);
+	EXPECT_NO_THROW(research::stopRuntime(true));
+
+	config::ResearchMapleDmaCheckpoint = 0;
+	research::setMapleCheckpointHandler(nullptr);
 }
 #endif

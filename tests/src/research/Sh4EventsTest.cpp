@@ -8,6 +8,7 @@
 #include "research/sh4_events_capture.h"
 #include "research/sh4_events_manifest.h"
 #include "research/sh4_events_runtime.h"
+#include "research/sh4_observation.h"
 #include "research/sha256.h"
 #include "ResearchRuntimeStubs.h"
 
@@ -758,6 +759,44 @@ TEST(ResearchSh4Events, RuntimeArmsCapturesAndFinalizesOnlyOnCleanExit)
 	EXPECT_EQ(0u, summary.droppedEvents);
 }
 
+TEST(ResearchSh4Events, AuxiliaryCallFailureCannotStrandRecorderScope)
+{
+	Sh4EventsTemporaryDirectory directory;
+	Sh4FixtureData fixture;
+	const auto identityPath = writeIdentity(directory, fixture);
+	const auto manifestPath = writeManifest(directory, fixture);
+	const auto artifactPath = directory.file("call-subscriber-failure.fcsh4");
+	config::ResearchIdentityManifestPath = identityPath.string();
+	config::ResearchSh4EventsManifestPath = manifestPath.string();
+	config::ResearchSh4EventsRecordPath = artifactPath.string();
+	config::ResearchSh4EventsMaxBytes = research::DefaultMaximumSh4EventsArtifactBytes;
+	research::Sh4ObservationFilter callFilter;
+	callFilter.typeMask = research::sh4ObservationTypeBit(
+			research::Sh4ObservationType::Call);
+	const auto failingSubscription = research::subscribeSh4Observations(callFilter,
+			[](const research::Sh4Observation&) {
+				throw std::runtime_error("fixture call subscriber failure");
+			});
+
+	research_test::clearGuestRam();
+	ASSERT_TRUE(research_test::writeGuestRam(0x8c001000, fixture.callBytes));
+	research::configureSh4EventsRuntime();
+	research::startSh4EventsRuntime();
+	Sh4Context context {};
+	context.r[1] = 0x8c010100;
+	context.pc = 0x8c020002;
+	EXPECT_THROW(research::sh4EventsInstructionBegin(
+			0x8c020000, 0x410b, 100, context), std::runtime_error);
+	EXPECT_TRUE(research::unsubscribeSh4Observations(failingSubscription));
+
+	auto stop = std::async(std::launch::async, [] {
+		research::stopSh4EventsRuntime(false);
+	});
+	ASSERT_EQ(std::future_status::ready, stop.wait_for(std::chrono::seconds(2)));
+	EXPECT_NO_THROW(stop.get());
+	EXPECT_FALSE(research::sh4EventsRuntimeActive());
+}
+
 TEST(ResearchSh4Events, RuntimeFinalizationWaitsForActiveInstruction)
 {
 	Sh4EventsTemporaryDirectory directory;
@@ -1018,8 +1057,6 @@ TEST(ResearchSh4Events, RuntimeCaptureFailureOwnsInstructionScopeCleanup)
 	EXPECT_THROW(research::sh4EventsInstructionBegin(
 			0x8c010104, 0x410b, 102, context), std::runtime_error);
 	EXPECT_FALSE(research::sh4EventsRuntimeActive());
-	// Keeps this proof safe against the reviewed implementation's caller-owned cleanup.
-	research::sh4EventsInstructionAbort();
 }
 
 TEST(ResearchSh4Events, RuntimeExceptionFailureOwnsInstructionScopeCleanup)
@@ -1052,6 +1089,48 @@ TEST(ResearchSh4Events, RuntimeExceptionFailureOwnsInstructionScopeCleanup)
 			0x8c010100, context.vbr + 0x100, 0x180, 101, context),
 			std::runtime_error);
 	EXPECT_FALSE(research::sh4EventsRuntimeActive());
-	// Keeps this proof safe against the implementation that delegates cleanup.
+	research::sh4EventsInstructionAbort();
+}
+
+TEST(ResearchSh4Events, NestedCaptureFailureReleasesEveryRecorderScope)
+{
+	Sh4EventsTemporaryDirectory directory;
+	Sh4FixtureData fixture;
+	const auto identityPath = writeIdentity(directory, fixture);
+	json limitedManifestJson = manifestJson(fixture);
+	limitedManifestJson["limits"]["maximum_events"] = 1;
+	limitedManifestJson["acceptance"]["minimum_call_events"] = 0;
+	limitedManifestJson["acceptance"]["minimum_watch_events"] = 1;
+	const auto manifestPath = directory.file("nested-failure-manifest.json");
+	writeText(manifestPath, limitedManifestJson.dump(2));
+	const auto artifactPath = directory.file("nested-failure.fcsh4");
+	config::ResearchIdentityManifestPath = identityPath.string();
+	config::ResearchSh4EventsManifestPath = manifestPath.string();
+	config::ResearchSh4EventsRecordPath = artifactPath.string();
+	config::ResearchSh4EventsMaxBytes = research::DefaultMaximumSh4EventsArtifactBytes;
+
+	research::configureSh4EventsRuntime();
+	research::startSh4EventsRuntime();
+	Sh4Context context {};
+	context.vbr = 0x8c000000;
+	context.pc = 0x8c010102;
+	research::sh4EventsInstructionBegin(0x8c010100, 0xa000, 100, context);
+	context.pc = 0x8c010104;
+	research::sh4EventsInstructionBegin(0x8c010102, 0x0009, 101, context);
+	research::sh4EventsMemoryAccess(0x8c002000, 1,
+			research::Sh4MemoryAccessKind::Read, 0x12);
+	EXPECT_THROW(research::sh4EventsException(
+			0x8c010102, context.vbr + 0x100, 0x180, 102, context),
+			std::runtime_error);
+	EXPECT_FALSE(research::sh4EventsRuntimeActive());
+
+	auto abort = std::async(std::launch::async, [] {
+		research::abortSh4EventsRuntime();
+	});
+	ASSERT_EQ(std::future_status::ready, abort.wait_for(std::chrono::seconds(2)));
+	EXPECT_NO_THROW(abort.get());
+	// Direct hook tests own the emitter-side frames that an interpreter catch
+	// would normally abort while unwinding the nested delay slot.
+	research::sh4EventsInstructionAbort();
 	research::sh4EventsInstructionAbort();
 }

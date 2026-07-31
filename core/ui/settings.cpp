@@ -72,8 +72,10 @@ static void gui_settings_advanced()
 	ImGui::Spacing();
 	header("Debugging");
 	{
-		OptionCheckbox("Enable GDB", config::GDB, "GDB debugging support, disables Dynarec and dramatically reduces performance when a debugger is connected.");
-		OptionCheckbox("Wait for connection", config::GDBWaitForConnection, "Start emulation once the debugger is connected.");
+		OptionCheckbox("Enable read-only GDB", config::GDB,
+				"Localhost-only coherent memory and register snapshots. Writes, stepping, breakpoints, reset, and kill are rejected.");
+		OptionCheckbox("Wait for connection", config::GDBWaitForConnection,
+				"Start emulation once a localhost snapshot client is connected.");
 #ifndef __ANDROID
 		OptionCheckbox("Serial Console", config::SerialConsole, "Dump the Dreamcast serial console to stdout");
 		OptionCheckbox("Serial PTY", config::SerialPTY, "Requires the option \"Serial Console\" to work");
@@ -86,7 +88,7 @@ static void gui_settings_advanced()
 		}
 		const ImGuiStyle& style = ImGui::GetStyle();
 		ImGui::SameLine(0, style.ItemInnerSpacing.x);
-		ShowHelpMarker("Default port is 3263");
+		ShowHelpMarker("Localhost only. Default port is 3263");
 	}
 #endif
 	ImGui::Spacing();

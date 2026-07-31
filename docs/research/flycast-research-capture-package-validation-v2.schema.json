@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://flycast.example/research/flycast-research-capture-package-validation-v2.schema.json",
+  "title": "Flycast Research Capture Package Validation v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "schema_version",
+    "package_id",
+    "job",
+    "identity",
+    "static_analysis",
+    "base_capture_v1",
+    "artifacts",
+    "publisher",
+    "validator"
+  ],
+  "properties": {
+    "schema": { "const": "flycast-research-capture-package-validation" },
+    "schema_version": { "const": 2 },
+    "package_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "job": { "$ref": "#/$defs/blob" },
+    "identity": { "$ref": "#/$defs/blob" },
+    "static_analysis": { "$ref": "#/$defs/blob" },
+    "base_capture_v1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["accepted_directory", "entries"],
+      "properties": {
+        "accepted_directory": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "entries": {
+          "type": "array",
+          "minItems": 5,
+          "maxItems": 5,
+          "items": { "$ref": "#/$defs/blob" }
+        }
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 2,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "artifact", "manifest"],
+        "properties": {
+          "kind": { "enum": ["memory-ranges-v1", "sh4-events-v1"] },
+          "artifact": { "$ref": "#/$defs/blob" },
+          "manifest": { "$ref": "#/$defs/blob" }
+        }
+      }
+    },
+    "publisher": { "$ref": "#/$defs/blob" },
+    "validator": { "$ref": "#/$defs/blob" }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "blob": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "size", "sha256"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "size": { "type": "integer", "minimum": 1 },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    }
+  }
+}

@@ -356,6 +356,18 @@ if(NOT LIBRETRO)
 			core/research/sh4_events_memory.h
 			core/research/sh4_events_runtime.cpp
 			core/research/sh4_events_runtime.h
+			core/research/sh4_lua_subscriptions.cpp
+			core/research/sh4_lua_subscriptions.h
+			core/research/sh4_observation.cpp
+			core/research/sh4_observation.h
+			core/research/sh4_observation_compare.cpp
+			core/research/sh4_observation_compare.h
+			core/research/sh4_observation_capture_runtime.cpp
+			core/research/sh4_observation_capture_runtime.h
+			core/research/sh4_observation_runtime.cpp
+			core/research/sh4_observation_runtime.h
+			core/research/sh4_observation_trace.cpp
+			core/research/sh4_observation_trace.h
 			core/research/sha256.cpp
 			core/research/sha256.h)
 endif()
@@ -1579,15 +1591,123 @@ if(BUILD_RESEARCH_TOOLS AND NOT LIBRETRO)
 		target_compile_options(flycast-research-validate-sh4-events PRIVATE
 				-Wall -Wextra -Wpedantic)
 	endif()
+
+	add_executable(flycast-research-validate-ghidra-export
+			tools/research/validate_ghidra_export.cpp
+			core/research/ghidra_export.cpp
+			core/research/identity_manifest.cpp
+			core/research/sh4_events_manifest.cpp
+			core/research/sha256.cpp)
+	target_include_directories(flycast-research-validate-ghidra-export PRIVATE
+			core core/deps/json)
+	set_target_properties(flycast-research-validate-ghidra-export PROPERTIES
+			CXX_STANDARD 17
+			CXX_STANDARD_REQUIRED ON
+			CXX_EXTENSIONS OFF)
+	if(MSVC)
+		target_compile_definitions(flycast-research-validate-ghidra-export PRIVATE
+				NOMINMAX _CRT_SECURE_NO_WARNINGS)
+		target_compile_options(flycast-research-validate-ghidra-export PRIVATE /utf-8 /W4)
+	else()
+		target_compile_options(flycast-research-validate-ghidra-export PRIVATE
+				-Wall -Wextra -Wpedantic)
+	endif()
+
+	add_executable(flycast-research-validate-capture-package-v2
+			tools/research/validate_capture_package_v2.cpp
+			tools/research/validate_capture.cpp
+			core/research/capture_package_v2.cpp
+			core/research/ghidra_export.cpp
+			core/research/identity_manifest.cpp
+			core/research/maple_trace.cpp
+			core/research/memory_ranges_artifact.cpp
+			core/research/memory_ranges_manifest.cpp
+			core/research/sh4_events_artifact.cpp
+			core/research/sh4_events_manifest.cpp
+			core/research/sha256.cpp)
+	target_include_directories(flycast-research-validate-capture-package-v2 PRIVATE
+			core core/deps/json)
+	set_target_properties(flycast-research-validate-capture-package-v2 PROPERTIES
+			CXX_STANDARD 17
+			CXX_STANDARD_REQUIRED ON
+			CXX_EXTENSIONS OFF)
+	if(MSVC)
+		target_compile_definitions(flycast-research-validate-capture-package-v2 PRIVATE
+				NOMINMAX _CRT_SECURE_NO_WARNINGS RESEARCH_CAPTURE_V1_VALIDATION_LIBRARY)
+		target_compile_options(flycast-research-validate-capture-package-v2 PRIVATE
+				/utf-8 /W4)
+	else()
+		target_compile_definitions(flycast-research-validate-capture-package-v2 PRIVATE
+				RESEARCH_CAPTURE_V1_VALIDATION_LIBRARY)
+		target_compile_options(flycast-research-validate-capture-package-v2 PRIVATE
+				-Wall -Wextra -Wpedantic)
+	endif()
+
+	add_executable(flycast-research-compare-sh4
+			tools/research/compare_sh4_backends.cpp
+			core/research/identity_manifest.cpp
+			core/research/maple_trace.cpp
+			core/research/sh4_equivalence.cpp
+			core/research/sh4_observation.cpp
+			core/research/sh4_observation_compare.cpp
+			core/research/sh4_observation_trace.cpp
+			core/research/sha256.cpp)
+	target_include_directories(flycast-research-compare-sh4 PRIVATE core core/deps/json)
+	set_target_properties(flycast-research-compare-sh4 PROPERTIES
+			CXX_STANDARD 17
+			CXX_STANDARD_REQUIRED ON
+			CXX_EXTENSIONS OFF)
+	if(MSVC)
+		target_compile_definitions(flycast-research-compare-sh4 PRIVATE
+				NOMINMAX _CRT_SECURE_NO_WARNINGS)
+		target_compile_options(flycast-research-compare-sh4 PRIVATE /utf-8 /W4)
+	else()
+		target_compile_options(flycast-research-compare-sh4 PRIVATE
+				-Wall -Wextra -Wpedantic)
+	endif()
+
+	add_executable(flycast-research-validate-sh4-equivalence-package
+			tools/research/validate_sh4_equivalence_package.cpp
+			core/research/identity_manifest.cpp
+			core/research/maple_trace.cpp
+			core/research/sh4_equivalence.cpp
+			core/research/sh4_equivalence_package.cpp
+			core/research/sh4_observation.cpp
+			core/research/sh4_observation_compare.cpp
+			core/research/sh4_observation_trace.cpp
+			core/research/sha256.cpp)
+	target_include_directories(flycast-research-validate-sh4-equivalence-package PRIVATE
+			core core/deps/json)
+	set_target_properties(flycast-research-validate-sh4-equivalence-package PROPERTIES
+			CXX_STANDARD 17
+			CXX_STANDARD_REQUIRED ON
+			CXX_EXTENSIONS OFF)
+	if(MSVC)
+		target_compile_definitions(flycast-research-validate-sh4-equivalence-package PRIVATE
+				NOMINMAX _CRT_SECURE_NO_WARNINGS)
+		target_compile_options(flycast-research-validate-sh4-equivalence-package PRIVATE
+				/utf-8 /W4)
+	else()
+		target_compile_options(flycast-research-validate-sh4-equivalence-package PRIVATE
+				-Wall -Wextra -Wpedantic)
+	endif()
 endif()
 
 if(BUILD_RESEARCH_TOOLS AND BUILD_TESTING AND NOT LIBRETRO)
 	add_executable(flycast-research-tests
+			tests/src/debug/GdbServerPolicyTest.cpp
+			tests/src/research/GhidraExportTest.cpp
 			tests/src/research/MapleTraceTest.cpp
 			tests/src/research/MemoryRangesTest.cpp
+			tests/src/research/Sh4ObservationTest.cpp
+			tests/src/research/Sh4LuaSubscriptionsTest.cpp
+			tests/src/research/Sh4ObservationCaptureRuntimeTest.cpp
+			tests/src/research/Sh4EquivalenceTest.cpp
+			tests/src/research/Sh4ObservationTraceTest.cpp
 			tests/src/research/Sh4EventsTest.cpp
 			tests/src/research/ResearchRuntimeStubs.cpp
 			core/research/identity_manifest.cpp
+			core/research/ghidra_export.cpp
 			core/research/maple_runtime.cpp
 			core/research/maple_trace.cpp
 			core/research/memory_ranges_artifact.cpp
@@ -1598,6 +1718,13 @@ if(BUILD_RESEARCH_TOOLS AND BUILD_TESTING AND NOT LIBRETRO)
 			core/research/sh4_events_capture.cpp
 			core/research/sh4_events_manifest.cpp
 			core/research/sh4_events_runtime.cpp
+			core/research/sh4_equivalence.cpp
+			core/research/sh4_lua_subscriptions.cpp
+			core/research/sh4_observation.cpp
+			core/research/sh4_observation_compare.cpp
+			core/research/sh4_observation_capture_runtime.cpp
+			core/research/sh4_observation_runtime.cpp
+			core/research/sh4_observation_trace.cpp
 			core/research/sha256.cpp)
 	target_include_directories(flycast-research-tests PRIVATE core core/deps core/deps/json)
 	target_link_libraries(flycast-research-tests PRIVATE GTest::gtest_main nowide::nowide)
@@ -1615,6 +1742,11 @@ if(BUILD_RESEARCH_TOOLS AND BUILD_TESTING AND NOT LIBRETRO)
 			tests/src/research/CaptureProcessFixture.cpp
 			core/research/identity_manifest.cpp
 			core/research/maple_trace.cpp
+			core/research/memory_ranges_artifact.cpp
+			core/research/memory_ranges_capture.cpp
+			core/research/memory_ranges_manifest.cpp
+			core/research/sh4_events_artifact.cpp
+			core/research/sh4_events_manifest.cpp
 			core/research/sha256.cpp)
 	target_include_directories(flycast-research-capture-fixture PRIVATE core core/deps/json)
 	set_target_properties(flycast-research-capture-fixture PROPERTIES
@@ -1626,6 +1758,29 @@ if(BUILD_RESEARCH_TOOLS AND BUILD_TESTING AND NOT LIBRETRO)
 		target_compile_options(flycast-research-capture-fixture PRIVATE /utf-8 /W4)
 	else()
 		target_compile_options(flycast-research-capture-fixture PRIVATE -Wall -Wextra -Wpedantic)
+	endif()
+
+	add_executable(flycast-research-sh4-equivalence-fixture
+			tests/src/research/Sh4EquivalenceProcessFixture.cpp
+			core/research/identity_manifest.cpp
+			core/research/maple_trace.cpp
+			core/research/sh4_observation.cpp
+			core/research/sh4_observation_trace.cpp
+			core/research/sha256.cpp)
+	target_include_directories(flycast-research-sh4-equivalence-fixture PRIVATE
+			core core/deps/json)
+	set_target_properties(flycast-research-sh4-equivalence-fixture PROPERTIES
+			CXX_STANDARD 17
+			CXX_STANDARD_REQUIRED ON
+			CXX_EXTENSIONS OFF)
+	if(MSVC)
+		target_compile_definitions(flycast-research-sh4-equivalence-fixture PRIVATE
+				NOMINMAX _CRT_SECURE_NO_WARNINGS)
+		target_compile_options(flycast-research-sh4-equivalence-fixture PRIVATE
+				/utf-8 /W4)
+	else()
+		target_compile_options(flycast-research-sh4-equivalence-fixture PRIVATE
+				-Wall -Wextra -Wpedantic)
 	endif()
 
 	if(WIN32)
@@ -1640,6 +1795,34 @@ if(BUILD_RESEARCH_TOOLS AND BUILD_TESTING AND NOT LIBRETRO)
 						-CaptureValidator $<TARGET_FILE:flycast-research-validate-capture>
 						-TranscriptSchema ${CMAKE_CURRENT_SOURCE_DIR}/docs/research/flycast-research-capture-transcript-v1.schema.json)
 			set_tests_properties(flycast-research-capture-transaction PROPERTIES TIMEOUT 180)
+
+			add_test(NAME flycast-research-capture-package-v2
+				COMMAND ${FLYCAST_RESEARCH_POWERSHELL} -NoProfile -File
+						${CMAKE_CURRENT_SOURCE_DIR}/tests/research/test_capture_package_v2.ps1
+						-CaptureDriver ${CMAKE_CURRENT_SOURCE_DIR}/tools/research/flycast-capture-maple.ps1
+						-PackagePublisher ${CMAKE_CURRENT_SOURCE_DIR}/tools/research/flycast-publish-capture-package-v2.ps1
+						-Fixture $<TARGET_FILE:flycast-research-capture-fixture>
+						-MapleValidator $<TARGET_FILE:flycast-research-validate-maple>
+						-CaptureValidator $<TARGET_FILE:flycast-research-validate-capture>
+						-PackageValidator $<TARGET_FILE:flycast-research-validate-capture-package-v2>
+						-JobSchema ${CMAKE_CURRENT_SOURCE_DIR}/docs/research/flycast-research-capture-package-job-v2.schema.json
+						-ValidationSchema ${CMAKE_CURRENT_SOURCE_DIR}/docs/research/flycast-research-capture-package-validation-v2.schema.json
+						-QuarantineSchema ${CMAKE_CURRENT_SOURCE_DIR}/docs/research/flycast-research-capture-package-quarantine-v2.schema.json)
+			set_tests_properties(flycast-research-capture-package-v2 PROPERTIES TIMEOUT 120)
+
+			add_test(NAME flycast-research-sh4-equivalence-package-v1
+				COMMAND ${FLYCAST_RESEARCH_POWERSHELL} -NoProfile -File
+						${CMAKE_CURRENT_SOURCE_DIR}/tests/research/test_sh4_equivalence_package_v1.ps1
+						-Fixture $<TARGET_FILE:flycast-research-sh4-equivalence-fixture>
+						-Comparator $<TARGET_FILE:flycast-research-compare-sh4>
+						-Publisher ${CMAKE_CURRENT_SOURCE_DIR}/tools/research/flycast-publish-sh4-equivalence-package-v1.ps1
+						-Validator $<TARGET_FILE:flycast-research-validate-sh4-equivalence-package>
+						-JobSchema ${CMAKE_CURRENT_SOURCE_DIR}/docs/research/flycast-research-sh4-equivalence-package-job-v1.schema.json
+						-PackageSchema ${CMAKE_CURRENT_SOURCE_DIR}/docs/research/flycast-research-sh4-equivalence-package-v1.schema.json
+						-ValidationSchema ${CMAKE_CURRENT_SOURCE_DIR}/docs/research/flycast-research-sh4-equivalence-package-validation-v1.schema.json
+						-QuarantineSchema ${CMAKE_CURRENT_SOURCE_DIR}/docs/research/flycast-research-sh4-equivalence-package-quarantine-v1.schema.json)
+			set_tests_properties(flycast-research-sh4-equivalence-package-v1
+					PROPERTIES TIMEOUT 120)
 		endif()
 	endif()
 endif()

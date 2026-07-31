@@ -30,8 +30,16 @@
 #include "input/mouse.h"
 #include "hw/maple/maple_devs.h"
 #include "hw/maple/maple_if.h"
+#include "research/sh4_lua_subscriptions.h"
 #include "stdclass.h"
 #include "imgui.h"
+
+#include <cmath>
+#include <cstdio>
+#include <memory>
+#include <optional>
+#include <stdexcept>
+#include <unordered_map>
 
 namespace lua
 {
@@ -42,11 +50,39 @@ using namespace luabridge;
 static std::recursive_mutex mutex;
 using lock_guard = std::lock_guard<std::recursive_mutex>;
 
+static std::unique_ptr<research::Sh4LuaSubscriptionQueue> researchSubscriptions;
+static std::unordered_map<research::Sh4LuaSubscriptionQueue::Token, int>
+		researchCallbackRefs;
+static bool researchSubscriptionsAllowed;
+
+static void clearResearchSubscriptions()
+{
+	if (researchSubscriptions != nullptr)
+		researchSubscriptions->clear();
+	if (L != nullptr)
+	{
+		for (const auto& callback : researchCallbackRefs)
+			luaL_unref(L, LUA_REGISTRYINDEX, callback.second);
+	}
+	researchCallbackRefs.clear();
+}
+
 static void emuEventCallback(Event event, void *)
 {
-	if (L == nullptr || settings.raHardcoreMode)
+	if (L == nullptr)
 		return;
 	lock_guard lock(mutex);
+	if (event == Event::Terminate)
+	{
+		researchSubscriptionsAllowed = false;
+		clearResearchSubscriptions();
+	}
+	else if (event == Event::Start)
+	{
+		researchSubscriptionsAllowed = true;
+	}
+	if (settings.raHardcoreMode)
+		return;
 	try {
 		LuaRef v = LuaRef::getGlobal(L, CallbackTable);
 		if (!v.isTable())
@@ -105,6 +141,18 @@ static void eventCallback(const char *tag)
 
 void overlay()
 {
+	if (L != nullptr && researchSubscriptions != nullptr)
+	{
+		lock_guard lock(mutex);
+		try
+		{
+			researchSubscriptions->drain();
+		}
+		catch (const std::exception& exception)
+		{
+			WARN_LOG(COMMON, "Lua research delivery failed: %s", exception.what());
+		}
+	}
 	eventCallback("overlay");
 }
 
@@ -421,10 +469,415 @@ static int uiButton(lua_State *L)
 	return 0;
 }
 
+static const char *observationTypeName(research::Sh4ObservationType type)
+{
+	switch (type)
+	{
+	case research::Sh4ObservationType::InstructionBegin:
+		return "instruction-begin";
+	case research::Sh4ObservationType::InstructionEnd:
+		return "instruction";
+	case research::Sh4ObservationType::InstructionAbort:
+		return "instruction-abort";
+	case research::Sh4ObservationType::MemoryRead:
+		return "memory-read";
+	case research::Sh4ObservationType::MemoryWrite:
+		return "memory-write";
+	case research::Sh4ObservationType::Exception:
+		return "exception";
+	case research::Sh4ObservationType::Call:
+		return "call";
+	case research::Sh4ObservationType::Return:
+		return "return";
+	}
+	return "unknown";
+}
+
+static const char *backendName(research::Sh4ObservationBackend backend)
+{
+	return backend == research::Sh4ObservationBackend::Interpreter
+			? "interpreter" : "dynarec";
+}
+
+static void setStringField(lua_State *state, const char *name,
+		const std::string& value)
+{
+	lua_pushlstring(state, value.data(), value.size());
+	lua_setfield(state, -2, name);
+}
+
+static void setStringField(lua_State *state, const char *name, const char *value)
+{
+	lua_pushstring(state, value);
+	lua_setfield(state, -2, name);
+}
+
+static void setNumberField(lua_State *state, const char *name, std::uint64_t value)
+{
+	lua_pushnumber(state, static_cast<lua_Number>(value));
+	lua_setfield(state, -2, name);
+}
+
+static void setBooleanField(lua_State *state, const char *name, bool value)
+{
+	lua_pushboolean(state, value ? 1 : 0);
+	lua_setfield(state, -2, name);
+}
+
+static std::string hexadecimal64(std::uint64_t value)
+{
+	char text[19] {};
+	std::snprintf(text, sizeof(text), "0x%016llx",
+			static_cast<unsigned long long>(value));
+	return text;
+}
+
+static void pushRegisterSnapshot(lua_State *state,
+		const research::Sh4RegisterSnapshot& registers)
+{
+	lua_newtable(state);
+	lua_newtable(state);
+	for (std::size_t index = 0; index < registers.r.size(); ++index)
+	{
+		lua_pushnumber(state, static_cast<lua_Number>(registers.r[index]));
+		lua_rawseti(state, -2, static_cast<int>(index + 1));
+	}
+	lua_setfield(state, -2, "r");
+	setNumberField(state, "pr", registers.pr);
+	setNumberField(state, "gbr", registers.gbr);
+	setNumberField(state, "vbr", registers.vbr);
+	setNumberField(state, "mach", registers.mach);
+	setNumberField(state, "macl", registers.macl);
+	setNumberField(state, "sr", registers.sr);
+	setNumberField(state, "fpul", registers.fpul);
+	setNumberField(state, "fpscr", registers.fpscr);
+}
+
+static void pushResearchEvent(lua_State *state,
+		const research::Sh4Observation& observation)
+{
+	lua_newtable(state);
+	setBooleanField(state, "discovery", true);
+	setBooleanField(state, "authoritative_evidence", false);
+	setNumberField(state, "schema_version", observation.schemaVersion);
+	setStringField(state, "event", observationTypeName(observation.type));
+	setStringField(state, "backend", backendName(observation.backend));
+	setNumberField(state, "ordinal", observation.emissionOrdinal);
+	setStringField(state, "ordinal_decimal",
+			std::to_string(observation.emissionOrdinal));
+	setNumberField(state, "tick", observation.tick);
+	setStringField(state, "tick_decimal", std::to_string(observation.tick));
+	setNumberField(state, "pc", observation.instructionPc);
+	setNumberField(state, "opcode", observation.opcode);
+	setNumberField(state, "delay_slot_depth", observation.delaySlotDepth);
+	if ((observation.availableFields & research::Sh4Observation::HasNextPc) != 0)
+		setNumberField(state, "next_pc", observation.nextPc);
+	if ((observation.availableFields & research::Sh4Observation::HasRegisters) != 0)
+	{
+		pushRegisterSnapshot(state, observation.registers);
+		lua_setfield(state, -2, "registers");
+	}
+	if (observation.type == research::Sh4ObservationType::MemoryRead
+			|| observation.type == research::Sh4ObservationType::MemoryWrite)
+	{
+		setNumberField(state, "address", observation.memoryAddress);
+		setNumberField(state, "width", observation.memoryWidth);
+		setNumberField(state, "value", observation.memoryValue);
+		setStringField(state, "value_hex", hexadecimal64(observation.memoryValue));
+	}
+	if (observation.type == research::Sh4ObservationType::Exception)
+	{
+		setNumberField(state, "exception_pc", observation.exceptionPc);
+		setNumberField(state, "vector_pc", observation.vectorPc);
+		setNumberField(state, "exception_code", observation.exceptionCode);
+	}
+	if (observation.type == research::Sh4ObservationType::Call
+			|| observation.type == research::Sh4ObservationType::Return)
+	{
+		if (observation.type == research::Sh4ObservationType::Call)
+		{
+			const char *kind = observation.callKind == research::Sh4CallKind::Bsr
+					? "bsr" : observation.callKind == research::Sh4CallKind::Bsrf
+							? "bsrf" : "jsr";
+			setStringField(state, "call_kind", kind);
+		}
+		setNumberField(state, "target_pc", observation.targetPc);
+		setNumberField(state, "return_pc", observation.returnPc);
+		setNumberField(state, "delay_slot_pc", observation.delaySlotPc);
+	}
+}
+
+static std::optional<std::uint64_t> optionalUnsignedTableField(lua_State *state,
+		int tableIndex, const char *name)
+{
+	tableIndex = lua_absindex(state, tableIndex);
+	lua_getfield(state, tableIndex, name);
+	if (lua_isnil(state, -1))
+	{
+		lua_pop(state, 1);
+		return std::nullopt;
+	}
+	if (!lua_isnumber(state, -1))
+	{
+		lua_pop(state, 1);
+		throw std::invalid_argument(std::string(name) + " must be an unsigned integer");
+	}
+	const lua_Number number = lua_tonumber(state, -1);
+	lua_pop(state, 1);
+	constexpr lua_Number MaximumExactLuaInteger = 9007199254740991.0;
+	if (!std::isfinite(number) || number < 0
+			|| std::floor(number) != number
+			|| number > MaximumExactLuaInteger)
+		throw std::invalid_argument(std::string(name) + " must be an unsigned integer");
+	return static_cast<std::uint64_t>(number);
+}
+
+static std::optional<std::string> optionalStringTableField(lua_State *state,
+		int tableIndex, const char *name)
+{
+	tableIndex = lua_absindex(state, tableIndex);
+	lua_getfield(state, tableIndex, name);
+	if (lua_isnil(state, -1))
+	{
+		lua_pop(state, 1);
+		return std::nullopt;
+	}
+	if (!lua_isstring(state, -1))
+	{
+		lua_pop(state, 1);
+		throw std::invalid_argument(std::string(name) + " must be a string");
+	}
+	size_t length = 0;
+	const char *text = lua_tolstring(state, -1, &length);
+	std::string value(text, length);
+	lua_pop(state, 1);
+	return value;
+}
+
+static research::Sh4ObservationFilter researchFilterFromLua(lua_State *state,
+		std::size_t& capacity)
+{
+	const std::optional<std::string> event = optionalStringTableField(state, 1,
+			"event");
+	if (!event.has_value())
+		throw std::invalid_argument("event is required");
+	research::Sh4ObservationType type;
+	if (*event == "instruction")
+		type = research::Sh4ObservationType::InstructionEnd;
+	else if (*event == "call")
+		type = research::Sh4ObservationType::Call;
+	else if (*event == "return")
+		type = research::Sh4ObservationType::Return;
+	else if (*event == "memory-read")
+		type = research::Sh4ObservationType::MemoryRead;
+	else if (*event == "memory-write")
+		type = research::Sh4ObservationType::MemoryWrite;
+	else if (*event == "exception")
+		type = research::Sh4ObservationType::Exception;
+	else
+		throw std::invalid_argument("unsupported research event");
+
+	research::Sh4ObservationFilter filter;
+	filter.typeMask = research::sh4ObservationTypeBit(type);
+	const std::optional<std::string> backend = optionalStringTableField(state, 1,
+			"backend");
+	if (!backend.has_value() || *backend == "any")
+		filter.backendMask = research::AllSh4ObservationBackends;
+	else if (*backend == "interpreter")
+		filter.backendMask = research::sh4ObservationBackendBit(
+				research::Sh4ObservationBackend::Interpreter);
+	else if (*backend == "dynarec")
+		filter.backendMask = research::sh4ObservationBackendBit(
+				research::Sh4ObservationBackend::Dynarec);
+	else
+		throw std::invalid_argument("backend must be any, interpreter, or dynarec");
+
+	const std::optional<std::uint64_t> start = optionalUnsignedTableField(state, 1,
+			"start_address");
+	const std::optional<std::uint64_t> end = optionalUnsignedTableField(state, 1,
+			"end_address");
+	if (start.has_value() != end.has_value())
+		throw std::invalid_argument(
+				"start_address and end_address must be provided together");
+	const bool memoryEvent = type == research::Sh4ObservationType::MemoryRead
+			|| type == research::Sh4ObservationType::MemoryWrite;
+	if (start.has_value())
+	{
+		if (!memoryEvent)
+			throw std::invalid_argument("address range is only valid for memory events");
+		if (*start > 0xffffffffull || *end > 0xffffffffull || *start > *end)
+			throw std::invalid_argument("invalid inclusive SH-4 address range");
+		filter.hasMemoryRange = true;
+		filter.memoryStart = static_cast<std::uint32_t>(*start);
+		filter.memoryEndExclusive = *end + 1;
+	}
+
+	const std::optional<std::uint64_t> requestedCapacity = optionalUnsignedTableField(
+			state, 1, "queue_capacity");
+	capacity = requestedCapacity.has_value()
+			? static_cast<std::size_t>(*requestedCapacity)
+			: research::Sh4LuaSubscriptionQueue::DefaultCapacity;
+	return filter;
+}
+
+static void deliverResearchObservation(
+		research::Sh4LuaSubscriptionQueue::Token token,
+		const research::Sh4Observation& observation)
+{
+	const auto found = researchCallbackRefs.find(token);
+	if (found == researchCallbackRefs.end())
+		return;
+	lua_rawgeti(L, LUA_REGISTRYINDEX, found->second);
+	pushResearchEvent(L, observation);
+	if (lua_pcall(L, 1, 0, 0) != 0)
+	{
+		const char *message = lua_tostring(L, -1);
+		const std::string failure = message == nullptr
+				? "unknown Lua callback error" : message;
+		lua_pop(L, 1);
+		throw std::runtime_error(failure);
+	}
+}
+
+static void reportResearchCallbackFailure(
+		research::Sh4LuaSubscriptionQueue::Token token,
+		std::exception_ptr failure) noexcept
+{
+	try
+	{
+		if (failure != nullptr)
+			std::rethrow_exception(failure);
+	}
+	catch (const std::exception& exception)
+	{
+		WARN_LOG(COMMON, "Lua research subscriber %llu failed: %s",
+				static_cast<unsigned long long>(token), exception.what());
+	}
+	catch (...)
+	{
+		WARN_LOG(COMMON, "Lua research subscriber %llu failed",
+				static_cast<unsigned long long>(token));
+	}
+}
+
+static int researchSubscribe(lua_State *state)
+{
+	try
+	{
+		if (state != L || researchSubscriptions == nullptr
+				|| !researchSubscriptionsAllowed)
+			throw std::runtime_error("research subscriptions are not available");
+		if (lua_gettop(state) != 2 || !lua_istable(state, 1)
+				|| !lua_isfunction(state, 2))
+			throw std::invalid_argument("subscribe expects a filter table and function");
+		std::size_t capacity = 0;
+		const research::Sh4ObservationFilter filter = researchFilterFromLua(state,
+				capacity);
+		lua_pushvalue(state, 2);
+		const int callbackRef = luaL_ref(state, LUA_REGISTRYINDEX);
+		try
+		{
+			const auto token = researchSubscriptions->subscribe(filter,
+					deliverResearchObservation, capacity,
+					reportResearchCallbackFailure);
+			try
+			{
+				researchCallbackRefs.emplace(token, callbackRef);
+			}
+			catch (...)
+			{
+				researchSubscriptions->unsubscribe(token);
+				throw;
+			}
+			lua_pushnumber(state, static_cast<lua_Number>(token));
+			return 1;
+		}
+		catch (...)
+		{
+			luaL_unref(state, LUA_REGISTRYINDEX, callbackRef);
+			throw;
+		}
+	}
+	catch (const std::exception& exception)
+	{
+		return luaL_error(state, "%s", exception.what());
+	}
+}
+
+static research::Sh4LuaSubscriptionQueue::Token researchToken(lua_State *state)
+{
+	if (lua_gettop(state) != 1 || !lua_isnumber(state, 1))
+		throw std::invalid_argument("subscription token must be a positive integer");
+	const lua_Number value = lua_tonumber(state, 1);
+	constexpr lua_Number MaximumExactLuaInteger = 9007199254740991.0;
+	if (!std::isfinite(value) || value <= 0 || std::floor(value) != value
+			|| value > MaximumExactLuaInteger)
+		throw std::invalid_argument("subscription token must be a positive integer");
+	return static_cast<research::Sh4LuaSubscriptionQueue::Token>(value);
+}
+
+static int researchUnsubscribe(lua_State *state)
+{
+	try
+	{
+		const auto token = researchToken(state);
+		const bool removed = researchSubscriptions != nullptr
+				&& researchSubscriptions->unsubscribe(token);
+		if (removed)
+		{
+			const auto found = researchCallbackRefs.find(token);
+			if (found != researchCallbackRefs.end())
+			{
+				luaL_unref(state, LUA_REGISTRYINDEX, found->second);
+				researchCallbackRefs.erase(found);
+			}
+		}
+		lua_pushboolean(state, removed ? 1 : 0);
+		return 1;
+	}
+	catch (const std::exception& exception)
+	{
+		return luaL_error(state, "%s", exception.what());
+	}
+}
+
+static int researchSubscriptionStats(lua_State *state)
+{
+	try
+	{
+		const auto token = researchToken(state);
+		const auto stats = researchSubscriptions == nullptr
+				? std::nullopt : researchSubscriptions->stats(token);
+		if (!stats.has_value())
+		{
+			lua_pushnil(state);
+			return 1;
+		}
+		lua_newtable(state);
+		setBooleanField(state, "discovery", true);
+		setBooleanField(state, "active", stats->active);
+		setNumberField(state, "capacity", stats->capacity);
+		setNumberField(state, "queued", stats->queued);
+		setNumberField(state, "delivered", stats->delivered);
+		setNumberField(state, "dropped", stats->dropped);
+		setNumberField(state, "callback_errors", stats->callbackFailures);
+		return 1;
+	}
+	catch (const std::exception& exception)
+	{
+		return luaL_error(state, "%s", exception.what());
+	}
+}
+
 static void luaRegister(lua_State *L)
 {
 	getGlobalNamespace(L)
 		.beginNamespace ("flycast")
+			.beginNamespace("research")
+				.addCFunction("subscribe", researchSubscribe)
+				.addCFunction("unsubscribe", researchUnsubscribe)
+				.addCFunction("subscription_stats", researchSubscriptionStats)
+			.endNamespace()
 	  		.beginNamespace("emulator")
 				.addFunction("startGame", gui_start_game)	// FIXME threading!
 				.addFunction("stopGame", std::function<void()>([]() { gui_stop_game(""); }))
@@ -619,6 +1072,9 @@ void exec(const std::string& path)
 	std::string file = get_readonly_config_path(path);
 	if (!file_exists(file))
 		return;
+	lock_guard lock(mutex);
+	clearResearchSubscriptions();
+	researchSubscriptionsAllowed = true;
 	doExec(file);
 }
 
@@ -629,6 +1085,8 @@ void init()
 		return;
 	L = luaL_newstate();
 	luaL_openlibs(L);
+	researchSubscriptions = std::make_unique<research::Sh4LuaSubscriptionQueue>();
+	researchSubscriptionsAllowed = true;
 	luaRegister(L);
     EventManager::listen(Event::Start, emuEventCallback);
     EventManager::listen(Event::Resume, emuEventCallback);
@@ -645,6 +1103,9 @@ void term()
 {
 	if (L == nullptr)
 		return;
+	lock_guard lock(mutex);
+	researchSubscriptionsAllowed = false;
+	clearResearchSubscriptions();
     EventManager::unlisten(Event::Start, emuEventCallback);
     EventManager::unlisten(Event::Resume, emuEventCallback);
     EventManager::unlisten(Event::Pause, emuEventCallback);
@@ -654,6 +1115,7 @@ void term()
     EventManager::unlisten(Event::Network, emuEventCallback);
 	lua_close(L);
 	L = nullptr;
+	researchSubscriptions.reset();
 }
 
 }

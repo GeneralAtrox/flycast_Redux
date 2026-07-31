@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "flycast-research-sh4-equivalence-package-job-v1.schema.json",
+  "title": "Flycast SH-4 equivalence package publication job v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "schema_version", "package_id", "output", "equivalence_job",
+    "publisher", "validator", "limits", "metadata"
+  ],
+  "properties": {
+    "schema": { "const": "flycast-research-sh4-equivalence-package-job" },
+    "schema_version": { "const": 1 },
+    "package_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["accepted_directory"],
+      "properties": {
+        "accepted_directory": { "type": "string", "minLength": 1, "maxLength": 4096 }
+      }
+    },
+    "equivalence_job": { "$ref": "#/$defs/blob" },
+    "publisher": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["script"],
+      "properties": { "script": { "$ref": "#/$defs/blob" } }
+    },
+    "validator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["executable"],
+      "properties": { "executable": { "$ref": "#/$defs/blob" } }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["validator_timeout_seconds"],
+      "properties": {
+        "validator_timeout_seconds": { "type": "integer", "minimum": 1, "maximum": 3600 }
+      }
+    },
+    "metadata": { "type": "object", "maxProperties": 64 }
+  },
+  "$defs": {
+    "blob": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "size", "sha256"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "size": { "type": "integer", "minimum": 1 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    }
+  }
+}

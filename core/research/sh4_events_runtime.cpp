@@ -5,6 +5,8 @@
 #include "hw/sh4/sh4_if.h"
 #include "hw/sh4/sh4_mem.h"
 #include "research/identity_manifest.h"
+#include "research/sh4_observation.h"
+#include "research/sh4_observation_runtime.h"
 #include "research/sh4_events_capture.h"
 #include "research/sh4_events_manifest.h"
 #include "types.h"
@@ -13,8 +15,10 @@
 #include <cstring>
 #include <exception>
 #include <filesystem>
+#include <limits>
 #include <memory>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -27,6 +31,7 @@ namespace
 bool configured = false;
 std::unique_ptr<Sh4EventsCapture> session;
 std::atomic<bool> sessionActive {false};
+Sh4ObservationSubscription sessionSubscription = 0;
 std::recursive_mutex sessionMutex;
 thread_local std::uint32_t instructionLockDepth = 0;
 bool deferredStopRequested = false;
@@ -35,6 +40,8 @@ std::atomic<std::uint64_t> stopRequestGeneration {0};
 std::atomic<std::uint64_t> dirtyStopGeneration {0};
 std::uint64_t sessionStopRequestGeneration = 0;
 std::uint64_t sessionDirtyStopGeneration = 0;
+
+void consumeSh4Observation(const Sh4Observation& observation);
 
 std::filesystem::path researchPath(const std::string& value)
 {
@@ -80,22 +87,6 @@ void requireDistinctPaths(const std::vector<std::pair<const char *, std::filesys
 						+ " and " + paths[rhs].first);
 }
 
-Sh4RegisterSnapshot snapshotRegisters(const Sh4Context& context)
-{
-	Sh4RegisterSnapshot snapshot;
-	for (std::size_t index = 0; index < snapshot.r.size(); ++index)
-		snapshot.r[index] = context.r[index];
-	snapshot.pr = context.pr;
-	snapshot.gbr = context.gbr;
-	snapshot.vbr = context.vbr;
-	snapshot.mach = context.mac.h;
-	snapshot.macl = context.mac.l;
-	snapshot.sr = context.sr.getFull();
-	snapshot.fpul = context.fpul;
-	snapshot.fpscr = context.fpscr.full;
-	return snapshot;
-}
-
 Sh4GuestMemoryReader guestMemoryReader()
 {
 	return [](std::uint32_t address, std::uint32_t length) -> const std::uint8_t * {
@@ -103,22 +94,41 @@ Sh4GuestMemoryReader guestMemoryReader()
 	};
 }
 
-void finishSession(bool clean)
+struct DetachedSession
 {
+	std::unique_ptr<Sh4EventsCapture> capture;
+	Sh4ObservationSubscription subscription = 0;
+	bool clean = false;
+};
+
+DetachedSession detachSession(bool clean)
+{
+	DetachedSession detached;
 	if (session == nullptr)
-		return;
-	clean = clean && dirtyStopGeneration.load(std::memory_order_acquire)
-			== sessionDirtyStopGeneration;
+		return detached;
+	detached.clean = clean
+			&& dirtyStopGeneration.load(std::memory_order_acquire)
+					== sessionDirtyStopGeneration;
 	sessionActive.store(false, std::memory_order_release);
-	std::unique_ptr<Sh4EventsCapture> finishing = std::move(session);
-	if (!clean)
+	detached.subscription = sessionSubscription;
+	sessionSubscription = 0;
+	detached.capture = std::move(session);
+	return detached;
+}
+
+void finishDetachedSession(DetachedSession detached)
+{
+	unsubscribeSh4Observations(detached.subscription);
+	if (detached.capture == nullptr)
+		return;
+	if (!detached.clean)
 	{
-		finishing->abandon();
+		detached.capture->abandon();
 		return;
 	}
 	try
 	{
-		const Sh4EventsArtifactSummary summary = finishing->finish();
+		const Sh4EventsArtifactSummary summary = detached.capture->finish();
 		NOTICE_LOG(SH4,
 				"SH-4 events artifact complete: %llu calls, %llu returns, %llu watches, %llu exceptions",
 				static_cast<unsigned long long>(summary.callCount),
@@ -129,7 +139,7 @@ void finishSession(bool clean)
 	}
 	catch (...)
 	{
-		finishing->abandon();
+		detached.capture->abandon();
 		throw;
 	}
 }
@@ -152,12 +162,17 @@ void abandonSessionForCaptureFailure() noexcept
 	configured = false;
 	deferredStopRequested = false;
 	deferredStopClean = false;
-	if (session != nullptr)
+	DetachedSession detached = detachSession(false);
+	while (instructionLockDepth != 0)
 	{
-		sessionActive.store(false, std::memory_order_release);
-		session->abandon();
-		session.reset();
+		--instructionLockDepth;
+		sessionMutex.unlock();
 	}
+	try
+	{
+		finishDetachedSession(std::move(detached));
+	}
+	catch (...) { }
 }
 
 void releaseInstructionLock() noexcept
@@ -165,34 +180,39 @@ void releaseInstructionLock() noexcept
 	if (instructionLockDepth == 0)
 		return;
 	--instructionLockDepth;
-	if (instructionLockDepth == 0 && deferredStopRequested)
+	DetachedSession detached;
+	const bool finalize = instructionLockDepth == 0 && deferredStopRequested;
+	if (finalize)
 	{
 		const bool clean = deferredStopClean;
 		deferredStopRequested = false;
 		deferredStopClean = false;
-		try
-		{
-			finishSession(clean);
-		}
-		catch (const std::exception& exception)
-		{
-			ERROR_LOG(SH4, "Deferred SH-4 events finalization failed: %s",
-					exception.what());
-		}
-		catch (...)
-		{
-			ERROR_LOG(SH4, "Deferred SH-4 events finalization failed");
-		}
+		detached = detachSession(clean);
 	}
 	sessionMutex.unlock();
+	if (!finalize)
+		return;
+	try
+	{
+		finishDetachedSession(std::move(detached));
+	}
+	catch (const std::exception& exception)
+	{
+		ERROR_LOG(SH4, "Deferred SH-4 events finalization failed: %s",
+				exception.what());
+	}
+	catch (...)
+	{
+		ERROR_LOG(SH4, "Deferred SH-4 events finalization failed");
+	}
 }
 
 } // namespace
 
 void configureSh4EventsRuntime()
 {
-	const std::lock_guard<std::recursive_mutex> lock(sessionMutex);
 	abortSh4EventsRuntime();
+	const std::lock_guard<std::recursive_mutex> lock(sessionMutex);
 	const bool hasManifest = !config::ResearchSh4EventsManifestPath.get().empty();
 	const bool hasOutput = !config::ResearchSh4EventsRecordPath.get().empty();
 	if (!hasManifest && !hasOutput)
@@ -252,6 +272,20 @@ void startSh4EventsRuntime()
 	sessionDirtyStopGeneration = dirtyStopGeneration.load(std::memory_order_acquire);
 	session = std::make_unique<Sh4EventsCapture>(outputPath, identity, manifest,
 			static_cast<std::uint64_t>(config::ResearchSh4EventsMaxBytes.get()));
+	try
+	{
+		Sh4ObservationFilter recorderFilter;
+		recorderFilter.backendMask = sh4ObservationBackendBit(
+				Sh4ObservationBackend::Interpreter);
+		sessionSubscription = subscribeSh4Observations(recorderFilter,
+				consumeSh4Observation);
+	}
+	catch (...)
+	{
+		session->abandon();
+		session.reset();
+		throw;
+	}
 	sessionActive.store(true, std::memory_order_release);
 	NOTICE_LOG(SH4, "Armed SH-4 events manifest %s (%zu hooks, %zu watch ranges) to %s",
 			manifest.id.c_str(), manifest.hooks.size(), manifest.watchRanges.size(),
@@ -261,22 +295,26 @@ void startSh4EventsRuntime()
 void stopSh4EventsRuntime(bool clean)
 {
 	requestStop(clean);
-	const std::lock_guard<std::recursive_mutex> lock(sessionMutex);
-	configured = false;
-	if (session == nullptr)
-		return;
-	if (instructionLockDepth != 0)
+	DetachedSession detached;
 	{
-		if (deferredStopRequested)
-			deferredStopClean = deferredStopClean && clean;
-		else
+		const std::lock_guard<std::recursive_mutex> lock(sessionMutex);
+		configured = false;
+		if (session == nullptr)
+			return;
+		if (instructionLockDepth != 0)
 		{
-			deferredStopRequested = true;
-			deferredStopClean = clean;
+			if (deferredStopRequested)
+				deferredStopClean = deferredStopClean && clean;
+			else
+			{
+				deferredStopRequested = true;
+				deferredStopClean = clean;
+			}
+			return;
 		}
-		return;
+		detached = detachSession(clean);
 	}
-	finishSession(clean);
+	finishDetachedSession(std::move(detached));
 }
 
 void abortSh4EventsRuntime() noexcept
@@ -284,38 +322,35 @@ void abortSh4EventsRuntime() noexcept
 	requestStop(false);
 	try
 	{
-		const std::lock_guard<std::recursive_mutex> lock(sessionMutex);
-		configured = false;
-		deferredStopRequested = false;
-		deferredStopClean = false;
-		if (session != nullptr)
+		DetachedSession detached;
 		{
-			sessionActive.store(false, std::memory_order_release);
-			session->abandon();
-			session.reset();
+			std::unique_lock<std::recursive_mutex> lock(sessionMutex);
+			configured = false;
+			deferredStopRequested = false;
+			deferredStopClean = false;
+			detached = detachSession(false);
+			while (instructionLockDepth != 0)
+			{
+				--instructionLockDepth;
+				sessionMutex.unlock();
+			}
 		}
+		finishDetachedSession(std::move(detached));
 	}
 	catch (...) { }
 }
 
-void sh4EventsInstructionBegin(std::uint32_t pc, std::uint16_t opcode,
-		std::uint64_t tick, const Sh4Context& context)
+void consumeInstructionBegin(const Sh4InstructionState& state)
 {
 	if (!sessionActive.load(std::memory_order_acquire))
 		return;
 	sessionMutex.lock();
-	if (session == nullptr)
+	if (!sessionActive.load(std::memory_order_acquire) || session == nullptr)
 	{
 		sessionMutex.unlock();
 		return;
 	}
 	++instructionLockDepth;
-	Sh4InstructionState state;
-	state.pc = pc;
-	state.nextPc = context.pc;
-	state.opcode = opcode;
-	state.tick = tick;
-	state.registers = snapshotRegisters(context);
 	try
 	{
 		session->beginInstruction(state, guestMemoryReader());
@@ -323,13 +358,11 @@ void sh4EventsInstructionBegin(std::uint32_t pc, std::uint16_t opcode,
 	catch (...)
 	{
 		abandonSessionForCaptureFailure();
-		releaseInstructionLock();
 		throw;
 	}
 }
 
-void sh4EventsInstructionEnd(std::uint32_t pc, std::uint16_t opcode,
-		std::uint64_t tick, const Sh4Context& context)
+void consumeInstructionEnd(const Sh4InstructionState& state)
 {
 	if (instructionLockDepth == 0)
 		return;
@@ -337,25 +370,18 @@ void sh4EventsInstructionEnd(std::uint32_t pc, std::uint16_t opcode,
 	{
 		if (session != nullptr)
 		{
-			Sh4InstructionState state;
-			state.pc = pc;
-			state.nextPc = context.pc;
-			state.opcode = opcode;
-			state.tick = tick;
-			state.registers = snapshotRegisters(context);
 			session->endInstruction(state, guestMemoryReader());
 		}
 	}
 	catch (...)
 	{
 		abandonSessionForCaptureFailure();
-		releaseInstructionLock();
 		throw;
 	}
 	releaseInstructionLock();
 }
 
-void sh4EventsInstructionAbort() noexcept
+void consumeInstructionAbort() noexcept
 {
 	if (instructionLockDepth == 0)
 		return;
@@ -371,7 +397,7 @@ void sh4EventsInstructionAbort() noexcept
 	releaseInstructionLock();
 }
 
-void sh4EventsMemoryAccess(std::uint32_t address, std::uint8_t width,
+void consumeMemoryAccess(std::uint32_t address, std::uint8_t width,
 		Sh4MemoryAccessKind kind, std::uint64_t value)
 {
 	if (!sessionActive.load(std::memory_order_acquire))
@@ -385,13 +411,13 @@ void sh4EventsMemoryAccess(std::uint32_t address, std::uint8_t width,
 	catch (...)
 	{
 		abandonSessionForCaptureFailure();
-		releaseInstructionLock();
 		throw;
 	}
 }
 
-void sh4EventsException(std::uint32_t exceptionPc, std::uint32_t vectorPc,
-		std::uint32_t exceptionCode, std::uint64_t tick, const Sh4Context& context)
+void consumeException(std::uint32_t exceptionPc, std::uint32_t vectorPc,
+		std::uint32_t exceptionCode, std::uint64_t tick,
+		const Sh4RegisterSnapshot& registers)
 {
 	if (!sessionActive.load(std::memory_order_acquire))
 		return;
@@ -400,14 +426,98 @@ void sh4EventsException(std::uint32_t exceptionPc, std::uint32_t vectorPc,
 	{
 		if (session != nullptr)
 			session->observeException(exceptionPc, vectorPc, exceptionCode, tick,
-					snapshotRegisters(context));
+					registers);
 	}
 	catch (...)
 	{
 		abandonSessionForCaptureFailure();
-		releaseInstructionLock();
 		throw;
 	}
+}
+
+namespace
+{
+
+Sh4InstructionState observationInstructionState(const Sh4Observation& observation)
+{
+	Sh4InstructionState state;
+	state.pc = observation.instructionPc;
+	state.nextPc = observation.nextPc;
+	state.opcode = observation.opcode;
+	state.tick = observation.tick;
+	state.registers = observation.registers;
+	return state;
+}
+
+void consumeSh4Observation(const Sh4Observation& observation)
+{
+	if (observation.backend != Sh4ObservationBackend::Interpreter)
+		throw std::logic_error("SH-4 events v1 received a non-interpreter observation");
+	switch (observation.type)
+	{
+	case Sh4ObservationType::InstructionBegin:
+		consumeInstructionBegin(observationInstructionState(observation));
+		break;
+	case Sh4ObservationType::InstructionEnd:
+		consumeInstructionEnd(observationInstructionState(observation));
+		break;
+	case Sh4ObservationType::InstructionAbort:
+		consumeInstructionAbort();
+		break;
+	case Sh4ObservationType::MemoryRead:
+		consumeMemoryAccess(observation.memoryAddress, observation.memoryWidth,
+				Sh4MemoryAccessKind::Read, observation.memoryValue);
+		break;
+	case Sh4ObservationType::MemoryWrite:
+		consumeMemoryAccess(observation.memoryAddress, observation.memoryWidth,
+				Sh4MemoryAccessKind::Write, observation.memoryValue);
+		break;
+	case Sh4ObservationType::Exception:
+		consumeException(observation.exceptionPc, observation.vectorPc,
+				observation.exceptionCode, observation.tick, observation.registers);
+		break;
+	case Sh4ObservationType::Call:
+	case Sh4ObservationType::Return:
+		// SH-4 events v1 derives its manifest-filtered semantic records from the
+		// canonical instruction observations. Discovery subscribers receive the
+		// unfiltered call/return observations as an additional view.
+		break;
+	}
+}
+
+} // namespace
+
+void sh4EventsInstructionBegin(std::uint32_t pc, std::uint16_t opcode,
+		std::uint64_t tick, const Sh4Context& context)
+{
+	sh4ObservationInstructionBegin(Sh4ObservationBackend::Interpreter, pc, opcode,
+			tick, context);
+}
+
+void sh4EventsInstructionEnd(std::uint32_t pc, std::uint16_t opcode,
+		std::uint64_t tick, const Sh4Context& context)
+{
+	sh4ObservationInstructionEnd(Sh4ObservationBackend::Interpreter, pc, opcode,
+			tick, context);
+}
+
+void sh4EventsInstructionAbort() noexcept
+{
+	sh4ObservationInstructionAbort(Sh4ObservationBackend::Interpreter);
+}
+
+void sh4EventsMemoryAccess(std::uint32_t address, std::uint8_t width,
+		Sh4MemoryAccessKind kind, std::uint64_t value)
+{
+	sh4ObservationMemoryAccess(sh4ObservationCurrentInstructionBackend(
+			Sh4ObservationBackend::Interpreter), address, width, kind, value);
+}
+
+void sh4EventsException(std::uint32_t exceptionPc, std::uint32_t vectorPc,
+		std::uint32_t exceptionCode, std::uint64_t tick, const Sh4Context& context)
+{
+	sh4ObservationException(Sh4ObservationBackend::Interpreter, exceptionPc,
+			vectorPc, exceptionCode, tick, context);
 }
 
 bool sh4EventsRuntimeActive()

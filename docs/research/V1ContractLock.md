@@ -41,3 +41,8 @@ capture-validation.json
 SH-4, PowerVR, GD-ROM, or multi-artifact publication therefore requires a v2
 package (or another separately versioned typed package); it cannot be added to
 capture transaction v1.
+
+The separate [capture-package-v2 contract](CapturePackageV2.md) composes a
+published v1 package by exact reference and revalidation. Its schemas, receipt,
+package membership, publisher, and validator are versioned independently and
+do not modify these locked v1 bytes or five-entry membership.

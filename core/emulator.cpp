@@ -44,6 +44,7 @@
 #include "research/maple_runtime.h"
 #include "research/memory_ranges_runtime.h"
 #include "research/sh4_events_runtime.h"
+#include "research/sh4_observation_capture_runtime.h"
 #include "oslib/storage.h"
 #include "wsi/context.h"
 #include <chrono>
@@ -565,6 +566,7 @@ int getGamePlatform(const std::string& filename)
 void Emulator::loadGame(const char *path, LoadProgress *progress)
 {
 	init();
+	research::setMapleCheckpointHandler([] { emu.stop(); });
 	try {
 		DEBUG_LOG(BOOT, "Loading game %s", path == nullptr ? "(nil)" : path);
 
@@ -595,6 +597,7 @@ void Emulator::loadGame(const char *path, LoadProgress *progress)
 		config::Settings::instance().reset();
 		config::Settings::instance().load(false);
 		research::configureRuntime();
+		research::configureSh4ObservationCaptureRuntime();
 		research::configureMemoryRangesRuntime();
 		research::configureSh4EventsRuntime();
 		dc_reset(true);
@@ -678,6 +681,7 @@ void Emulator::loadGame(const char *path, LoadProgress *progress)
 		// reload settings so that all settings can be overridden
 		loadGameSpecificSettings();
 		research::startRuntime();
+		research::startSh4ObservationCaptureRuntime();
 		research::startMemoryRangesRuntime();
 		research::startSh4EventsRuntime();
 		NetworkHandshake::init();
@@ -705,6 +709,7 @@ void Emulator::loadGame(const char *path, LoadProgress *progress)
 
 		state = Loaded;
 	} catch (...) {
+		research::abortSh4ObservationCaptureRuntime();
 		research::abortSh4EventsRuntime();
 		research::abortMemoryRangesRuntime();
 		research::abortRuntime();
@@ -739,6 +744,7 @@ void Emulator::runInternal()
 
 				if (resetRequested)
 				{
+					research::abortSh4ObservationCaptureRuntime();
 					research::abortSh4EventsRuntime();
 					research::abortMemoryRangesRuntime();
 					nvmem::saveFiles();
@@ -761,6 +767,11 @@ void Emulator::unloadGame()
 	} catch (...) { }
 	if (state == Loaded || state == Error)
 	{
+		try {
+			research::stopSh4ObservationCaptureRuntime(state == Loaded);
+		} catch (const std::exception& e) {
+			ERROR_LOG(COMMON, "SH-4 observation finalization failed: %s", e.what());
+		}
 		try {
 			research::stopRuntime(state == Loaded);
 		} catch (const std::exception& e) {

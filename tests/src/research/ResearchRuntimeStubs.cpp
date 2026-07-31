@@ -1,4 +1,6 @@
 #include "cfg/option.h"
+#include "hw/sh4/sh4_cycles.h"
+#include "hw/sh4/sh4_opcode_list.h"
 #include "log/Log.h"
 #include "ResearchRuntimeStubs.h"
 
@@ -19,6 +21,7 @@ Option<std::string, false> ResearchIdentityManifestPath("IdentityManifest", "", 
 Option<std::string, false> ResearchMapleRecordPath("MapleRecord", "", "research");
 Option<std::string, false> ResearchMapleReplayPath("MapleReplay", "", "research");
 Option<int64_t, false> ResearchMapleTraceMaxBytes("MapleTraceMaxBytes", 512_MB, "research");
+Option<int64_t, false> ResearchMapleDmaCheckpoint("MapleDmaCheckpoint", 0, "research");
 Option<std::string, false> ResearchMemoryRangesManifestPath("MemoryRangesManifest", "", "research");
 Option<std::string, false> ResearchMemoryRangesRecordPath("MemoryRangesRecord", "", "research");
 Option<int64_t, false> ResearchMemoryRangesMaxBytes("MemoryRangesMaxBytes",
@@ -27,6 +30,18 @@ Option<std::string, false> ResearchSh4EventsManifestPath("Sh4EventsManifest", ""
 Option<std::string, false> ResearchSh4EventsRecordPath("Sh4EventsRecord", "", "research");
 Option<int64_t, false> ResearchSh4EventsMaxBytes("Sh4EventsMaxBytes",
 		256ll * 1024 * 1024, "research");
+Option<bool, false> ResearchDynarecObservation("DynarecObservation", false,
+		"research");
+Option<std::string, false> ResearchSh4ObservationRecordPath(
+		"Sh4ObservationRecord", "", "research");
+Option<std::string, false> ResearchSh4ObservationManifestSetPath(
+		"Sh4ObservationManifestSet", "", "research");
+Option<int64_t, false> ResearchSh4ObservationMaxBytes(
+		"Sh4ObservationMaxBytes", 512ll * 1024 * 1024, "research");
+Option<int64_t, false> ResearchSh4ObservationStartDma(
+		"Sh4ObservationStartDma", 0, "research");
+Option<int64_t, false> ResearchDreamcastRtcSeed(
+		"DreamcastRtcSeed", -1, "research");
 
 bool open() { return true; }
 int loadInt(const std::string&, const std::string&, int value) { return value; }
@@ -52,8 +67,42 @@ std::vector<std::string> getEntries(const std::string&) { return {}; }
 
 } // namespace config
 
+u64 sh4_sched_now64()
+{
+	return 1000;
+}
+
 void GenericLog(LogTypes::LOG_LEVELS, LogTypes::LOG_TYPE, const char *, int, const char *, ...)
 {
+}
+
+// The standalone research tests link the observation runtime without the full
+// SH-4 decoder. Precise dynarec marker timing is exercised by the real-emulator
+// differential test; these definitions only keep the synthetic runtime target
+// self-contained and safe if a marker is invoked accidentally.
+namespace
+{
+
+sh4_opcodelistentry researchTestOpcode {
+		nullptr, nullptr, 0, 0, Normal, "research-test", 1, 1, CO, 0, 0};
+
+struct ResearchOpcodeTableInitializer
+{
+	ResearchOpcodeTableInitializer()
+	{
+		std::fill(std::begin(OpDesc), std::end(OpDesc), &researchTestOpcode);
+	}
+};
+
+ResearchOpcodeTableInitializer researchOpcodeTableInitializer;
+
+} // namespace
+
+sh4_opcodelistentry* OpDesc[0x10000];
+
+int Sh4Cycles::countCycles(u16)
+{
+	return 1;
 }
 
 namespace

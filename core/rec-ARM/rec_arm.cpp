@@ -51,6 +51,7 @@ using namespace vixl::aarch32;
 #include "arm_unwind.h"
 #include "oslib/virtmem.h"
 #include "emulator.h"
+#include "research/sh4_observation_runtime.h"
 
 //#define CANONICALTEST
 
@@ -1540,7 +1541,7 @@ void Arm32Assembler::compileOp(RuntimeBlockInfo* block, shil_opcode* op, bool op
 
 			Sub(r0, r8, sizeof(Sh4Context));
 			Mov(r1, op->rs3._imm);
-			if (!mmu_enabled())
+			if (!mmu_enabled() && !config::ResearchDynarecObservation.get())
 			{
 				call((void *)OpPtr[op->rs3._imm]);
 			}
@@ -1551,6 +1552,111 @@ void Arm32Assembler::compileOp(RuntimeBlockInfo* block, shil_opcode* op, bool op
 				call((void *)interpreter_fallback);
 			}
 			break;
+
+		case shop_research_begin:
+		case shop_research_end:
+		case shop_research_conditional_end:
+		case shop_research_conditional_before_delay:
+		case shop_research_conditional_after_delay:
+		{
+			const auto marker = research::sh4DynarecObservationMarkerFor(op->op);
+			verify(marker != nullptr && op->size <= 0xffffu);
+			Sub(r0, r8, sizeof(Sh4Context));
+			Mov(r1, op->rs1._imm);
+			Mov(r2, op->rs2._imm | (op->size << 16));
+			Mov(r3, op->rs3._imm);
+			call((void *)marker);
+			break;
+		}
+
+		case shop_research_fpu_guard:
+		{
+			Label fpu_enabled;
+			loadSh4Reg(r0, reg_sr_status);
+			Tst(r0, 1 << 15);
+			B(eq, &fpu_enabled);
+			Mov(r0, op->delay_slot ? op->rs1._imm - 2u : op->rs1._imm);
+			Mov(r1, op->delay_slot ? Sh4Ex_SlotFpuDisabled
+					: Sh4Ex_FpuDisabled);
+			call((void *)Do_Exception);
+			loadSh4Reg(r4, reg_nextpc);
+			jump(no_update);
+			Bind(&fpu_enabled);
+			break;
+		}
+
+		case shop_research_memory_begin_read:
+		case shop_research_memory_begin_write:
+		{
+			if (op->rs1.is_imm())
+				Mov(r0, op->rs1._imm);
+			else
+			{
+				verify(op->rs1.is_reg());
+				Ldr(r0, MemOperand(r8, op->rs1.reg_nofs()));
+			}
+			if (!op->rs2.is_null())
+			{
+				if (op->rs2.is_imm())
+					Mov(r1, op->rs2._imm);
+				else
+					Ldr(r1, MemOperand(r8, op->rs2.reg_nofs()));
+				Add(r0, r0, r1);
+			}
+			const bool write = op->op == shop_research_memory_begin_write;
+			Mov(r1, op->size | (write ? 0x100u : 0u));
+			if (!write)
+			{
+				Mov(r2, 0);
+				Mov(r3, 0);
+			}
+			else if (op->rs3.is_imm())
+			{
+				Mov(r2, op->rs3._imm);
+				Mov(r3, 0);
+			}
+			else if (op->size == 8)
+			{
+				Ldr(r2, MemOperand(r8, op->rs3.reg_nofs()));
+				Ldr(r3, MemOperand(r8, op->rs3.reg_nofs() + 4));
+			}
+			else
+			{
+				Ldr(r2, MemOperand(r8, op->rs3.reg_nofs()));
+				Mov(r3, 0);
+			}
+			call((void *)research::sh4DynarecObservationMemoryBegin);
+			break;
+		}
+
+		case shop_research_memory_end_read:
+		case shop_research_memory_end_write:
+		{
+			Mov(r0, 0);
+			Mov(r1, 0);
+			if (op->op == shop_research_memory_end_write)
+			{
+				Mov(r2, 0);
+				Mov(r3, 0);
+			}
+			else if (op->rs3.is_imm())
+			{
+				Mov(r2, op->rs3._imm);
+				Mov(r3, 0);
+			}
+			else if (op->size == 8)
+			{
+				Ldr(r2, MemOperand(r8, op->rs3.reg_nofs()));
+				Ldr(r3, MemOperand(r8, op->rs3.reg_nofs() + 4));
+			}
+			else
+			{
+				Ldr(r2, MemOperand(r8, op->rs3.reg_nofs()));
+				Mov(r3, 0);
+			}
+			call((void *)research::sh4DynarecObservationMemoryEnd);
+			break;
+		}
 
 #ifndef CANONICALTEST
 		case shop_neg:
@@ -2214,7 +2320,8 @@ void Arm32Assembler::compile(RuntimeBlockInfo* block, bool force_checks, bool op
 			}
 		}
 	}
-	if (mmu_enabled() && block->has_fpu_op)
+	if (mmu_enabled() && block->has_fpu_op
+			&& !config::ResearchDynarecObservation.get())
 	{
 		Mov(r0, block->vaddr);
 		call((void *)checkBlockFpu);
@@ -2229,17 +2336,20 @@ void Arm32Assembler::compile(RuntimeBlockInfo* block, bool force_checks, bool op
 	call(intc_sched);
 	Mov(r1, r0);
 	Bind(&cyclesRemaining);
-	const u32 cycles = block->guest_cycles;
-	if (!ImmediateA32::IsImmediateA32(cycles))
+	if (!config::ResearchDynarecObservation.get())
 	{
-		Sub(r1, r1, cycles & ~3);
-		Sub(r1, r1, cycles & 3);
+		const u32 cycles = block->guest_cycles;
+		if (!ImmediateA32::IsImmediateA32(cycles))
+		{
+			Sub(r1, r1, cycles & ~3);
+			Sub(r1, r1, cycles & 3);
+		}
+		else
+		{
+			Sub(r1, r1, cycles);
+		}
+		Str(r1, MemOperand(r8, ctxOffset(cycle_counter)));
 	}
-	else
-	{
-		Sub(r1, r1, cycles);
-	}
-	Str(r1, MemOperand(r8, ctxOffset(cycle_counter)));
 
 	//compile the block's opcodes
 	shil_opcode* op;

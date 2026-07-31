@@ -195,6 +195,53 @@ shil_opc(ifb)
 shil_recimp()
 shil_opc_end()
 
+// Research-only instruction boundaries. The decoder emits these only when
+// transient dynarec observation is enabled; every native backend handles them
+// explicitly after writing allocated guest registers back to Sh4Context.
+shil_opc(research_begin)
+shil_recimp()
+shil_opc_end()
+
+shil_opc(research_end)
+shil_recimp()
+shil_opc_end()
+
+shil_opc(research_conditional_end)
+shil_recimp()
+shil_opc_end()
+
+shil_opc(research_conditional_before_delay)
+shil_recimp()
+shil_opc_end()
+
+shil_opc(research_conditional_after_delay)
+shil_recimp()
+shil_opc_end()
+
+// Research-only runtime SR.FD guard. Normal dynarec blocks retain their
+// existing block-level handling; observation blocks use this at the precise
+// guest-instruction boundary so an FPU fault has the same owner as the
+// interpreter, including in a delay slot.
+shil_opc(research_fpu_guard)
+shil_recimp()
+shil_opc_end()
+
+shil_opc(research_memory_begin_read)
+shil_recimp()
+shil_opc_end()
+
+shil_opc(research_memory_begin_write)
+shil_recimp()
+shil_opc_end()
+
+shil_opc(research_memory_end_read)
+shil_recimp()
+shil_opc_end()
+
+shil_opc(research_memory_end_write)
+shil_recimp()
+shil_opc_end()
+
 //mem io
 shil_opc(readm)	
 shil_recimp()

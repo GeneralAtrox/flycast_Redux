@@ -44,6 +44,8 @@ using namespace vixl::aarch64;
 #include "hw/mem/addrspace.h"
 #include "oslib/virtmem.h"
 #include "emulator.h"
+#include "cfg/option.h"
+#include "research/sh4_observation_runtime.h"
 
 struct DynaRBI : RuntimeBlockInfo
 {
@@ -274,8 +276,11 @@ public:
 		Mov(w1, w0);
 		Bind(&cycles_remaining);
 
-		Sub(w1, w1, block->guest_cycles);
-		Str(w1, sh4_context_mem_operand(&sh4ctx.cycle_counter));
+		if (!config::ResearchDynarecObservation.get())
+		{
+			Sub(w1, w1, block->guest_cycles);
+			Str(w1, sh4_context_mem_operand(&sh4ctx.cycle_counter));
+		}
 
 		for (size_t i = 0; i < block->oplist.size(); i++)
 		{
@@ -293,7 +298,7 @@ public:
 
 				Mov(x0, x28);
 				Mov(w1, op.rs3._imm);
-				if (!mmu_enabled())
+				if (!mmu_enabled() && !config::ResearchDynarecObservation.get())
 				{
 					GenCallRuntime(OpDesc[op.rs3._imm]->oph);
 				}
@@ -306,6 +311,88 @@ public:
 				}
 
 				break;
+
+			case shop_research_begin:
+			case shop_research_end:
+			case shop_research_conditional_end:
+			case shop_research_conditional_before_delay:
+			case shop_research_conditional_after_delay:
+			{
+				const auto marker = research::sh4DynarecObservationMarkerFor(op.op);
+				verify(marker != nullptr && op.size <= 0xffffu);
+				Mov(x0, x28);
+				Mov(w1, op.rs1._imm);
+				Mov(w2, op.rs2._imm | (op.size << 16));
+				Mov(w3, op.rs3._imm);
+				GenCallRuntime(marker);
+				break;
+			}
+
+			case shop_research_fpu_guard:
+			{
+				Label fpu_enabled;
+				Ldr(w10, sh4_context_mem_operand(&sh4ctx.sr.status));
+				Tbz(w10, 15, &fpu_enabled);
+				Mov(w0, op.delay_slot ? op.rs1._imm - 2u : op.rs1._imm);
+				Mov(w1, op.delay_slot ? Sh4Ex_SlotFpuDisabled
+						: Sh4Ex_FpuDisabled);
+				GenCallRuntime(Do_Exception);
+				Ldr(w29, sh4_context_mem_operand(&sh4ctx.pc));
+				GenBranch(arm64_no_update);
+				Bind(&fpu_enabled);
+				break;
+			}
+
+			case shop_research_memory_begin_read:
+			case shop_research_memory_begin_write:
+			{
+				if (op.rs1.is_imm())
+					Mov(w0, op.rs1._imm);
+				else
+				{
+					verify(op.rs1.is_reg());
+					Ldr(w0, MemOperand(x28, op.rs1.reg_offset()));
+				}
+				if (!op.rs2.is_null())
+				{
+					if (op.rs2.is_imm())
+						Add(w0, w0, op.rs2._imm);
+					else
+					{
+						Ldr(w9, MemOperand(x28, op.rs2.reg_offset()));
+						Add(w0, w0, w9);
+					}
+				}
+				const bool write = op.op == shop_research_memory_begin_write;
+				Mov(w1, op.size | (write ? 0x100u : 0u));
+				if (!write)
+					Mov(x2, 0);
+				else if (op.rs3.is_imm())
+					Mov(x2, op.rs3._imm);
+				else if (op.size == 8)
+					Ldr(x2, MemOperand(x28, op.rs3.reg_offset()));
+				else
+					Ldr(w2, MemOperand(x28, op.rs3.reg_offset()));
+				GenCallRuntime(research::sh4DynarecObservationMemoryBegin);
+				break;
+			}
+
+			case shop_research_memory_end_read:
+			case shop_research_memory_end_write:
+			{
+				Mov(w0, 0);
+				Mov(w1, 0);
+				if (op.op == shop_research_memory_end_write)
+					Mov(x2, 0);
+				else if (op.rs3.is_imm())
+					Mov(x2, op.rs3._imm);
+				else if (op.size == 8)
+					Ldr(x2, MemOperand(x28, op.rs3.reg_offset()));
+				else
+					Ldr(w2, MemOperand(x28, op.rs3.reg_offset()));
+				GenCallRuntime(research::sh4DynarecObservationMemoryEnd);
+				break;
+			}
 
 			case shop_jcond:
 			case shop_jdyn:
@@ -2136,7 +2223,8 @@ private:
 			Bind(&blockcheck_success);
 		}
 
-		if (mmu_enabled() && block->has_fpu_op)
+		if (mmu_enabled() && block->has_fpu_op
+				&& !config::ResearchDynarecObservation.get())
 		{
 			// Verify that the FPU is enabled
 			Mov(w0, block->vaddr);

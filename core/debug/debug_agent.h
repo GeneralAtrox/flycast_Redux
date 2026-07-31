@@ -247,7 +247,6 @@ public:
 
 	u32 interrupt()
 	{
-		config::DynarecEnabled = false;
 		exception = SIGINT;
 		emu.stop();
 		return exception;

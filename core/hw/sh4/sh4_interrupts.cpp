@@ -11,6 +11,9 @@
 
 #include "types.h"
 #include "sh4_interrupts.h"
+#include "sh4_sched.h"
+#include "cfg/option.h"
+#include "research/sh4_observation_runtime.h"
 #include "sh4_core.h"
 #include "sh4_mmr.h"
 #include "oslib/oslib.h"
@@ -183,6 +186,10 @@ void ResetInterruptMask(InterruptID intr)
 
 static void Do_Interrupt(Sh4ExceptionCode intEvn)
 {
+	research::sh4ObservationInterruptRaised(config::DynarecEnabled.get()
+				? research::Sh4ObservationBackend::Dynarec
+				: research::Sh4ObservationBackend::Interpreter,
+			static_cast<u32>(intEvn), sh4_sched_now64(), Sh4cntx);
 	CCN_INTEVT = intEvn;
 
 	Sh4cntx.ssr = Sh4cntx.sr.getFull();
@@ -202,6 +209,8 @@ void Do_Exception(u32 epc, Sh4ExceptionCode expEvn)
 			|| expEvn == Sh4Ex_FpuDisabled || expEvn == Sh4Ex_SlotFpuDisabled || expEvn == Sh4Ex_UserBreak);
 	if (Sh4cntx.sr.BL != 0)
 		throw FlycastException("Fatal: SH4 exception when blocked");
+	research::sh4ObservationExceptionRaised(epc, static_cast<u32>(expEvn),
+			Sh4cntx);
 	CCN_EXPEVT = expEvn;
 
 	Sh4cntx.ssr = Sh4cntx.sr.getFull();

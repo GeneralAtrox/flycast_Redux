@@ -18,12 +18,50 @@
  */
 #pragma once
 
+#include <string_view>
+
 namespace debugger {
 
 // exception thrown in response to trap
 struct Stop { };
 
 	static const int DEFAULT_PORT = 3263;
+
+	// The research GDB endpoint is intentionally limited to coherent read-only
+	// snapshots plus the stop/resume lifecycle needed to take them.
+	inline bool isReadOnlyCommandAllowed(std::string_view packet)
+	{
+		if (packet.empty())
+			return false;
+		if (packet.size() == 1)
+		{
+			switch (packet.front())
+			{
+			case '\x03': // interrupt
+			case '!':    // extended-mode negotiation
+			case '?':    // halt reason
+			case 'c':    // resume without changing PC
+			case 'D':    // detach and resume
+			case 'g':    // read all registers
+				return true;
+			default:
+				break;
+			}
+		}
+		if (packet.front() == 'H' || packet.front() == 'm'
+				|| packet.front() == 'p' || packet.front() == 'T')
+			return true;
+		if (packet.front() == 'q')
+		{
+			constexpr std::string_view remoteCommand = "qRcmd,";
+			if (packet.substr(0, remoteCommand.size()) != remoteCommand)
+				return true;
+			// Hex-encoded "stack" is the only read-only monitor command.
+			return packet == "qRcmd,737461636b";
+		}
+		return packet == "vCont?" || packet == "vCont;c"
+				|| packet == "vMustReplyEmpty";
+	}
 
 #ifdef GDB_SERVER
 

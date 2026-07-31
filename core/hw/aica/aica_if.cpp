@@ -22,6 +22,7 @@
 #include "aica.h"
 
 #include <ctime>
+#include <limits>
 
 namespace aica
 {
@@ -36,6 +37,13 @@ int rtc_schid = -1;
 
 u32 GetRTC_now()
 {
+	const std::int64_t researchSeed = config::ResearchDreamcastRtcSeed.get();
+	if (researchSeed >= 0)
+	{
+		verify(static_cast<std::uint64_t>(researchSeed)
+				<= std::numeric_limits<std::uint32_t>::max());
+		return static_cast<u32>(researchSeed);
+	}
 	// rtc kept static for netplay when savestate is not loaded
 	if (config::GGPOEnable)
 		// 1/1/70 00:00:00

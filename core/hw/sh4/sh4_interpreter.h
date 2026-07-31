@@ -22,12 +22,15 @@ public:
 
 protected:
 	Sh4Context *ctx = nullptr;
+	Sh4Cycles& executionCycles() noexcept;
+	int executionCycleRatio() const noexcept;
 
 private:
 	void ExecuteOpcode(u16 op);
 	u16 ReadNexOp();
 
 	Sh4Cycles sh4cycles{CPU_RATIO};
+	Sh4Cycles preciseObservationCycles{1};
 	// SH4 underclock factor when using the interpreter so that it's somewhat usable
 #ifdef STRICT_MODE
 	static constexpr int CPU_RATIO = 1;

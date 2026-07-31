@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "flycast-research-sh4-equivalence-package-validation-v1.schema.json",
+  "title": "Flycast SH-4 equivalence package validation receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "schema_version", "package_id", "status", "package_manifest",
+    "report", "validator", "locked_entry_count"
+  ],
+  "properties": {
+    "schema": { "const": "flycast-research-sh4-equivalence-package-validation" },
+    "schema_version": { "const": 1 },
+    "package_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "status": { "const": "accepted" },
+    "package_manifest": { "$ref": "#/$defs/blob" },
+    "report": { "$ref": "#/$defs/blob" },
+    "validator": { "$ref": "#/$defs/blob" },
+    "locked_entry_count": { "type": "integer", "minimum": 1, "maximum": 128 }
+  },
+  "$defs": {
+    "blob": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "size", "sha256"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "size": { "type": "integer", "minimum": 1 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    }
+  }
+}

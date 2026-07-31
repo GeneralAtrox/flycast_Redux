@@ -14,38 +14,54 @@
 #include "debug/gdb_server.h"
 #include "../sh4_cycles.h"
 #include "research/memory_ranges_runtime.h"
+#include "research/sh4_observation_runtime.h"
 #include "research/sh4_events_runtime.h"
+#include "cfg/option.h"
 
 Sh4ICache icache;
 Sh4OCache ocache;
 Sh4Interpreter *Sh4Interpreter::Instance;
+
+int Sh4Interpreter::executionCycleRatio() const noexcept
+{
+	return !config::DynarecEnabled.get()
+			&& research::sh4ObservationPreciseTimingActive(
+					research::Sh4ObservationBackend::Interpreter)
+			? 1 : CPU_RATIO;
+}
+
+Sh4Cycles& Sh4Interpreter::executionCycles() noexcept
+{
+	return executionCycleRatio() == 1 ? preciseObservationCycles : sh4cycles;
+}
 
 void Sh4Interpreter::ExecuteOpcode(u16 op)
 {
 	const u32 executedPc = ctx->pc - 2;
 	try
 	{
-		research::sh4EventsInstructionBegin(executedPc, op, sh4cycles.now(), *ctx);
-		research::memoryRangesInstructionBoundary(executedPc, sh4cycles.now());
+		Sh4Cycles& cycles = executionCycles();
+		research::sh4EventsInstructionBegin(executedPc, op, cycles.now(), *ctx);
+		research::memoryRangesInstructionBoundary(executedPc, cycles.now());
 		if (ctx->sr.FD == 1 && OpDesc[op]->IsFloatingPoint())
 			throw SH4ThrownException(executedPc, Sh4Ex_FpuDisabled);
 		OpPtr[op](ctx, op);
-		sh4cycles.executeCycles(op);
-		research::sh4EventsInstructionEnd(executedPc, op, sh4cycles.now(), *ctx);
+		cycles.executeCycles(op);
+		research::sh4EventsInstructionEnd(executedPc, op, cycles.now(), *ctx);
+		if (!config::DynarecEnabled.get()
+				&& research::sh4ObservationPreciseTimingActive(
+						research::Sh4ObservationBackend::Interpreter)
+				&& OpDesc[op]->SetPC())
+			preciseObservationCycles.reset();
 	}
-	catch (const SH4ThrownException& exception)
+	catch (const SH4ThrownException&)
 	{
-		const u32 vectorPc = ctx->vbr
-				+ (exception.expEvn == Sh4Ex_TlbMissRead
-						|| exception.expEvn == Sh4Ex_TlbMissWrite ? 0x400 : 0x100);
-		research::sh4EventsException(exception.epc, vectorPc,
-				static_cast<u32>(exception.expEvn), sh4cycles.now(), *ctx);
-		research::sh4EventsInstructionAbort();
 		throw;
 	}
 	catch (...)
 	{
-		research::sh4EventsInstructionAbort();
+		research::sh4ObservationInstructionAbortAll(
+				research::Sh4ObservationBackend::Interpreter);
 		throw;
 	}
 }
@@ -82,7 +98,7 @@ void Sh4Interpreter::Run()
 			} catch (const SH4ThrownException& ex) {
 				Do_Exception(ex.epc, ex.expEvn);
 				// an exception requires the instruction pipeline to drain, so approx 5 cycles
-				sh4cycles.addCycles(5 * CPU_RATIO);
+				executionCycles().addCycles(5 * executionCycleRatio());
 			}
 		} while (ctx->CpuRunning);
 	} catch (const debugger::Stop&) {
@@ -114,7 +130,7 @@ void Sh4Interpreter::Step()
 	} catch (const SH4ThrownException& ex) {
 		Do_Exception(ex.epc, ex.expEvn);
 		// an exception requires the instruction pipeline to drain, so approx 5 cycles
-		sh4cycles.addCycles(5 * CPU_RATIO);
+		executionCycles().addCycles(5 * executionCycleRatio());
 	} catch (const debugger::Stop&) {
 	}
 	Instance = nullptr;
@@ -148,6 +164,7 @@ void Sh4Interpreter::Reset(bool hard)
 	icache.Reset(hard);
 	ocache.Reset(hard);
 	sh4cycles.reset();
+	preciseObservationCycles.reset();
 	ctx->cycle_counter = SH4_TIMESLICE;
 
 	INFO_LOG(INTERPRETER, "Sh4 Reset");
@@ -212,6 +229,7 @@ void Sh4Interpreter::Init()
 	ctx = &p_sh4rcb->cntx;
 	memset(ctx, 0, sizeof(*ctx));
 	sh4cycles.init(ctx);
+	preciseObservationCycles.init(ctx);
 	icache.init(ctx);
 	ocache.init(ctx);
 }

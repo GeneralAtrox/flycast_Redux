@@ -1,11 +1,16 @@
 #include "research/identity_manifest.h"
 #include "research/maple_trace.h"
+#include "research/memory_ranges_capture.h"
+#include "research/memory_ranges_manifest.h"
+#include "research/sh4_events_artifact.h"
+#include "research/sh4_events_manifest.h"
 
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -120,6 +125,47 @@ void writeProductionTrace(const std::string& identityPath, const std::string& tr
 	writer.finalize();
 }
 
+void writeMemoryRangesArtifact(const std::filesystem::path& identityPath,
+		const std::filesystem::path& manifestPath, const std::filesystem::path& artifactPath)
+{
+	const research::IdentityManifest identity = research::loadIdentityManifest(identityPath);
+	const research::MemoryRangesManifest manifest =
+			research::loadMemoryRangesManifest(manifestPath);
+	const std::map<std::uint32_t, std::vector<std::uint8_t>> memory {
+		{0x8c001000, {0x01, 0x23, 0x45, 0x67}},
+	};
+	research::MemoryRangesCapture capture(artifactPath, identity, manifest);
+	const auto reader = [&memory](std::uint32_t address,
+			std::uint32_t length) -> const std::uint8_t * {
+		const auto found = memory.find(address);
+		if (found == memory.end() || found->second.size() != length)
+			return nullptr;
+		return found->second.data();
+	};
+	if (!capture.observeInstruction(0x8c010000, 1234, reader))
+		throw std::runtime_error("memory-range fixture trigger did not fire");
+	(void)capture.finish();
+}
+
+void writeSh4EventsArtifact(const std::filesystem::path& identityPath,
+		const std::filesystem::path& manifestPath, const std::filesystem::path& artifactPath)
+{
+	const research::IdentityManifest identity = research::loadIdentityManifest(identityPath);
+	const research::Sh4EventsManifest manifest =
+			research::loadSh4EventsManifest(manifestPath);
+	research::Sh4EventsArtifactWriter writer(artifactPath, identity.digest, manifest);
+	research::Sh4WatchEvent event;
+	event.tick = 1400;
+	event.watchIndex = 0;
+	event.instructionPc = 0x8c010100;
+	event.address = 0x8c002000;
+	event.width = 4;
+	event.kind = research::Sh4MemoryAccessKind::Read;
+	event.value = 0x67452301;
+	writer.writeWatch(event);
+	(void)writer.finalize();
+}
+
 void writeAll(std::FILE *stream, const std::vector<std::uint8_t>& bytes)
 {
 	std::size_t offset = 0;
@@ -197,6 +243,20 @@ int main(int argc, char **argv)
 		if (mode == "tool-output")
 		{
 			writeToolOutput();
+			return 0;
+		}
+		if (mode == "memory-ranges-artifact")
+		{
+			if (argc != 5)
+				throw std::runtime_error("memory-ranges-artifact requires identity, manifest, and output");
+			writeMemoryRangesArtifact(argv[2], argv[3], argv[4]);
+			return 0;
+		}
+		if (mode == "sh4-events-artifact")
+		{
+			if (argc != 5)
+				throw std::runtime_error("sh4-events-artifact requires identity, manifest, and output");
+			writeSh4EventsArtifact(argv[2], argv[3], argv[4]);
 			return 0;
 		}
 

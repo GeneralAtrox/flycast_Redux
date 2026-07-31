@@ -10,13 +10,13 @@ target_include_directories(${PROJECT_NAME} PUBLIC inc)
 target_sources(${PROJECT_NAME} PRIVATE
         src/CheatManagerTest.cpp
         src/ConfigFileTest.cpp
+		src/debug/GdbServerPolicyTest.cpp
         src/div32_test.cpp
         src/test_stubs.cpp
         src/serialize_test.cpp
         src/AicaArmTest.cpp
         src/Sh4InterpreterTest.cpp
         src/MmuTest.cpp
-        src/HttpTest.cpp
         src/IniFileTest.cpp
         src/hw/modem/v42Test.cpp
         src/hw/modem/v42bisTest.cpp
@@ -35,3 +35,15 @@ target_sources(${PROJECT_NAME} PRIVATE
         src/util/PeriodicThreadTest.cpp
         src/util/TsQueueTest.cpp
         src/util/WorkerThreadTest.cpp)
+
+# HttpTest directly uses libcurl for remote-test cleanup. The Windows HTTP
+# backend is WinInet and does not provide curl headers or libraries.
+if(NOT WIN32)
+    target_sources(${PROJECT_NAME} PRIVATE src/HttpTest.cpp)
+endif()
+
+if(BUILD_RESEARCH_TOOLS AND NOT LIBRETRO)
+    target_sources(${PROJECT_NAME} PRIVATE
+            src/research/Sh4DynarecDifferentialTest.cpp
+            src/research/Sh4LuaApiTest.cpp)
+endif()

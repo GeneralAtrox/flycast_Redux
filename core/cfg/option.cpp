@@ -163,6 +163,7 @@ Option<std::string, false> ResearchIdentityManifestPath("IdentityManifest", "", 
 Option<std::string, false> ResearchMapleRecordPath("MapleRecord", "", "research");
 Option<std::string, false> ResearchMapleReplayPath("MapleReplay", "", "research");
 Option<int64_t, false> ResearchMapleTraceMaxBytes("MapleTraceMaxBytes", 512_MB, "research");
+Option<int64_t, false> ResearchMapleDmaCheckpoint("MapleDmaCheckpoint", 0, "research");
 Option<std::string, false> ResearchMemoryRangesManifestPath("MemoryRangesManifest", "", "research");
 Option<std::string, false> ResearchMemoryRangesRecordPath("MemoryRangesRecord", "", "research");
 Option<int64_t, false> ResearchMemoryRangesMaxBytes("MemoryRangesMaxBytes",
@@ -171,6 +172,18 @@ Option<std::string, false> ResearchSh4EventsManifestPath("Sh4EventsManifest", ""
 Option<std::string, false> ResearchSh4EventsRecordPath("Sh4EventsRecord", "", "research");
 Option<int64_t, false> ResearchSh4EventsMaxBytes("Sh4EventsMaxBytes",
 		256ll * 1024 * 1024, "research");
+Option<bool, false> ResearchDynarecObservation("DynarecObservation", false,
+		"research");
+Option<std::string, false> ResearchSh4ObservationRecordPath(
+		"Sh4ObservationRecord", "", "research");
+Option<std::string, false> ResearchSh4ObservationManifestSetPath(
+		"Sh4ObservationManifestSet", "", "research");
+Option<int64_t, false> ResearchSh4ObservationMaxBytes(
+		"Sh4ObservationMaxBytes", 512ll * 1024 * 1024, "research");
+Option<int64_t, false> ResearchSh4ObservationStartDma(
+		"Sh4ObservationStartDma", 0, "research");
+Option<int64_t, false> ResearchDreamcastRtcSeed(
+		"DreamcastRtcSeed", -1, "research");
 
 // Profiler
 Option<bool> ProfilerEnabled("Profiler.Enabled");

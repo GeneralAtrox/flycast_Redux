@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://flycast.example/research/flycast-research-capture-package-job-v2.schema.json",
+  "title": "Flycast Research Capture Package Job v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "schema_version",
+    "package_id",
+    "output",
+    "base_capture_v1",
+    "identity",
+    "static_analysis",
+    "artifacts",
+    "publisher",
+    "validator",
+    "limits",
+    "metadata"
+  ],
+  "properties": {
+    "schema": { "const": "flycast-research-capture-package-job" },
+    "schema_version": { "const": 2 },
+    "package_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["accepted_directory"],
+      "properties": {
+        "accepted_directory": { "$ref": "#/$defs/nonempty_path" }
+      }
+    },
+    "base_capture_v1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["accepted_directory", "entries"],
+      "properties": {
+        "accepted_directory": { "$ref": "#/$defs/nonempty_path" },
+        "entries": {
+          "type": "array",
+          "minItems": 5,
+          "maxItems": 5,
+          "items": { "$ref": "#/$defs/blob" }
+        }
+      }
+    },
+    "identity": { "$ref": "#/$defs/blob" },
+    "static_analysis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["export", "program", "exporter_script"],
+      "properties": {
+        "export": { "$ref": "#/$defs/blob" },
+        "program": { "$ref": "#/$defs/blob" },
+        "exporter_script": { "$ref": "#/$defs/blob" }
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 2,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "artifact", "manifest", "maximum_bytes"],
+        "properties": {
+          "kind": { "enum": ["memory-ranges-v1", "sh4-events-v1"] },
+          "artifact": { "$ref": "#/$defs/blob" },
+          "manifest": { "$ref": "#/$defs/blob" },
+          "maximum_bytes": { "type": "integer", "minimum": 1, "maximum": 1074790400 }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": { "kind": { "const": "sh4-events-v1" } },
+              "required": ["kind"]
+            },
+            "then": {
+              "properties": {
+                "maximum_bytes": { "maximum": 268435456 }
+              }
+            }
+          }
+        ]
+      }
+    },
+    "publisher": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["script"],
+      "properties": {
+        "script": { "$ref": "#/$defs/blob" }
+      }
+    },
+    "validator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["executable"],
+      "properties": {
+        "executable": { "$ref": "#/$defs/blob" }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["validator_timeout_seconds"],
+      "properties": {
+        "validator_timeout_seconds": { "type": "integer", "minimum": 1, "maximum": 3600 }
+      }
+    },
+    "metadata": { "type": "object", "maxProperties": 64 }
+  },
+  "$defs": {
+    "nonempty_path": { "type": "string", "minLength": 1, "maxLength": 4096 },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "blob": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "size", "sha256"],
+      "properties": {
+        "path": { "$ref": "#/$defs/nonempty_path" },
+        "size": { "type": "integer", "minimum": 1 },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    }
+  }
+}

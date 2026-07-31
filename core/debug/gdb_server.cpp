@@ -29,11 +29,13 @@
 #include <thread>
 #include <chrono>
 #include <cassert>
+#include <limits>
 #include <memory>
 
 namespace debugger {
 
 constexpr u32 MAX_PACKET_LEN = 4096;
+constexpr u32 MAX_READ_LEN = 1024;
 
 static u8 unpack(char c)
 {
@@ -138,7 +140,7 @@ public:
 	TcpAcceptor(GdbServer& server, asio::io_context& io_context, u16 port)
 		: server(server), io_context(io_context),
 		  acceptor(asio::ip::tcp::acceptor(io_context,
-				asio::ip::tcp::endpoint(asio::ip::tcp::v4(), port)))
+				asio::ip::tcp::endpoint(asio::ip::address_v4::loopback(), port)))
 	{
 		asio::socket_base::reuse_address option(true);
 		acceptor.set_option(option);
@@ -260,7 +262,12 @@ private:
 
 			DEBUG_LOG(NETWORK, "gdb: recv %s", packet.c_str());
 			std::vector<std::string> replies;
-			switch (packet[0])
+			if (!isReadOnlyCommandAllowed(packet))
+			{
+				WARN_LOG(COMMON, "Read-only GDB server rejected command: %s", packet.c_str());
+				replies.push_back("E22");
+			}
+			else switch (packet[0])
 			{
 			case '!':	// Enable extended mode
 				replies.push_back("OK");
@@ -398,6 +405,7 @@ private:
 			ERROR_LOG(COMMON, "%s", e.what());
 			attached = false;
 			connection.reset();
+			agent.detach();
 			throw e;
 		}
 	}
@@ -458,6 +466,12 @@ private:
 		if (sscanf(pkt.c_str(), "m%x,%x:", &addr, &len) != 2)
 		{
 			WARN_LOG(COMMON, "readMem: invalid packet %s", pkt.c_str());
+			return "E01";
+		}
+		if (len == 0 || len > MAX_READ_LEN
+				|| addr > std::numeric_limits<u32>::max() - (len - 1))
+		{
+			WARN_LOG(COMMON, "readMem: range rejected %s", pkt.c_str());
 			return "E01";
 		}
 		const u8 *mem = agent.readMem(addr, len);
@@ -612,7 +626,7 @@ private:
 			// Tell the remote stub about features supported by GDB,
 			// and query the stub for features it supports
 			char qsupported[128];
-			snprintf(qsupported, 128, "PacketSize=%i;vContSupported+", MAX_PACKET_LEN);
+			snprintf(qsupported, 128, "PacketSize=%i;vContSupported+;QStartNoAckMode-", MAX_PACKET_LEN);
 			return { qsupported };
 		}
 		else if (pkt.rfind("qSymbol:", 0) == 0)
@@ -667,8 +681,8 @@ private:
 		if (pkt.rfind("vAttach;", 0) == 0)
 			return { "S05" };
 		else if (pkt.rfind("vCont?", 0) == 0)
-			// supported vCont actions - (c)ontinue, (s)tep, (r)ange-step
-			return { "vCont;c;s;r" };
+			// Read-only discovery permits resume but not stepping.
+			return { "vCont;c" };
 		else if (pkt.rfind("vCont", 0) == 0)
 		{
 			std::string vContCmd = pkt.substr(strlen("vCont;"));
@@ -866,10 +880,24 @@ private:
 		}
 	}
 
-	void clientConnected(Connection::Ptr connection) {
+	bool clientConnected(Connection::Ptr connection) {
+		if (attached)
+			return false;
 		attached = true;
 		this->connection = connection;
 		agentInterrupt();
+		return true;
+	}
+
+	void clientDisconnected(const Connection::Ptr& disconnected)
+	{
+		if (connection != disconnected)
+			return;
+		attached = false;
+		connection.reset();
+		// A failed or abruptly closed discovery client must not leave gameplay
+		// paused. start() is a no-op if detach already resumed the emulator.
+		agent.detach();
 	}
 
 	static void emuEventCallback(Event event, void *arg)
@@ -911,8 +939,10 @@ static GdbServer gdbServer;
 void TcpAcceptor::handleAccept(Connection::Ptr newConnection, const std::error_code& error)
 {
 	if (!error) {
-		server.clientConnected(newConnection);
-		newConnection->start();
+		if (server.clientConnected(newConnection))
+			newConnection->start();
+		else
+			newConnection->getSocket().close();
 	}
 	start();
 }
@@ -926,6 +956,7 @@ void Connection::handlePacket(const std::error_code& ec, size_t len)
 		// terminate the connection
 		if (ec != asio::error::eof && ec != asio::error::operation_aborted)
 			WARN_LOG(NETWORK, "Read error %s", ec.message().c_str());
+		server.clientDisconnected(shared_from_this());
 		return;
 	}
 	try {
@@ -957,6 +988,7 @@ void Connection::handlePacket(const std::error_code& ec, size_t len)
 		start();
 	} catch (...) {
 		// terminate the connection
+		server.clientDisconnected(shared_from_this());
 	}
 }
 

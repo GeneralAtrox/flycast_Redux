@@ -79,15 +79,75 @@ The interpreter is the first authoritative execution backend. Dynarec evidence
 is admitted only after equivalence tests cover block boundaries, exceptions,
 delay slots, self-modifying code, and memory access width/order.
 
-The first two Phase 3 vertical slices are implemented. The memory-range slice
+The first four Phase 3 vertical slices are implemented. A fifth foundational
+slice now defines the versioned backend-neutral native SH-4 observation bus,
+routes the frozen interpreter recorder through it without changing v1 artifact
+bytes, and publishes ordered instruction, call, return, memory, exception, and
+abort observations behind per-backend inactive atomic fast paths. Canonical
+frame ownership, register snapshots, call/return derivation, exception
+ownership, and memory-event construction now live in a shared runtime invoked
+by interpreter wrappers and dynarec JIT markers, rather than in the frozen v1
+recorder. The memory-range slice
 provides strict generic manifests, exact identity cross-binding, a one-shot
 pre-instruction interpreter trigger, raw main-RAM range events, fail-closed
 binary finalization, and a standalone streaming validator. The SH-4 events
 slice adds manifest-filtered BSR/BSRF/JSR and delay-slot-correct RTS evidence,
 bounded architectural-register images, call/return memory snapshots, interpreter
 data read/write watchpoints, exception ownership, typed counts, and independent
-validation. Capture-package v2, dynarec equivalence, Ghidra export schemas, and
-Lua subscriptions remain open.
+validation. The Ghidra export slice adds a bounded deterministic inventory of
+program identity, memory blocks, functions, symbols, and data types; exact
+executable/exporter hashing; an independent validator; and exact runtime
+manifest joins. The capture-package-v2 slice composes an
+independently revalidated Maple v1 base with the exact identity, Ghidra export,
+memory-range artifact, and/or SH-4 artifact; revalidates every typed join;
+issues a deterministic receipt; and publishes the complete set by one
+sibling-directory rename with forced-abort quarantine coverage. A sixth slice
+adds a fail-closed fixed-record observation trace bound independently to the
+interpreter or dynarec identity and jointly to replay and manifest-set digests.
+Its separately implemented streaming comparator rejects malformed inputs,
+validates instruction/delay-slot/call/return ownership, compares every semantic
+field exactly, and identifies the first divergent ordinal and field. A seventh
+slice adds opt-in research SHIL instruction markers across x64, ARM32, and ARM64,
+forces coherent `Sh4Context` snapshots at each marker, reconstructs per-op ticks
+from block cycle positions, preserves latched conditional delay-slot ownership,
+disables instruction-eliding optimizer passes for observed blocks, and leaves
+normal blocks entirely uninstrumented. An eighth slice now admits
+only equivalent comparisons through a self-contained, path-localized package:
+the publisher stages exact inputs, runs the staged comparator, locks every
+entry, obtains an independently recomputed receipt, and publishes by one
+sibling-directory rename. Mutation, divergence, and forced aborts before and
+after validation are covered fail-closed. Real differential execution now
+covers block boundaries, calls/returns and delay slots, synchronous and delayed
+faults, interrupts, fastmem/MMU/fallback memory, exact access widths/order, and
+compiled-code invalidation after self-modifying writes. Bounded Lua discovery
+delivery is implemented over the same canonical bus.
+
+The trace capture bridge now accepts only backend-specific identity v2,
+authenticates one common Maple replay and manifest-set file, applies the exact
+interpreter/dynarec configuration before executor selection, records the
+matching native backend, and re-authenticates inputs before clean finalization.
+Identity v1 and Maple trace v1 remain frozen; identity v2 explicitly binds the
+original identity digest carried by the shared Maple replay and one exact
+Dreamcast RTC seed shared by both processes. The authenticated
+two-process job/report now binds both identity-v2 manifests, the exact emulator
+build, common typed Maple replay, ordered manifest set, both traces, and the
+independent comparator. It produces deterministic equivalent or
+first-divergence reports. Atomic equivalence-package admission and semantic
+differential fixtures are implemented. The external Lodoss admission gate
+passed on 2026-07-31: the independently validated package matched all 574,470
+events with zero drops and no first divergence.
+
+The following memory slice now surrounds native dynarec `readm`/`writem` SHIL
+with success-sensitive markers, preserving effective addresses and exact-width
+values across fastmem, rewritten slow, MMU, and immediate-address compilation.
+The exception slice now observes the common pre-transition exception boundary,
+aborts complete nested delay chains, and records scheduler interrupts as
+backend-specific unowned exception events. Observed blocks also use a precise
+per-instruction FPU-disabled guard instead of the legacy MMU block-entry check,
+with slot-FPU ownership and interpreter-ordered delay-slot ticks. The real x64
+differential fixture proves invalidation and end-to-end equivalence for the
+required synthetic cases. The accepted 2026-07-31 external Lodoss package
+completes the project-level dynarec admission gate.
 
 ## Phase 4: PowerVR causal ownership
 

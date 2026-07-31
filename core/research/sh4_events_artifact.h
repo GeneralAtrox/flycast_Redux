@@ -1,5 +1,6 @@
 #pragma once
 
+#include "research/sh4_observation.h"
 #include "research/sh4_events_manifest.h"
 #include "research/sha256.h"
 
@@ -17,32 +18,6 @@ constexpr std::uint32_t Sh4EventsArtifactSchemaVersion = 1;
 constexpr std::uint32_t Sh4EventsArtifactHeaderSize = 232;
 constexpr std::uint32_t Sh4EventsArtifactEndianSentinel = 0x01020304;
 constexpr std::uint64_t DefaultMaximumSh4EventsArtifactBytes = 256ull * 1024 * 1024;
-
-enum class Sh4CallKind : std::uint16_t
-{
-	Bsr = 1,
-	Bsrf = 2,
-	Jsr = 3,
-};
-
-enum class Sh4MemoryAccessKind : std::uint8_t
-{
-	Read = 1,
-	Write = 2,
-};
-
-struct Sh4RegisterSnapshot
-{
-	std::array<std::uint32_t, 16> r {};
-	std::uint32_t pr = 0;
-	std::uint32_t gbr = 0;
-	std::uint32_t vbr = 0;
-	std::uint32_t mach = 0;
-	std::uint32_t macl = 0;
-	std::uint32_t sr = 0;
-	std::uint32_t fpul = 0;
-	std::uint32_t fpscr = 0;
-};
 
 struct Sh4SnapshotView
 {

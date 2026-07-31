@@ -23,6 +23,9 @@ enum class Mode
 	Replay,
 };
 
+MapleCheckpointHandler checkpointHandler = nullptr;
+MapleDmaBeginHandler dmaBeginHandler = nullptr;
+
 [[noreturn]] void divergence(const std::string& field)
 {
 	throw FlycastException("Maple research replay divergence: " + field);
@@ -35,19 +38,32 @@ void exact(const T& observed, const T& expected, const char *field)
 		divergence(field);
 }
 
+void exact(std::uint64_t observed, std::uint64_t expected, const char *field)
+{
+	if (observed != expected)
+		throw FlycastException("Maple research replay divergence: "
+				+ std::string(field) + " observed=" + std::to_string(observed)
+				+ " expected=" + std::to_string(expected));
+}
+
 class Session
 {
 public:
 	Session(Mode mode, IdentityManifest identity, std::unique_ptr<MapleTraceWriter> writer,
-			MapleTrace replay)
-		: mode(mode), identity(std::move(identity)), writer(std::move(writer)), replay(std::move(replay))
+			MapleTrace replay, std::uint64_t dmaCheckpoint)
+		: mode(mode), identity(std::move(identity)), writer(std::move(writer)),
+			replay(std::move(replay)), dmaCheckpoint(dmaCheckpoint)
 	{
 	}
 
 	std::uint64_t beginDma(MapleDmaBeginEvent event)
 	{
 		if (mode == Mode::Record)
-			return writer->beginDma(event);
+		{
+			const std::uint64_t ordinal = writer->beginDma(event);
+			notifyDmaBegin(ordinal);
+			return ordinal;
+		}
 		const MapleDmaBeginEvent& expected = next<MapleDmaBeginEvent>(MapleTraceEventType::DmaBegin);
 		exact(event.tick, expected.tick, "DMA begin tick");
 		exact(event.descriptorAddress, expected.descriptorAddress, "DMA descriptor address");
@@ -56,6 +72,7 @@ public:
 		exact(event.mmsel, expected.mmsel, "SB_MMSEL");
 		exact(event.trigger, expected.trigger, "DMA trigger");
 		exact(event.swapMsb, expected.swapMsb, "DMA byte order");
+		notifyDmaBegin(expected.dmaOrdinal);
 		return expected.dmaOrdinal;
 	}
 
@@ -110,6 +127,7 @@ public:
 		if (mode == Mode::Record)
 		{
 			writer->commitDma(event);
+			checkpointAfterCommit();
 			return;
 		}
 		const MapleDmaCommitEvent& expected =
@@ -120,6 +138,7 @@ public:
 		exact(event.jitter, expected.jitter, "DMA callback jitter");
 		exact(event.responseCount, expected.responseCount, "DMA committed response count");
 		exact(event.flags, expected.flags, "DMA commit flags");
+		checkpointAfterCommit();
 	}
 
 	void abortDma(MapleDmaAbortEvent event)
@@ -134,6 +153,8 @@ public:
 
 	void finish()
 	{
+		if (dmaCheckpoint != 0 && !checkpointReached)
+			divergence("DMA checkpoint was not reached");
 		if (mode == Mode::Record)
 		{
 			const MapleTraceSummary summary = writer->finalize();
@@ -157,6 +178,23 @@ public:
 	Mode getMode() const { return mode; }
 
 private:
+	void notifyDmaBegin(std::uint64_t zeroBasedOrdinal)
+	{
+		if (dmaBeginHandler != nullptr)
+			dmaBeginHandler(zeroBasedOrdinal + 1);
+	}
+
+	void checkpointAfterCommit()
+	{
+		++committedDmaCount;
+		if (dmaCheckpoint == 0 || committedDmaCount != dmaCheckpoint)
+			return;
+		checkpointReached = true;
+		if (checkpointHandler == nullptr)
+			divergence("DMA checkpoint handler is unavailable");
+		checkpointHandler();
+	}
+
 	template<typename T>
 	const T& next(MapleTraceEventType type)
 	{
@@ -173,6 +211,9 @@ private:
 	std::unique_ptr<MapleTraceWriter> writer;
 	MapleTrace replay;
 	std::size_t cursor = 0;
+	std::uint64_t dmaCheckpoint = 0;
+	std::uint64_t committedDmaCount = 0;
+	bool checkpointReached = false;
 };
 
 Mode configuredMode = Mode::None;
@@ -191,7 +232,11 @@ std::filesystem::path researchPath(const std::string& value)
 
 void applyDeterministicOverrides()
 {
-	config::DynarecEnabled.override(false);
+	// Backend-equivalence capture owns this setting from its v2 identity before
+	// dc_reset selects the executor. Frozen Maple-only v1 sessions remain
+	// interpreter-only.
+	if (config::ResearchSh4ObservationRecordPath.get().empty())
+		config::DynarecEnabled.override(false);
 	config::ThreadedRendering.override(false);
 	config::AutoLoadState.override(false);
 	config::AutoSaveState.override(false);
@@ -201,8 +246,13 @@ void applyDeterministicOverrides()
 void verifyRuntimeConfiguration(const IdentityManifest& identity)
 {
 	const IdentityRuntimeConfiguration& expected = identity.runtimeConfiguration;
-	if (expected.cpuBackend != "interpreter" || config::DynarecEnabled.get())
+	const bool expectedDynarec = expected.cpuBackend == "dynarec";
+	if ((expected.cpuBackend != "interpreter" && !expectedDynarec)
+			|| config::DynarecEnabled.get() != expectedDynarec)
 		throw FlycastException("research identity/runtime CPU backend mismatch");
+	if (expected.dynarecObservation
+			!= config::ResearchDynarecObservation.get())
+		throw FlycastException("research identity/runtime dynarec observation mismatch");
 	if (expected.threadedRendering != config::ThreadedRendering.get())
 		throw FlycastException("research identity/runtime threaded-rendering mismatch");
 	if (expected.autoLoadState != config::AutoLoadState.get())
@@ -211,6 +261,9 @@ void verifyRuntimeConfiguration(const IdentityManifest& identity)
 		throw FlycastException("research identity/runtime auto-save-state mismatch");
 	if (expected.ggpo != config::GGPOEnable.get())
 		throw FlycastException("research identity/runtime GGPO mismatch");
+	if (expected.mapleDmaCheckpoint
+			!= static_cast<std::uint64_t>(config::ResearchMapleDmaCheckpoint.get()))
+		throw FlycastException("research identity/runtime Maple DMA checkpoint mismatch");
 }
 
 } // namespace
@@ -231,10 +284,17 @@ void configureRuntime()
 		throw FlycastException("research.MapleTraceMaxBytes must be positive");
 	if (config::ResearchMapleTraceMaxBytes.get() < MapleTraceHeaderSize)
 		throw FlycastException("research.MapleTraceMaxBytes is smaller than the trace header");
+	if (config::ResearchMapleDmaCheckpoint.get() < 0
+			|| static_cast<std::uint64_t>(config::ResearchMapleDmaCheckpoint.get())
+					> MaximumMapleDmaCheckpoint)
+		throw FlycastException("research.MapleDmaCheckpoint is outside [0, 10000000]");
 	const char *modeKey = recording ? "MapleRecord" : "MapleReplay";
 	if (!config::isTransient("research", "IdentityManifest")
 			|| !config::isTransient("research", modeKey))
 		throw FlycastException("Maple research paths must be supplied as transient options");
+	if (config::ResearchMapleDmaCheckpoint.get() != 0
+			&& !config::isTransient("research", "MapleDmaCheckpoint"))
+		throw FlycastException("research.MapleDmaCheckpoint must be transient");
 	applyDeterministicOverrides();
 }
 
@@ -253,22 +313,29 @@ void startRuntime()
 	if (pathsAlias(identityPath, tracePath))
 		throw FlycastException("research identity and Maple trace paths alias");
 	IdentityManifest identity = loadIdentityManifest(identityPath);
+	const std::uint64_t dmaCheckpoint = static_cast<std::uint64_t>(
+			config::ResearchMapleDmaCheckpoint.get());
+	if (identity.schemaVersion == 2)
+		requireSh4EquivalenceIdentityV2(identity);
 	verifyRuntimeConfiguration(identity);
 
 	if (configuredMode == Mode::Record)
 	{
+		requireCaptureV1Identity(identity);
 		auto writer = std::make_unique<MapleTraceWriter>(tracePath, identity.digest,
 				static_cast<std::uint64_t>(config::ResearchMapleTraceMaxBytes.get()));
 		session = std::make_unique<Session>(configuredMode, std::move(identity),
-				std::move(writer), MapleTrace {});
+				std::move(writer), MapleTrace {}, dmaCheckpoint);
 		NOTICE_LOG(MAPLE, "Recording typed Maple research trace to %s", tracePath.string().c_str());
 	}
 	else
 	{
-		MapleTrace replay = loadProductionMapleTrace(tracePath, identity.digest,
+		const Sha256Digest& replayIdentity = identity.hasMapleReplayIdentityDigest
+				? identity.mapleReplayIdentityDigest : identity.digest;
+		MapleTrace replay = loadProductionMapleTrace(tracePath, replayIdentity,
 				static_cast<std::uint64_t>(config::ResearchMapleTraceMaxBytes.get()));
 		session = std::make_unique<Session>(configuredMode, std::move(identity), nullptr,
-				std::move(replay));
+				std::move(replay), dmaCheckpoint);
 		NOTICE_LOG(MAPLE, "Replaying typed Maple research trace from %s", tracePath.string().c_str());
 	}
 }
@@ -321,6 +388,16 @@ bool mapleRecording()
 bool mapleReplaying()
 {
 	return session != nullptr && session->getMode() == Mode::Replay;
+}
+
+void setMapleCheckpointHandler(MapleCheckpointHandler handler)
+{
+	checkpointHandler = handler;
+}
+
+void setMapleDmaBeginHandler(MapleDmaBeginHandler handler)
+{
+	dmaBeginHandler = handler;
 }
 
 std::uint64_t mapleBeginDma(MapleDmaBeginEvent event)

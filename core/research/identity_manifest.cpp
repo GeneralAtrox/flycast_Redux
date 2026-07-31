@@ -66,6 +66,7 @@ const json& requiredConfigurationValue(const json& values, const char *name)
 
 struct ValidatedIdentity
 {
+	std::uint32_t schemaVersion = 0;
 	IdentityRuntimeConfiguration runtimeConfiguration;
 	std::string mediaKind;
 	std::size_t mediaTrackCount = 0;
@@ -73,9 +74,34 @@ struct ValidatedIdentity
 	bool hasStaticAnalysis = false;
 	Sha256Digest staticAnalysisProgramDigest {};
 	Sha256Digest staticAnalysisExportDigest {};
+	std::uint32_t staticAnalysisImageBase = 0;
 	bool hasHookManifestDigest = false;
 	Sha256Digest hookManifestDigest {};
+	bool hasMapleReplayIdentityDigest = false;
+	Sha256Digest mapleReplayIdentityDigest {};
 };
+
+std::uint32_t parseImageBase(const std::string& value)
+{
+	if (value.size() != 10 || value[0] != '0' || value[1] != 'x')
+		invalid("static_analysis.image_base must use 0x00000000 form");
+	std::uint32_t result = 0;
+	for (std::size_t index = 2; index < value.size(); ++index)
+	{
+		const char character = value[index];
+		unsigned digit = 0;
+		if (character >= '0' && character <= '9')
+			digit = static_cast<unsigned>(character - '0');
+		else if (character >= 'a' && character <= 'f')
+			digit = static_cast<unsigned>(character - 'a' + 10);
+		else if (character >= 'A' && character <= 'F')
+			digit = static_cast<unsigned>(character - 'A' + 10);
+		else
+			invalid("static_analysis.image_base must use 0x00000000 form");
+		result = (result << 4) | digit;
+	}
+	return result;
+}
 
 ValidatedIdentity validateIdentityJson(const json& root)
 {
@@ -90,6 +116,7 @@ ValidatedIdentity validateIdentityJson(const json& root)
 		"emulator",
 		"configuration",
 		"static_analysis",
+		"equivalence",
 	};
 	for (const auto& item : root.items())
 		if (allowedTopLevel.find(item.key()) == allowedTopLevel.end())
@@ -97,9 +124,14 @@ ValidatedIdentity validateIdentityJson(const json& root)
 
 	if (!root.contains("schema") || root.at("schema") != "flycast-research-identity")
 		invalid("unsupported schema");
-	if (!root.contains("schema_version") || !root.at("schema_version").is_number_unsigned()
-			|| root.at("schema_version").get<std::uint64_t>() != 1)
+	if (!root.contains("schema_version") || !root.at("schema_version").is_number_unsigned())
 		invalid("unsupported schema_version");
+	const std::uint64_t schemaVersionValue = root.at("schema_version").get<std::uint64_t>();
+	if (schemaVersionValue != 1 && schemaVersionValue != 2)
+		invalid("unsupported schema_version");
+	const std::uint32_t schemaVersion = static_cast<std::uint32_t>(schemaVersionValue);
+	if (schemaVersion == 1 && root.contains("equivalence"))
+		invalid("identity v1 does not permit equivalence metadata");
 
 	const json& media = requiredObject(root, "media");
 	if (!media.contains("kind") || !media.at("kind").is_string())
@@ -195,11 +227,37 @@ ValidatedIdentity validateIdentityJson(const json& root)
 	if (!configuration.contains("values") || !configuration.at("values").is_object())
 		invalid("configuration.values must be an object");
 	const json& values = configuration.at("values");
+	if (schemaVersion == 1 && values.contains("dynarec_observation"))
+		invalid("identity v1 does not permit configuration.values.dynarec_observation");
 	IdentityRuntimeConfiguration runtimeConfiguration;
 	const json& cpuBackend = requiredConfigurationValue(values, "cpu_backend");
-	if (!cpuBackend.is_string() || cpuBackend.get<std::string>() != "interpreter")
-		invalid("configuration.values.cpu_backend must be 'interpreter'");
+	if (!cpuBackend.is_string())
+		invalid("configuration.values.cpu_backend must be a string");
 	runtimeConfiguration.cpuBackend = cpuBackend.get<std::string>();
+	if (schemaVersion == 1 && runtimeConfiguration.cpuBackend != "interpreter")
+		invalid("identity v1 configuration.values.cpu_backend must be 'interpreter'");
+	if (schemaVersion == 2 && runtimeConfiguration.cpuBackend != "interpreter"
+			&& runtimeConfiguration.cpuBackend != "dynarec")
+		invalid("identity v2 configuration.values.cpu_backend is unsupported");
+	if (schemaVersion == 2)
+	{
+		const json& observation = requiredConfigurationValue(values,
+				"dynarec_observation");
+		if (!observation.is_boolean())
+			invalid("configuration.values.dynarec_observation must be boolean");
+		runtimeConfiguration.dynarecObservation = observation.get<bool>();
+		if (runtimeConfiguration.dynarecObservation
+				!= (runtimeConfiguration.cpuBackend == "dynarec"))
+			invalid("identity v2 dynarec_observation must match cpu_backend");
+		const json& rtcSeed = requiredConfigurationValue(values,
+				"dreamcast_rtc_seed");
+		if (!rtcSeed.is_number_unsigned()
+				|| rtcSeed.get<std::uint64_t>()
+						> std::numeric_limits<std::uint32_t>::max())
+			invalid("identity v2 dreamcast_rtc_seed is outside [0, 4294967295]");
+		runtimeConfiguration.dreamcastRtcSeed =
+				static_cast<std::uint32_t>(rtcSeed.get<std::uint64_t>());
+	}
 	for (const auto& [name, destination] : {
 			std::pair<const char *, bool *>("threaded_rendering",
 					&runtimeConfiguration.threadedRendering),
@@ -215,6 +273,25 @@ ValidatedIdentity validateIdentityJson(const json& root)
 			invalid(std::string("configuration.values.") + name + " must be false");
 		*destination = false;
 	}
+	if (values.contains("maple_dma_checkpoint"))
+	{
+		const json& checkpoint = values.at("maple_dma_checkpoint");
+		if (!checkpoint.is_number_unsigned()
+				|| checkpoint.get<std::uint64_t>() == 0
+				|| checkpoint.get<std::uint64_t>() > MaximumMapleDmaCheckpoint)
+			invalid("configuration.values.maple_dma_checkpoint is outside [1, 10000000]");
+		runtimeConfiguration.mapleDmaCheckpoint = checkpoint.get<std::uint64_t>();
+	}
+	if (values.contains("sh4_observation_start_dma"))
+	{
+		const json& startDma = values.at("sh4_observation_start_dma");
+		if (!startDma.is_number_unsigned()
+				|| startDma.get<std::uint64_t>() == 0
+				|| startDma.get<std::uint64_t>() > MaximumMapleDmaCheckpoint)
+			invalid("configuration.values.sh4_observation_start_dma is outside [1, 10000000]");
+		runtimeConfiguration.sh4ObservationStartDma =
+				startDma.get<std::uint64_t>();
+	}
 	if (!configuration.contains("sha256"))
 		invalid("configuration.sha256 is missing");
 	validateSha256(configuration.at("sha256"), "configuration.sha256");
@@ -229,6 +306,7 @@ ValidatedIdentity validateIdentityJson(const json& root)
 	bool hasStaticAnalysis = false;
 	Sha256Digest staticAnalysisProgramDigest {};
 	Sha256Digest staticAnalysisExportDigest {};
+	std::uint32_t staticAnalysisImageBase = 0;
 	bool hasHookManifestDigest = false;
 	Sha256Digest hookManifestDigest {};
 	if (root.contains("static_analysis"))
@@ -246,6 +324,8 @@ ValidatedIdentity validateIdentityJson(const json& root)
 					"static_analysis.hook_manifest_sha256");
 		if (!staticAnalysis.contains("image_base") || !staticAnalysis.at("image_base").is_string())
 			invalid("static_analysis.image_base is missing");
+		staticAnalysisImageBase = parseImageBase(
+				staticAnalysis.at("image_base").get<std::string>());
 		if (!sha256FromHex(staticAnalysis.at("program_sha256").get<std::string>(),
 				staticAnalysisProgramDigest)
 				|| !sha256FromHex(staticAnalysis.at("export_sha256").get<std::string>(),
@@ -259,7 +339,24 @@ ValidatedIdentity validateIdentityJson(const json& root)
 				invalid("static_analysis.hook_manifest_sha256 conversion failed");
 		}
 	}
+
+	bool hasMapleReplayIdentityDigest = false;
+	Sha256Digest mapleReplayIdentityDigest {};
+	if (schemaVersion == 2)
+	{
+		const json& equivalence = requiredObject(root, "equivalence");
+		if (equivalence.size() != 1
+				|| !equivalence.contains("maple_replay_identity_sha256"))
+			invalid("identity v2 equivalence metadata is incomplete or unknown");
+		validateSha256(equivalence.at("maple_replay_identity_sha256"),
+				"equivalence.maple_replay_identity_sha256");
+		if (!sha256FromHex(equivalence.at("maple_replay_identity_sha256")
+					.get<std::string>(), mapleReplayIdentityDigest))
+			invalid("equivalence.maple_replay_identity_sha256 conversion failed");
+		hasMapleReplayIdentityDigest = true;
+	}
 	ValidatedIdentity result;
+	result.schemaVersion = schemaVersion;
 	result.runtimeConfiguration = runtimeConfiguration;
 	result.mediaKind = mediaKind;
 	result.mediaTrackCount = media.contains("tracks") ? media.at("tracks").size() : 0;
@@ -267,8 +364,11 @@ ValidatedIdentity validateIdentityJson(const json& root)
 	result.hasStaticAnalysis = hasStaticAnalysis;
 	result.staticAnalysisProgramDigest = staticAnalysisProgramDigest;
 	result.staticAnalysisExportDigest = staticAnalysisExportDigest;
+	result.staticAnalysisImageBase = staticAnalysisImageBase;
 	result.hasHookManifestDigest = hasHookManifestDigest;
 	result.hookManifestDigest = hookManifestDigest;
+	result.hasMapleReplayIdentityDigest = hasMapleReplayIdentityDigest;
+	result.mapleReplayIdentityDigest = mapleReplayIdentityDigest;
 	return result;
 }
 
@@ -356,6 +456,7 @@ IdentityManifest loadIdentityManifest(const std::filesystem::path& path)
 	{
 		const json root = json::parse(manifest.bytes.begin(), manifest.bytes.end());
 		const ValidatedIdentity validated = validateIdentityJson(root);
+		manifest.schemaVersion = validated.schemaVersion;
 		manifest.runtimeConfiguration = validated.runtimeConfiguration;
 		manifest.mediaKind = validated.mediaKind;
 		manifest.mediaTrackCount = validated.mediaTrackCount;
@@ -363,8 +464,11 @@ IdentityManifest loadIdentityManifest(const std::filesystem::path& path)
 		manifest.hasStaticAnalysis = validated.hasStaticAnalysis;
 		manifest.staticAnalysisProgramDigest = validated.staticAnalysisProgramDigest;
 		manifest.staticAnalysisExportDigest = validated.staticAnalysisExportDigest;
+		manifest.staticAnalysisImageBase = validated.staticAnalysisImageBase;
 		manifest.hasHookManifestDigest = validated.hasHookManifestDigest;
 		manifest.hookManifestDigest = validated.hookManifestDigest;
+		manifest.hasMapleReplayIdentityDigest = validated.hasMapleReplayIdentityDigest;
+		manifest.mapleReplayIdentityDigest = validated.mapleReplayIdentityDigest;
 	}
 	catch (const nlohmann::json::exception& exception)
 	{
@@ -376,10 +480,28 @@ IdentityManifest loadIdentityManifest(const std::filesystem::path& path)
 
 void requireCaptureV1Identity(const IdentityManifest& manifest)
 {
+	if (manifest.schemaVersion != 1)
+		invalid("capture-v1 requires identity schema_version 1");
+	if (manifest.runtimeConfiguration.dynarecObservation)
+		invalid("capture-v1 does not permit dynarec observation");
 	if (manifest.mediaKind != "gdi")
 		invalid("capture-v1 requires media.kind 'gdi'");
 	if (manifest.mediaTrackCount == 0)
 		invalid("capture-v1 requires at least one media track");
+}
+
+void requireSh4EquivalenceIdentityV2(const IdentityManifest& manifest)
+{
+	if (manifest.schemaVersion != 2)
+		invalid("SH-4 equivalence requires identity schema_version 2");
+	if (!manifest.hasMapleReplayIdentityDigest)
+		invalid("SH-4 equivalence identity is missing Maple replay provenance");
+	if (manifest.runtimeConfiguration.cpuBackend != "interpreter"
+			&& manifest.runtimeConfiguration.cpuBackend != "dynarec")
+		invalid("SH-4 equivalence identity CPU backend is unsupported");
+	if (manifest.runtimeConfiguration.dynarecObservation
+			!= (manifest.runtimeConfiguration.cpuBackend == "dynarec"))
+		invalid("SH-4 equivalence identity dynarec observation mismatch");
 }
 
 bool pathsAlias(const std::filesystem::path& lhs, const std::filesystem::path& rhs)

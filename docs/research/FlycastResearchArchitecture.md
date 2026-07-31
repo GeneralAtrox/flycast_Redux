@@ -149,6 +149,65 @@ open DMA, or unmatched event leaves the artifact non-production.
 Schema versions are immutable after an artifact is accepted. Incompatible
 changes require a new schema version and validator path.
 
+The [SH-4 native observation contract](Sh4ObservationV1.md) is the shared
+in-process semantic boundary for interpreter recording, dynarec equivalence,
+and [Lua discovery subscriptions](LuaSubscriptionsV1.md). It is not itself an evidence
+artifact. Accepted evidence still requires a typed recorder and independent
+validator.
+
+Canonical event construction is implemented once in the backend-neutral SH-4
+observation runtime. Interpreter and dynarec entry points differ only in their
+backend tag and where the precise instruction boundary is reached. Per-backend
+atomic activity gates prevent an interpreter-only subscription from allocating
+dynarec frames or snapshots. A dynarec marker must first make its allocated
+architectural registers coherent in `Sh4Context`; otherwise a structurally
+valid event would still contain stale guest state.
+
+Dynarec instruction instrumentation is opt-in at decode time through the
+transient `research.DynarecObservation` option. Normal blocks contain no marker
+operations. Research blocks use explicit SHIL begin/end barriers implemented by
+the x64, ARM32, and ARM64 compilers; every barrier writes allocated guest state
+back before entering the common runtime. Marker metadata reconstructs per-op
+ticks despite block-up-front cycle charging and preserves the interpreter's
+taken/non-taken conditional delay-slot ownership from the condition latched
+before the slot executes. Nested marker ticks follow the interpreter's
+delay-slot execution order rather than the decoder's static cycle accumulation.
+A precise per-instruction SR.FD guard replaces the legacy MMU block-entry FPU
+check only inside observed blocks, including slot-FPU ownership and unconsumed
+cycle restoration. Research compilation disables instruction-eliding division
+aggregation and single-branch-target folding. Real interpreter/dynarec
+differential fixtures separately prove invalidation and semantic equivalence;
+the external Lodoss exercise was the final admission gate and passed on
+2026-07-31 with 574,470 matched events, zero drops, and no first divergence.
+
+Dynarec memory ownership is attached to each `readm`/`writem` operation with a
+research-only pre/post marker pair. The pre-marker captures the effective guest
+address and write value; the post-marker publishes after success and obtains a
+load result from coherent `Sh4Context`. This placement is shared by fastmem,
+rewritten slow access, MMU, and immediate-address compilation. Faulted accesses
+are discarded with their instruction frame rather than being reported as
+completed memory operations.
+
+Synchronous exceptions converge at the common pre-transition `Do_Exception`
+hook. It publishes one canonical event for the innermost owner and then aborts
+all open delay-chain frames before any dynarec exception trampoline resumes the
+dispatcher. Interrupts occur without instruction ownership and use the existing
+trace contract's depth-zero exception representation, with backend selected by
+the active SH-4 executor configuration and tick taken at the scheduler boundary.
+
+The [SH-4 backend observation trace](Sh4ObservationTraceV1.md) serializes that
+boundary separately for interpreter and dynarec runs. Each fail-closed stream
+binds its own backend identity plus one shared replay and manifest set. The
+equivalence comparator independently decodes both streams, checks SH-4
+instruction/control-flow ownership, and returns the exact matching prefix or
+first divergent semantic field. The typed
+[equivalence job/report](Sh4EquivalenceV1.md) authenticates that comparison and
+its complete input set. The
+[equivalence package](Sh4EquivalencePackageV1.md) localizes and locks that
+complete input set, independently recomputes an equivalent report, issues a
+deterministic receipt, and publishes by one sibling-directory rename. A pair
+of trace files or a standalone report is not accepted evidence.
+
 ## Maple v1 vertical slice
 
 The first end-to-end slice records the semantic boundary already present in
@@ -224,8 +283,10 @@ identity are explicit. A matching symbol name is not sufficient.
    deterministic Maple record/replay, validator, corruption/divergence tests.
 2. **Capture transaction driver**: private staging, exact process ownership,
    source re-authentication, atomic publication, quarantine, forced-abort tests.
-3. **SH-4 observation**: non-mutating interpreter hooks, delay-slot-correct calls
-   and returns, memory watchpoints, typed stacks, Ghidra joins.
+3. **SH-4 observation and composition**: non-mutating interpreter hooks,
+   delay-slot-correct calls and returns, memory watchpoints, typed stacks,
+   Ghidra joins, and capture-package-v2 atomic composition over an immutable
+   Maple v1 base.
 4. **PowerVR ownership**: TA source tokens, raw parameter streams, PVR registers,
    VRAM writes, render/present generations, backend-independent frame artifacts.
 5. **GD-ROM and AICA**: command/sector/transfer traces, AICA slot and ARAM

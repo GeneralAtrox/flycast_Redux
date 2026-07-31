@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "flycast-research-sh4-equivalence-job-v1.schema.json",
+  "title": "Flycast SH-4 equivalence job v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "schema_version", "job_id", "interpreter", "dynarec",
+    "emulator", "replay", "manifest_set", "manifests", "comparator", "limits", "metadata"
+  ],
+  "properties": {
+    "schema": { "const": "flycast-research-sh4-equivalence-job" },
+    "schema_version": { "const": 1 },
+    "job_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "interpreter": { "$ref": "#/$defs/backend" },
+    "dynarec": { "$ref": "#/$defs/backend" },
+    "emulator": { "$ref": "#/$defs/blob" },
+    "replay": { "$ref": "#/$defs/blob" },
+    "manifest_set": { "$ref": "#/$defs/blob" },
+    "manifests": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": { "$ref": "#/$defs/manifest" }
+    },
+    "comparator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["executable"],
+      "properties": { "executable": { "$ref": "#/$defs/blob" } }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["maximum_replay_bytes", "maximum_trace_bytes", "maximum_events"],
+      "properties": {
+        "maximum_replay_bytes": { "type": "integer", "minimum": 160, "maximum": 536870912 },
+        "maximum_trace_bytes": { "type": "integer", "minimum": 208, "maximum": 536870912 },
+        "maximum_events": { "type": "integer", "minimum": 1, "maximum": 10000000 }
+      }
+    },
+    "metadata": { "type": "object" }
+  },
+  "$defs": {
+    "blob": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "size", "sha256"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "size": { "type": "integer", "minimum": 1 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    "backend": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["identity", "trace"],
+      "properties": {
+        "identity": { "$ref": "#/$defs/blob" },
+        "trace": { "$ref": "#/$defs/blob" }
+      }
+    },
+    "manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "name", "source"],
+      "properties": {
+        "kind": { "type": "string", "pattern": "^[a-z0-9-]{1,64}$" },
+        "name": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+        "source": { "$ref": "#/$defs/blob" }
+      }
+    }
+  }
+}

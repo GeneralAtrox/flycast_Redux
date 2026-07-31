@@ -9,35 +9,6 @@ namespace research
 namespace
 {
 
-bool decodeCall(const Sh4InstructionState& state, Sh4CallKind& kind,
-		std::uint32_t& targetPc)
-{
-	const std::uint16_t opcode = state.opcode;
-	if ((opcode & 0xf000u) == 0xb000u)
-	{
-		kind = Sh4CallKind::Bsr;
-		const std::int32_t displacement = static_cast<std::int16_t>(
-				static_cast<std::uint16_t>((opcode & 0x0fffu) << 4)) >> 4;
-		targetPc = state.pc + 4u + static_cast<std::uint32_t>(displacement * 2);
-		return true;
-	}
-	if ((opcode & 0xf0ffu) == 0x0003u)
-	{
-		kind = Sh4CallKind::Bsrf;
-		const std::uint32_t registerIndex = (opcode >> 8) & 0x0fu;
-		targetPc = state.pc + 4u + state.registers.r[registerIndex];
-		return true;
-	}
-	if ((opcode & 0xf0ffu) == 0x400bu)
-	{
-		kind = Sh4CallKind::Jsr;
-		const std::uint32_t registerIndex = (opcode >> 8) & 0x0fu;
-		targetPc = state.registers.r[registerIndex];
-		return true;
-	}
-	return false;
-}
-
 bool deriveSnapshotAddress(const Sh4SnapshotDefinition& definition,
 		const Sh4RegisterSnapshot& registers, std::uint32_t& address)
 {
@@ -124,7 +95,7 @@ void Sh4EventsCapture::beginInstruction(const Sh4InstructionState& state,
 
 	Sh4CallKind kind = Sh4CallKind::Bsr;
 	std::uint32_t targetPc = 0;
-	if (!decodeCall(state, kind, targetPc))
+	if (!decodeSh4Call(state, kind, targetPc))
 		return;
 	for (std::size_t hookIndex = 0; hookIndex < manifest.hooks.size(); ++hookIndex)
 	{

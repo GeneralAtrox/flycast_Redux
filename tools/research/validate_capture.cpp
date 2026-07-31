@@ -1,3 +1,4 @@
+#include "research/capture_v1_validation.h"
 #include "research/identity_manifest.h"
 #include "research/maple_trace.h"
 #include "research/sha256.h"
@@ -1359,6 +1360,17 @@ ValidationResult validatePackage(const std::filesystem::path& package, bool issu
 
 } // namespace
 
+namespace research
+{
+
+void validateCaptureV1PackageReadOnly(const std::filesystem::path& package)
+{
+	(void)validatePackage(std::filesystem::weakly_canonical(package), false);
+}
+
+} // namespace research
+
+#ifndef RESEARCH_CAPTURE_V1_VALIDATION_LIBRARY
 int main(int argc, char **argv)
 {
 	std::filesystem::path package;
@@ -1405,3 +1417,4 @@ int main(int argc, char **argv)
 		return 1;
 	}
 }
+#endif

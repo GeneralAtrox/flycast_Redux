@@ -14,15 +14,6 @@ namespace research
 using Sh4GuestMemoryReader =
 		std::function<const std::uint8_t *(std::uint32_t address, std::uint32_t length)>;
 
-struct Sh4InstructionState
-{
-	std::uint32_t pc = 0;
-	std::uint32_t nextPc = 0;
-	std::uint16_t opcode = 0;
-	std::uint64_t tick = 0;
-	Sh4RegisterSnapshot registers;
-};
-
 class Sh4EventsCapture
 {
 public:

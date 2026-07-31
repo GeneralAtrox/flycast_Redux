@@ -18,8 +18,13 @@
 #include "hw/sh4/modules/mmu.h"
 #include "decoder_opcodes.h"
 #include "cfg/option.h"
+#include "research/sh4_observation_runtime.h"
 
 #define BLOCK_MAX_SH_OPS_SOFT 500
+// Research equivalence must expose the same scheduler boundary as the
+// interpreter after every top-level guest instruction. Delay slots bypass the
+// soft limit and remain inseparable from their owning branch.
+#define BLOCK_MAX_SH_OPS_RESEARCH_SOFT 1
 #define BLOCK_MAX_SH_OPS_HARD 511
 
 static RuntimeBlockInfo* blk;
@@ -42,6 +47,16 @@ static inline shil_param mk_regi(int reg)
 
 static state_t state;
 
+struct PendingResearchDelay
+{
+	bool active = false;
+	u32 pc = 0;
+	u16 opcode = 0;
+	BlockEndType blockType = BET_StaticJump;
+	u32 branchPc = NullAddress;
+	u32 nextPc = NullAddress;
+};
+
 static void Emit(shilop op, shil_param rd = shil_param(), shil_param rs1 = shil_param(), shil_param rs2 = shil_param(),
 		u32 size = 0, shil_param rs3 = shil_param(), shil_param rd2 = shil_param())
 {
@@ -57,7 +72,76 @@ static void Emit(shilop op, shil_param rd = shil_param(), shil_param rs1 = shil_
 	sp.guest_offs = state.cpu.rpc - blk->vaddr;
 	sp.delay_slot = state.cpu.is_delayslot;
 
+	const bool observedMemory = config::ResearchDynarecObservation.get()
+			&& (op == shop_readm || op == shop_writem);
+	if (observedMemory)
+	{
+		shil_opcode begin;
+		begin.op = op == shop_readm ? shop_research_memory_begin_read
+				: shop_research_memory_begin_write;
+		begin.size = size;
+		begin.rs1 = rs1;
+		begin.rs2 = rs3;
+		if (op == shop_writem)
+			begin.rs3 = rs2;
+		begin.guest_offs = sp.guest_offs;
+		begin.delay_slot = sp.delay_slot;
+		blk->oplist.push_back(begin);
+	}
 	blk->oplist.push_back(sp);
+	if (observedMemory)
+	{
+		shil_opcode end;
+		end.op = op == shop_readm ? shop_research_memory_end_read
+				: shop_research_memory_end_write;
+		end.size = size;
+		if (op == shop_readm)
+			end.rs3 = rd;
+		end.guest_offs = sp.guest_offs;
+		end.delay_slot = sp.delay_slot;
+		blk->oplist.push_back(end);
+	}
+}
+
+static bool researchDynarecObservationEnabled()
+{
+	return config::ResearchDynarecObservation.get();
+}
+
+static void EmitResearchMarker(shilop marker, u32 pc, u16 opcode,
+		u32 cumulativeCycles, u32 primaryNextPc = NullAddress,
+		u32 secondaryNextPc = NullAddress)
+{
+	shil_opcode value;
+	value.op = marker;
+	value.size = cumulativeCycles;
+	value.rs1 = shil_param(pc);
+	value.rs2 = shil_param(opcode);
+	value.rs3 = shil_param(primaryNextPc);
+	value.rd = shil_param(secondaryNextPc);
+	value.guest_offs = pc - blk->vaddr;
+	value.delay_slot = state.cpu.is_delayslot && pc == state.cpu.rpc;
+	blk->oplist.push_back(value);
+}
+
+static void EmitResearchFpuGuard(u32 pc, u16 opcode, u32 cumulativeCycles)
+{
+	shil_opcode value;
+	value.op = shop_research_fpu_guard;
+	value.size = cumulativeCycles;
+	value.rs1 = shil_param(pc);
+	value.rs2 = shil_param(opcode);
+	value.guest_offs = pc - blk->vaddr;
+	value.delay_slot = state.cpu.is_delayslot;
+	blk->oplist.push_back(value);
+}
+
+static u32 researchBlockEndNextPc(BlockEndType blockType, u32 branchPc,
+		u32 nextPc)
+{
+	if (BET_GET_CLS(blockType) == BET_CLS_Dynamic)
+		return NullAddress;
+	return blockType == BET_StaticIntr ? nextPc : branchPc;
 }
 
 static void dec_fallback(u32 op)
@@ -831,7 +915,8 @@ static bool dec_generic(u32 op)
 		{
 			if (e==1)
 			{
-				if (MatchDiv32u(op,state.cpu.rpc))
+				if (!researchDynarecObservationEnabled()
+						&& MatchDiv32u(op,state.cpu.rpc))
 				{
 					verify(!state.cpu.is_delayslot);
 					//div32u
@@ -861,7 +946,8 @@ static bool dec_generic(u32 op)
 			}
 			else
 			{
-				if (MatchDiv32s(op,state.cpu.rpc))
+				if (!researchDynarecObservationEnabled()
+						&& MatchDiv32s(op,state.cpu.rpc))
 				{
 					verify(!state.cpu.is_delayslot);
 					//div32s
@@ -958,6 +1044,7 @@ bool dec_DecodeBlock(RuntimeBlockInfo* rbi,u32 max_cycles)
 	
 	blk->guest_opcodes = 0;
 	cycleCounter.reset();
+	PendingResearchDelay pendingResearchDelay;
 	// If full MMU, don't allow the block to extend past the end of the current 4K page
 	u32 max_pc = mmu_enabled() ? ((state.cpu.rpc >> 12) + 1) << 12 : 0xFFFFFFFF;
 	
@@ -971,7 +1058,9 @@ bool dec_DecodeBlock(RuntimeBlockInfo* rbi,u32 max_cycles)
 			//there is no break here by design
 		case NDO_NextOp:
 			{
-				if ((blk->oplist.size() >= BLOCK_MAX_SH_OPS_SOFT || blk->guest_cycles >= max_cycles || state.cpu.rpc >= max_pc)
+				const size_t blockSoftLimit = researchDynarecObservationEnabled()
+						? BLOCK_MAX_SH_OPS_RESEARCH_SOFT : BLOCK_MAX_SH_OPS_SOFT;
+				if ((blk->oplist.size() >= blockSoftLimit || blk->guest_cycles >= max_cycles || state.cpu.rpc >= max_pc)
 						&& !state.cpu.is_delayslot)
 				{
 					dec_End(state.cpu.rpc,BET_StaticJump,false);
@@ -979,6 +1068,16 @@ bool dec_DecodeBlock(RuntimeBlockInfo* rbi,u32 max_cycles)
 				else
 				{
 					u32 op = IReadMem16(state.cpu.rpc);
+					const u32 instructionPc = state.cpu.rpc;
+					const u32 cyclesBefore = blk->guest_cycles;
+					if (researchDynarecObservationEnabled())
+					{
+						EmitResearchMarker(shop_research_begin, instructionPc,
+								static_cast<u16>(op), cyclesBefore);
+						if (OpDesc[op]->IsFloatingPoint())
+							EmitResearchFpuGuard(instructionPc,
+									static_cast<u16>(op), cyclesBefore);
+					}
 
 					blk->guest_opcodes++;
 					dec_updateBlockCycles(blk, op);
@@ -989,7 +1088,14 @@ bool dec_DecodeBlock(RuntimeBlockInfo* rbi,u32 max_cycles)
 						{
 							// We need to know FPSCR to compile the block, so let the exception handler run first
 							// as it may change the fp registers
-							Do_Exception(Sh4cntx.pc, Sh4Ex_FpuDisabled);
+							if (researchDynarecObservationEnabled())
+							{
+								const auto begin = research::sh4DynarecObservationMarkerFor(
+										shop_research_begin);
+								begin(&Sh4cntx, instructionPc,
+										static_cast<u16>(op), NullAddress);
+							}
+							Do_Exception(instructionPc, Sh4Ex_FpuDisabled);
 							return false;
 						}
 						blk->has_fpu_op = true;
@@ -1016,6 +1122,74 @@ bool dec_DecodeBlock(RuntimeBlockInfo* rbi,u32 max_cycles)
 					else
 					{
 						OpDesc[op]->rec_oph(op);
+					}
+					if (researchDynarecObservationEnabled())
+					{
+						const u32 cyclesAfter = blk->guest_cycles;
+						if (state.cpu.is_delayslot)
+						{
+							EmitResearchMarker(shop_research_end, instructionPc,
+									static_cast<u16>(op), cyclesAfter,
+									instructionPc + 2u);
+							if (pendingResearchDelay.active)
+							{
+								if (pendingResearchDelay.blockType == BET_Cond_0
+										|| pendingResearchDelay.blockType == BET_Cond_1)
+								{
+									EmitResearchMarker(
+											shop_research_conditional_after_delay,
+											pendingResearchDelay.pc,
+											pendingResearchDelay.opcode,
+											cyclesAfter,
+											pendingResearchDelay.branchPc);
+								}
+								else
+								{
+									EmitResearchMarker(shop_research_end,
+											pendingResearchDelay.pc,
+											pendingResearchDelay.opcode,
+											cyclesAfter,
+											researchBlockEndNextPc(
+													pendingResearchDelay.blockType,
+													pendingResearchDelay.branchPc,
+													pendingResearchDelay.nextPc));
+								}
+								pendingResearchDelay.active = false;
+							}
+						}
+						else if (state.NextOp == NDO_Delayslot)
+						{
+							pendingResearchDelay = {true, instructionPc,
+									static_cast<u16>(op), state.BlockType,
+									state.JumpAddr, state.NextAddr};
+							if (state.BlockType == BET_Cond_0
+									|| state.BlockType == BET_Cond_1)
+							{
+								EmitResearchMarker(
+										shop_research_conditional_before_delay,
+										instructionPc, static_cast<u16>(op),
+										cyclesAfter, state.JumpAddr);
+							}
+						}
+						else if (state.NextOp == NDO_End
+								&& (state.BlockType == BET_Cond_0
+									|| state.BlockType == BET_Cond_1))
+						{
+							EmitResearchMarker(shop_research_conditional_end,
+									instructionPc, static_cast<u16>(op),
+									cyclesAfter,
+									state.JumpAddr, state.NextAddr);
+						}
+						else
+						{
+							const u32 nextPc = state.NextOp == NDO_End
+									? researchBlockEndNextPc(state.BlockType,
+											state.JumpAddr, state.NextAddr)
+									: instructionPc + 2u;
+							EmitResearchMarker(shop_research_end, instructionPc,
+									static_cast<u16>(op), cyclesAfter,
+									nextPc);
+						}
 					}
 					state.cpu.rpc+=2;
 				}
@@ -1061,10 +1235,22 @@ _end:
 
 	verify(blk->oplist.size() <= BLOCK_MAX_SH_OPS_HARD);
 	
-	blk->guest_cycles = std::round(blk->guest_cycles * 200.f / std::max(1.f, (float)config::Sh4Clock));
+	const float cycleScale = 200.f / std::max(1.f, (float)config::Sh4Clock);
+	blk->guest_cycles = std::round(blk->guest_cycles * cycleScale);
 
 	//make sure we don't use wayy-too-few cycles
 	blk->guest_cycles = std::max(1U, blk->guest_cycles);
+	if (researchDynarecObservationEnabled())
+	{
+		for (shil_opcode& marker : blk->oplist)
+		{
+			if (!shilIsResearchInstructionMarker(marker.op))
+				continue;
+			const u32 elapsed = std::min(blk->guest_cycles,
+					static_cast<u32>(std::round(marker.size * cycleScale)));
+			marker.size = blk->guest_cycles - elapsed;
+		}
+	}
 	blk = nullptr;
 
 	return true;

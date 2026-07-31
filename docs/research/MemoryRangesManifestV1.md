@@ -62,8 +62,9 @@ The manifest requests, but cannot itself establish:
 - a natural clean emulator exit.
 
 These conditions belong in the typed runtime artifact and its independent
-validator. Atomic multi-artifact publication belongs to capture package v2;
-the exact five-entry Maple capture transaction v1 remains unchanged.
+validator. [Capture package v2](CapturePackageV2.md) provides atomic
+multi-artifact composition while the exact five-entry Maple capture
+transaction v1 remains unchanged.
 
 The normative JSON shape is
 [`flycast-research-memory-ranges-manifest-v1.schema.json`](flycast-research-memory-ranges-manifest-v1.schema.json).
