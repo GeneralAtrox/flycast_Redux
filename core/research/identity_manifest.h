@@ -24,6 +24,7 @@ struct IdentityRuntimeConfiguration
 	bool ggpo = true;
 	std::uint64_t mapleDmaCheckpoint = 0;
 	std::uint64_t sh4ObservationStartDma = 0;
+	std::uint64_t pvrTaStartDma = 0;
 	std::uint32_t dreamcastRtcSeed = 0;
 };
 

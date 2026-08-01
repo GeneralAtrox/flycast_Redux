@@ -62,6 +62,7 @@
 #include "elan_struct.h"
 #include "network/ggpo.h"
 #include "cfg/option.h"
+#include "research/pvr_presentation_observation.h"
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
@@ -1608,7 +1609,12 @@ static void executeCommand(u8 *data, int size)
 						}
 						DEBUG_LOG(PVR, "Texture DMA from %x to %x (%x) %s", DMAC_SAR(2), link->vramAddress & 0x1ffffff8, link->size,
 								data >= (u8 *)elanCmd && data < (u8 *)elanCmd + sizeof(elanCmd) ? "CMD" : "ERAM");
-						memcpy(&vram[link->vramAddress & VRAM_MASK], &mem_b[DMAC_SAR(2) & RAM_MASK], link->size);
+						const u32 vramAddress = link->vramAddress & VRAM_MASK;
+						memcpy(&vram[vramAddress], &mem_b[DMAC_SAR(2) & RAM_MASK], link->size);
+						research::observePvrVramWrite(
+								research::PvrVramWriteSource::Naomi2Elan,
+								link->vramAddress, vramAddress, &vram[vramAddress],
+								link->size, 0, sh4_sched_now64());
 						// theoretical bandwidth: 64 bits @ 100 MHz
 						// but initdv3j needs ~50 MB/s to boot
 						sh4_sched_request(schedId, 512);
@@ -1623,7 +1629,12 @@ static void executeCommand(u8 *data, int size)
 						}
 						DEBUG_LOG(PVR, "Texture DMA from eram %x -> %x (%x) %s", link->offset & ELAN_RAM_MASK, link->vramAddress & VRAM_MASK, link->size,
 								data >= (u8 *)elanCmd && data < (u8 *)elanCmd + sizeof(elanCmd) ? "CMD" : "ERAM");
-						memcpy(&vram[link->vramAddress & VRAM_MASK], &RAM[link->offset & ELAN_RAM_MASK], link->size);
+						const u32 vramAddress = link->vramAddress & VRAM_MASK;
+						memcpy(&vram[vramAddress], &RAM[link->offset & ELAN_RAM_MASK], link->size);
+						research::observePvrVramWrite(
+								research::PvrVramWriteSource::Naomi2Elan,
+								link->vramAddress, vramAddress, &vram[vramAddress],
+								link->size, 0, sh4_sched_now64());
 						sh4_sched_request(schedId, 512);
 					}
 					else

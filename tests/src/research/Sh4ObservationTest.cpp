@@ -111,6 +111,36 @@ TEST(ResearchSh4Observation, FiltersMemoryDirectionAndOverlappingRange)
 	EXPECT_EQ(3u, filtered[0].memoryValue);
 }
 
+TEST(ResearchSh4Observation, FiltersCanonicalInstructionOwnerPc)
+{
+	std::vector<research::Sh4Observation> filtered;
+	research::Sh4ObservationFilter filter;
+	filter.hasInstructionPcRange = true;
+	filter.instructionPcStart = 0x8c010100;
+	filter.instructionPcEndExclusive = 0x8c010200;
+	ObservationSubscription subscription(research::subscribeSh4Observations(filter,
+			[&filtered](const research::Sh4Observation& observation) {
+				filtered.push_back(observation);
+			}));
+
+	research::Sh4Observation before;
+	before.instructionPc = 0x8c0100fe;
+	EXPECT_FALSE(research::publishSh4Observation(before));
+	research::Sh4Observation first = before;
+	first.instructionPc = 0x8c010100;
+	EXPECT_TRUE(research::publishSh4Observation(first));
+	research::Sh4Observation last = before;
+	last.instructionPc = 0x8c0101fe;
+	EXPECT_TRUE(research::publishSh4Observation(last));
+	research::Sh4Observation after = before;
+	after.instructionPc = 0x8c010200;
+	EXPECT_FALSE(research::publishSh4Observation(after));
+
+	ASSERT_EQ(2u, filtered.size());
+	EXPECT_EQ(0x8c010100u, filtered[0].instructionPc);
+	EXPECT_EQ(0x8c0101feu, filtered[1].instructionPc);
+}
+
 TEST(ResearchSh4Observation, CallbackCanUnsubscribeItself)
 {
 	std::size_t calls = 0;
@@ -203,6 +233,13 @@ TEST(ResearchSh4Observation, RejectsInvalidSubscriptionContracts)
 	wrapping.memoryStart = 0x8c002000;
 	wrapping.memoryEndExclusive = 0x8c002000;
 	EXPECT_THROW(research::subscribeSh4Observations(wrapping,
+			[](const research::Sh4Observation&) {}), std::invalid_argument);
+
+	research::Sh4ObservationFilter emptyPc;
+	emptyPc.hasInstructionPcRange = true;
+	emptyPc.instructionPcStart = 0x8c010000;
+	emptyPc.instructionPcEndExclusive = 0x8c010000;
+	EXPECT_THROW(research::subscribeSh4Observations(emptyPc,
 			[](const research::Sh4Observation&) {}), std::invalid_argument);
 
 	EXPECT_THROW(research::subscribeSh4Observations(research::Sh4ObservationFilter {}, {}),

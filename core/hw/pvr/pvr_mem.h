@@ -10,8 +10,10 @@ extern RamRegion vram;
 u32 pvr_ReadReg(u32 addr);
 void pvr_WriteReg(u32 paddr, u32 data);
 
-void DYNACALL TAWrite(u32 address, const SQBuffer *data, u32 count);
-void DYNACALL TAWriteSQ(u32 address, const SQBuffer *sqb);
+void DYNACALL TAWrite(u32 address, const SQBuffer *data, u32 count,
+		u32 sourceAddress);
+void DYNACALL TAWriteSQ(u32 address, const SQBuffer *sqb,
+		u32 storeQueueAddress);
 
 void YUV_init();
 void YUV_serialize(Serializer& ser);

@@ -30,6 +30,7 @@ inline std::vector<std::uint8_t> mapleTransaction(MapleTransactionEvent event)
 {
 	return std::move(event.response);
 }
+inline void mapleControlDescriptor(MapleControlDescriptorEvent) {}
 inline void mapleScheduleDma(MapleDmaScheduleEvent) {}
 inline void mapleCommitDma(MapleDmaCommitEvent) {}
 inline void mapleAbortDma(MapleDmaAbortEvent) {}
@@ -52,6 +53,7 @@ void setMapleDmaBeginHandler(MapleDmaBeginHandler handler);
 
 std::uint64_t mapleBeginDma(MapleDmaBeginEvent event);
 std::vector<std::uint8_t> mapleTransaction(MapleTransactionEvent event);
+void mapleControlDescriptor(MapleControlDescriptorEvent event);
 void mapleScheduleDma(MapleDmaScheduleEvent event);
 void mapleCommitDma(MapleDmaCommitEvent event);
 void mapleAbortDma(MapleDmaAbortEvent event);

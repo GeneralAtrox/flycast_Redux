@@ -173,7 +173,7 @@ std::vector<std::uint8_t> serializeHeader(const MapleTraceSummary& summary, bool
 	std::vector<std::uint8_t> header;
 	header.reserve(MapleTraceHeaderSize);
 	header.insert(header.end(), MapleTraceMagic.begin(), MapleTraceMagic.end());
-	appendU32(header, MapleTraceSchemaVersion);
+	appendU32(header, summary.schemaVersion);
 	appendU32(header, MapleTraceHeaderSize);
 	appendU32(header, MapleTraceEndianSentinel);
 	appendU32(header, complete ? HeaderComplete : 0);
@@ -186,7 +186,13 @@ std::vector<std::uint8_t> serializeHeader(const MapleTraceSummary& summary, bool
 	appendU64(header, summary.droppedEvents);
 	header.insert(header.end(), summary.identityDigest.begin(), summary.identityDigest.end());
 	header.insert(header.end(), summary.payloadDigest.begin(), summary.payloadDigest.end());
-	header.insert(header.end(), 12, 0);
+	if (summary.schemaVersion == MapleTraceSchemaVersionV2)
+	{
+		appendU64(header, summary.controlDescriptorCount);
+		appendU32(header, 0);
+	}
+	else
+		header.insert(header.end(), 12, 0);
 	appendU32(header, 0);
 	require(header.size() == MapleTraceHeaderSize, "internal header size mismatch");
 	writeU32(header, 156, crc32(header.data(), 156));
@@ -244,6 +250,11 @@ void validateTransactionShape(const MapleTransactionEvent& event)
 class ProductionTraceValidator
 {
 	public:
+	explicit ProductionTraceValidator(std::uint32_t schemaVersion)
+		: schemaVersion(schemaVersion)
+	{
+	}
+
 	void consume(const MapleTraceEvent& event)
 	{
 		require(event.ordinal == parsedEventCount, "event ordinal is not contiguous");
@@ -278,6 +289,8 @@ class ProductionTraceValidator
 			currentResponses = 0;
 			currentInputWireBytes = 0;
 			currentOutputWireBytes = 0;
+			nextDescriptorAddress = value.descriptorAddress;
+			descriptorTerminalSeen = false;
 			++parsedDmaCount;
 			break;
 		}
@@ -289,6 +302,16 @@ class ProductionTraceValidator
 			require(value.transactionOrdinal == expectedTransaction++,
 					"transaction ordinal is not contiguous");
 			validateTransactionShape(value);
+			if (schemaVersion == MapleTraceSchemaVersionV2)
+			{
+				require(!descriptorTerminalSeen,
+						"transaction follows the terminal DMA descriptor");
+				require(value.descriptorAddress == nextDescriptorAddress,
+						"transaction breaks descriptor-table continuity");
+				nextDescriptorAddress += static_cast<std::uint32_t>(
+						8u + value.request.size());
+				descriptorTerminalSeen = (value.descriptorHeader1 >> 31) != 0;
+			}
 			if ((value.flags & MapleTransactionDevicePresent) != 0)
 			{
 				require(value.request.size() <= UINT32_MAX - 3u
@@ -304,6 +327,33 @@ class ProductionTraceValidator
 			++parsedTransactionCount;
 			break;
 		}
+		case MapleTraceEventType::ControlDescriptor:
+		{
+			require(schemaVersion == MapleTraceSchemaVersionV2,
+					"control descriptor is not permitted by this schema");
+			const auto& value = std::get<MapleControlDescriptorEvent>(event.data);
+			require(openDma && value.dmaOrdinal == currentDma,
+					"control descriptor is outside its DMA");
+			require(value.controlOrdinal == expectedControl++,
+					"control descriptor ordinal is not contiguous");
+			require(!descriptorTerminalSeen,
+					"control descriptor follows the terminal DMA descriptor");
+			require(value.descriptorAddress == nextDescriptorAddress,
+					"control descriptor breaks descriptor-table continuity");
+			require(value.operation == MapleControlOperation::Nop,
+					"unsupported typed control descriptor operation");
+			require(((value.descriptorHeader >> 8) & 7u)
+						== static_cast<std::uint32_t>(value.operation),
+					"control operation differs from descriptor header");
+			require(value.last == ((value.descriptorHeader >> 31) != 0),
+					"control terminal flag differs from descriptor header");
+			require((value.descriptorAddress & 3u) == 0,
+					"control descriptor address is unaligned");
+			nextDescriptorAddress += 4;
+			descriptorTerminalSeen = value.last;
+			++parsedControlCount;
+			break;
+		}
 		case MapleTraceEventType::DmaSchedule:
 		{
 			const auto& value = std::get<MapleDmaScheduleEvent>(event.data);
@@ -314,6 +364,9 @@ class ProductionTraceValidator
 			require(value.inputWireBytes == currentInputWireBytes
 					&& value.outputWireBytes == currentOutputWireBytes,
 					"DMA schedule wire-byte counts mismatch");
+			if (schemaVersion == MapleTraceSchemaVersionV2)
+				require(descriptorTerminalSeen,
+						"DMA schedule precedes the terminal descriptor");
 			require((value.flags & ~MapleScheduleDeferredUntilVBlank) == 0,
 					"DMA schedule has unknown flags");
 			if ((value.flags & MapleScheduleDeferredUntilVBlank) != 0)
@@ -356,16 +409,21 @@ class ProductionTraceValidator
 		require(summary.dmaCount == parsedDmaCount, "header DMA count mismatch");
 		require(summary.transactionCount == parsedTransactionCount,
 				"header transaction count mismatch");
+		require(summary.controlDescriptorCount == parsedControlCount,
+				"header control-descriptor count mismatch");
 		require(summary.startTick == startTick, "header start tick mismatch");
 		require(summary.endTick == previousTick, "header end tick mismatch");
 	}
 
 private:
+	std::uint32_t schemaVersion = MapleTraceSchemaVersionV1;
 	std::uint64_t parsedEventCount = 0;
 	std::uint64_t expectedDma = 0;
 	std::uint64_t expectedTransaction = 0;
 	std::uint64_t parsedDmaCount = 0;
 	std::uint64_t parsedTransactionCount = 0;
+	std::uint64_t parsedControlCount = 0;
+	std::uint64_t expectedControl = 0;
 	std::uint64_t startTick = 0;
 	std::uint64_t previousTick = 0;
 	bool firstTick = true;
@@ -374,19 +432,21 @@ private:
 	std::uint32_t currentResponses = 0;
 	std::uint32_t currentInputWireBytes = 0;
 	std::uint32_t currentOutputWireBytes = 0;
+	std::uint32_t nextDescriptorAddress = 0;
+	bool descriptorTerminalSeen = false;
 	std::deque<std::pair<std::uint64_t, std::uint32_t>> pending;
 };
 
 void validateProductionTrace(const MapleTrace& trace)
 {
-	ProductionTraceValidator validator;
+	ProductionTraceValidator validator(trace.summary.schemaVersion);
 	for (const MapleTraceEvent& event : trace.events)
 		validator.consume(event);
 	validator.finish(trace.summary);
 }
 
-MapleTraceEvent parseEvent(MapleTraceEventType type, std::uint64_t ordinal,
-		const std::uint8_t *payload, std::size_t payloadSize)
+MapleTraceEvent parseEvent(std::uint32_t schemaVersion, MapleTraceEventType type,
+		std::uint64_t ordinal, const std::uint8_t *payload, std::size_t payloadSize)
 {
 	ByteReader reader(payload, payloadSize);
 	MapleTraceEvent event;
@@ -481,6 +541,24 @@ MapleTraceEvent parseEvent(MapleTraceEventType type, std::uint64_t ordinal,
 		event.data = value;
 		break;
 	}
+	case MapleTraceEventType::ControlDescriptor:
+	{
+		require(schemaVersion == MapleTraceSchemaVersionV2,
+				"control descriptor is not permitted by this schema");
+		require(payloadSize == 40, "control-descriptor payload size is invalid");
+		MapleControlDescriptorEvent value;
+		value.dmaOrdinal = reader.u64();
+		value.controlOrdinal = reader.u64();
+		value.tick = reader.u64();
+		value.descriptorAddress = reader.u32();
+		value.descriptorHeader = reader.u32();
+		value.operation = static_cast<MapleControlOperation>(reader.u8());
+		value.last = reader.u8() != 0;
+		require(reader.u16() == 0 && reader.u32() == 0,
+				"control-descriptor reserved field is nonzero");
+		event.data = value;
+		break;
+	}
 	default:
 		invalid("unknown event type");
 	}
@@ -494,7 +572,10 @@ MapleTraceSummary parseTraceHeader(const std::uint8_t *bytes,
 	ByteReader header(bytes, MapleTraceHeaderSize);
 	const std::vector<std::uint8_t> magic = header.byteVector(MapleTraceMagic.size());
 	require(std::equal(magic.begin(), magic.end(), MapleTraceMagic.begin()), "magic mismatch");
-	require(header.u32() == MapleTraceSchemaVersion, "unsupported schema version");
+	const std::uint32_t schemaVersion = header.u32();
+	require(schemaVersion == MapleTraceSchemaVersionV1
+			|| schemaVersion == MapleTraceSchemaVersionV2,
+			"unsupported schema version");
 	require(header.u32() == MapleTraceHeaderSize, "header size mismatch");
 	require(header.u32() == MapleTraceEndianSentinel, "endian sentinel mismatch");
 	const std::uint32_t flags = header.u32();
@@ -502,6 +583,7 @@ MapleTraceSummary parseTraceHeader(const std::uint8_t *bytes,
 	require((flags & HeaderComplete) != 0, "trace is incomplete");
 
 	MapleTraceSummary summary;
+	summary.schemaVersion = schemaVersion;
 	summary.eventCount = header.u64();
 	summary.transactionCount = header.u64();
 	summary.dmaCount = header.u64();
@@ -513,8 +595,16 @@ MapleTraceSummary parseTraceHeader(const std::uint8_t *bytes,
 	std::copy(identity.begin(), identity.end(), summary.identityDigest.begin());
 	const std::vector<std::uint8_t> payloadDigest = header.byteVector(32);
 	std::copy(payloadDigest.begin(), payloadDigest.end(), summary.payloadDigest.begin());
-	for (unsigned i = 0; i < 12; ++i)
-		require(header.u8() == 0, "header reserved field is nonzero");
+	if (schemaVersion == MapleTraceSchemaVersionV2)
+	{
+		summary.controlDescriptorCount = header.u64();
+		require(header.u32() == 0, "header reserved field is nonzero");
+	}
+	else
+	{
+		for (unsigned i = 0; i < 12; ++i)
+			require(header.u8() == 0, "header reserved field is nonzero");
+	}
 	const std::uint32_t storedHeaderCrc = header.u32();
 	require(header.remaining() == 0, "internal header parser mismatch");
 	require(storedHeaderCrc == crc32(bytes, 156), "header CRC mismatch");
@@ -669,8 +759,8 @@ MapleTrace loadProductionMapleTrace(const std::filesystem::path& path,
 		require(eventSize >= EventHeaderSize && eventSize <= MaximumEventSize,
 				"event size is out of range");
 		require(eventSize <= bytes.size() - offset, "event extends beyond payload");
-		trace.events.push_back(parseEvent(type, ordinal, bytes.data() + offset + EventHeaderSize,
-				eventSize - EventHeaderSize));
+		trace.events.push_back(parseEvent(trace.summary.schemaVersion, type, ordinal,
+				bytes.data() + offset + EventHeaderSize, eventSize - EventHeaderSize));
 		offset += eventSize;
 	}
 	require(offset == bytes.size(), "payload contains trailing bytes");
@@ -695,7 +785,7 @@ MapleTraceSummary validateProductionMapleTraceFile(const std::filesystem::path& 
 			"payload byte count mismatch");
 
 	Sha256 payloadHasher;
-	ProductionTraceValidator validator;
+	ProductionTraceValidator validator(summary.schemaVersion);
 	std::array<std::uint8_t, EventHeaderSize> eventHeaderBytes {};
 	std::array<std::uint8_t, MaximumEventSize - EventHeaderSize> eventPayload {};
 	std::uint64_t remaining = summary.payloadBytes;
@@ -715,7 +805,8 @@ MapleTraceSummary validateProductionMapleTraceFile(const std::filesystem::path& 
 		const std::size_t payloadSize = eventSize - EventHeaderSize;
 		readTraceExact(input, eventPayload.data(), payloadSize, "truncated event payload");
 		payloadHasher.update(eventPayload.data(), payloadSize);
-		validator.consume(parseEvent(type, ordinal, eventPayload.data(), payloadSize));
+		validator.consume(parseEvent(summary.schemaVersion, type, ordinal,
+				eventPayload.data(), payloadSize));
 		remaining -= eventSize;
 	}
 
@@ -731,12 +822,17 @@ MapleTraceSummary validateProductionMapleTraceFile(const std::filesystem::path& 
 }
 
 MapleTraceWriter::MapleTraceWriter(const std::filesystem::path& path,
-		const Sha256Digest& identityDigest, std::uint64_t maximumBytes)
+		const Sha256Digest& identityDigest, std::uint64_t maximumBytes,
+		std::uint32_t schemaVersion)
 	: path(path), identityDigest(identityDigest), maximumBytes(maximumBytes)
 {
+	if (schemaVersion != MapleTraceSchemaVersionV1
+			&& schemaVersion != MapleTraceSchemaVersionV2)
+		throw std::invalid_argument("unsupported Maple trace writer schema version");
 	if (maximumBytes < MapleTraceHeaderSize)
 		throw std::invalid_argument("Maple trace size limit is smaller than the header");
 	output = std::make_unique<OutputFile>(path);
+	summary.schemaVersion = schemaVersion;
 	summary.identityDigest = identityDigest;
 	const std::vector<std::uint8_t> header = serializeHeader(summary, false);
 	output->write(header.data(), header.size());
@@ -813,6 +909,8 @@ std::uint64_t MapleTraceWriter::beginDma(MapleDmaBeginEvent event)
 	openDma = true;
 	currentDmaOrdinal = event.dmaOrdinal;
 	currentDmaResponses = 0;
+	nextDescriptorAddress = event.descriptorAddress;
+	descriptorTerminalSeen = false;
 	++summary.dmaCount;
 	return event.dmaOrdinal;
 }
@@ -824,6 +922,15 @@ std::uint64_t MapleTraceWriter::writeTransaction(MapleTransactionEvent event)
 		throw std::logic_error("Maple transaction is outside the active DMA");
 	event.transactionOrdinal = nextTransactionOrdinal++;
 	validateTransactionShape(event);
+	if (summary.schemaVersion == MapleTraceSchemaVersionV2)
+	{
+		if (descriptorTerminalSeen)
+			throw std::logic_error("Maple transaction follows the terminal descriptor");
+		if (event.descriptorAddress != nextDescriptorAddress)
+			throw std::invalid_argument("Maple transaction breaks descriptor-table continuity");
+		nextDescriptorAddress += static_cast<std::uint32_t>(8u + event.request.size());
+		descriptorTerminalSeen = (event.descriptorHeader1 >> 31) != 0;
+	}
 
 	std::vector<std::uint8_t> payload;
 	payload.reserve(56 + event.request.size() + event.response.size());
@@ -849,6 +956,45 @@ std::uint64_t MapleTraceWriter::writeTransaction(MapleTransactionEvent event)
 	return event.transactionOrdinal;
 }
 
+std::uint64_t MapleTraceWriter::writeControlDescriptor(
+		MapleControlDescriptorEvent event)
+{
+	ensureWritable();
+	if (summary.schemaVersion != MapleTraceSchemaVersionV2)
+		throw std::logic_error("Maple control descriptors require trace schema v2");
+	if (!openDma || event.dmaOrdinal != currentDmaOrdinal)
+		throw std::logic_error("Maple control descriptor is outside the active DMA");
+	if (descriptorTerminalSeen)
+		throw std::logic_error("Maple control descriptor follows the terminal descriptor");
+	if (event.descriptorAddress != nextDescriptorAddress)
+		throw std::invalid_argument("Maple control descriptor breaks descriptor-table continuity");
+	if (event.operation != MapleControlOperation::Nop
+			|| ((event.descriptorHeader >> 8) & 7u)
+					!= static_cast<std::uint32_t>(event.operation))
+		throw std::invalid_argument("unsupported or inconsistent Maple control descriptor");
+	if (event.last != ((event.descriptorHeader >> 31) != 0)
+			|| (event.descriptorAddress & 3u) != 0)
+		throw std::invalid_argument("invalid Maple control descriptor shape");
+
+	event.controlOrdinal = nextControlOrdinal++;
+	std::vector<std::uint8_t> payload;
+	payload.reserve(40);
+	appendU64(payload, event.dmaOrdinal);
+	appendU64(payload, event.controlOrdinal);
+	appendU64(payload, event.tick);
+	appendU32(payload, event.descriptorAddress);
+	appendU32(payload, event.descriptorHeader);
+	appendU8(payload, static_cast<std::uint8_t>(event.operation));
+	appendU8(payload, event.last ? 1 : 0);
+	appendU16(payload, 0);
+	appendU32(payload, 0);
+	appendEvent(MapleTraceEventType::ControlDescriptor, event.tick, payload);
+	nextDescriptorAddress += 4;
+	descriptorTerminalSeen = event.last;
+	++summary.controlDescriptorCount;
+	return event.controlOrdinal;
+}
+
 void MapleTraceWriter::scheduleDma(MapleDmaScheduleEvent event)
 {
 	ensureWritable();
@@ -856,6 +1002,8 @@ void MapleTraceWriter::scheduleDma(MapleDmaScheduleEvent event)
 		throw std::logic_error("Maple DMA schedule does not match the active DMA");
 	if (event.responseCount != currentDmaResponses)
 		throw std::invalid_argument("Maple DMA schedule response count mismatch");
+	if (summary.schemaVersion == MapleTraceSchemaVersionV2 && !descriptorTerminalSeen)
+		throw std::invalid_argument("Maple DMA schedule precedes the terminal descriptor");
 	if ((event.flags & ~MapleScheduleDeferredUntilVBlank) != 0
 			|| ((event.flags & MapleScheduleDeferredUntilVBlank) != 0 && event.scheduledCycles != 0))
 		throw std::invalid_argument("invalid Maple DMA schedule flags");
@@ -908,6 +1056,7 @@ void MapleTraceWriter::abortDma(MapleDmaAbortEvent event)
 		openDma = false;
 		currentDmaOrdinal = UINT64_MAX;
 		currentDmaResponses = 0;
+		descriptorTerminalSeen = false;
 	}
 	else
 	{

@@ -8,6 +8,7 @@
 #include "network/ggpo.h"
 #include "hw/naomi/card_reader.h"
 #include "research/maple_runtime.h"
+#include "research/maple_observation.h"
 #include "research/memory_ranges_runtime.h"
 
 #include <memory>
@@ -220,6 +221,7 @@ static void maple_DoDma(research::MapleDmaTrigger trigger)
 	beginEvent.trigger = trigger;
 	beginEvent.swapMsb = swap_msb;
 	const u64 researchDma = research::mapleBeginDma(beginEvent);
+	const u64 observationDma = research::beginMapleObservationDma();
 	u32 xferOut = 0;
 	u32 xferIn = 0;
 	bool last = false;
@@ -233,12 +235,23 @@ static void maple_DoDma(research::MapleDmaTrigger trigger)
 		u32 plen = (header_1 & 0xFF) + 1;			// transfer length (32-bit unit)
 		const u32 maple_op = (header_1 >> 8) & 7;	// Pattern selection: 0 - START, 2 - SDCKB occupy permission, 3 - RESET, 4 - SDCKB occupy cancel, 7 - NOP
 		const u32 bus = (header_1 >> 16) & 3;		// maple bus [0..3]
-		if (researchDma != UINT64_MAX && maple_op != MP_Start)
+		if (researchDma != UINT64_MAX && maple_op == MP_NOP)
+		{
+			research::MapleControlDescriptorEvent control;
+			control.dmaOrdinal = researchDma;
+			control.tick = sh4_sched_now64();
+			control.descriptorAddress = addr;
+			control.descriptorHeader = header_1;
+			control.operation = research::MapleControlOperation::Nop;
+			control.last = last;
+			research::mapleControlDescriptor(control);
+		}
+		else if (researchDma != UINT64_MAX && maple_op != MP_Start)
 		{
 			researchAbortDma(researchDma,
 					research::MapleDmaAbortReason::UnsupportedDescriptor, maple_op);
 			throw FlycastException(
-					"Maple research trace v1 does not support control descriptors");
+					"Maple research trace does not support this control descriptor");
 		}
 
 		//this is kinda wrong .. but meh
@@ -306,9 +319,22 @@ static void maple_DoDma(research::MapleDmaTrigger trigger)
 					maple_in_buf[i] = SWAP32(p_data[i]);
 				p_data = maple_in_buf;
 			}
+			const bool researchRuntimeActive = research::runtimeActive();
+			bool observeTransaction = observationDma != UINT64_MAX;
 			std::vector<u8> researchRequest;
-			if (research::runtimeActive())
+			if (researchRuntimeActive)
 				researchRequest = mapleWordsToLittleEndian(p_data, plen * sizeof(u32));
+			else if (observeTransaction)
+			{
+				try
+				{
+					researchRequest = mapleWordsToLittleEndian(p_data, plen * sizeof(u32));
+				}
+				catch (...)
+				{
+					observeTransaction = false;
+				}
+			}
 
 			u32 outbuf[1024 / sizeof(u32)];
 			u32 outlen;
@@ -336,7 +362,7 @@ static void maple_DoDma(research::MapleDmaTrigger trigger)
 				outlen = sizeof(u32);
 			}
 
-			if (research::runtimeActive())
+			if (researchRuntimeActive || observeTransaction)
 			{
 				research::MapleTransactionEvent transaction;
 				transaction.dmaOrdinal = researchDma;
@@ -353,12 +379,32 @@ static void maple_DoDma(research::MapleDmaTrigger trigger)
 				transaction.flags = static_cast<u8>(pDevice == nullptr
 						? 0 : research::MapleTransactionDevicePresent);
 				transaction.request = std::move(researchRequest);
-				transaction.response = mapleWordsToLittleEndian(outbuf, outlen);
-				const std::vector<u8> response = research::mapleTransaction(std::move(transaction));
-				if (response.size() > sizeof(outbuf))
-					throw FlycastException("Maple research replay response exceeds the device buffer");
-				outlen = static_cast<u32>(response.size());
-				mapleLittleEndianToWords(response, outbuf);
+				if (researchRuntimeActive)
+				{
+					transaction.response = mapleWordsToLittleEndian(outbuf, outlen);
+					const std::vector<u8> response = research::mapleTransaction(transaction);
+					if (response.size() > sizeof(outbuf))
+						throw FlycastException(
+								"Maple research replay response exceeds the device buffer");
+					outlen = static_cast<u32>(response.size());
+					mapleLittleEndianToWords(response, outbuf);
+					if (observeTransaction)
+						research::publishMapleTransactionObservations(observationDma,
+								transaction, response);
+				}
+				else if (outlen % sizeof(u32) == 0)
+				{
+					try
+					{
+						transaction.response = mapleWordsToLittleEndian(outbuf, outlen);
+						research::publishMapleTransactionObservations(observationDma,
+								transaction);
+					}
+					catch (...)
+					{
+						// Discovery allocation failures never alter Maple execution.
+					}
+				}
 			}
 
 			if (pDevice != nullptr)

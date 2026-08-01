@@ -120,7 +120,10 @@ after validation are covered fail-closed. Real differential execution now
 covers block boundaries, calls/returns and delay slots, synchronous and delayed
 faults, interrupts, fastmem/MMU/fallback memory, exact access widths/order, and
 compiled-code invalidation after self-modifying writes. Bounded Lua discovery
-delivery is implemented over the same canonical bus.
+delivery is implemented over the same canonical bus. Ready-to-run discovery
+consumers now cover decoded Maple request/response traffic and bounded SH-4
+memory provenance with native address/producer-PC filters, explicit overflow
+accounting, and discovery-only lifecycle samples.
 
 The trace capture bridge now accepts only backend-specific identity v2,
 authenticates one common Maple replay and manifest-set file, applies the exact
@@ -150,6 +153,49 @@ required synthetic cases. The accepted 2026-07-31 external Lodoss package
 completes the project-level dynarec admission gate.
 
 ## Phase 4: PowerVR causal ownership
+
+Artifact and operator details are in [PvrTaArtifactV1.md](PvrTaArtifactV1.md).
+
+The native TA observation boundary, typed causal artifact, independent
+validator, bounded capture runtime/CLI, and atomic package admission are now
+implemented. The emulator
+emits only successfully accepted 32-byte TA blocks, labels store-queue,
+channel-2 DMA, and sort-DMA sources, assigns non-reused context and render
+generations, and seals the selected context set at STARTRENDER before matching
+the guest-visible render-done boundary. Where the boundary is reached inside a
+tracked SH-4 instruction, the event carries that exact instruction owner rather
+than sampling the current PC afterward. STARTRENDER also carries the exact
+`REGION_BASE` and `FPU_PARAM_CFG` values and the ordered address/value transcript
+of every VRAM read used to select those contexts; observation reuses the values
+consumed by rendering rather than reading mutable VRAM a second time. Sort-DMA
+RAM offsets are normalized to physical SH-4 addresses.
+
+The bus exposes a process-lifetime monotonic drop count and an exclusive
+evidence subscription. Evidence ownership rejects concurrent discovery
+subscribers, and callback, allocation, reentrancy, or incomplete-selection
+failures increment the counter without changing emulation. An evidence recorder
+must compare the terminal count with its starting value and reject any nonzero
+delta. The implemented recorder does this, reauthenticates identity/replay/
+manifest inputs, checks the manifest render count before setting the complete
+header, and is abandoned if the Maple replay terminal is not accepted first.
+
+The standalone validator reconstructs TA context selection from the recorded
+VRAM-read transcript, verifies every typed lifecycle and binding, and requires
+a complete list/block/render/render-done vertical slice. Package v1 revalidates
+the selected accepted SH-4 equivalence backend, byte-identical identity/replay,
+static-analysis and executable digests, the artifact, and a fixed inventory;
+it then publishes by one sibling-directory rename. Mutation, incomplete-file,
+limit, identity, render-count, and forced-abort cases are covered fail-closed.
+
+The 2026-08-01 Lodoss qualification completes the real-game TA admission gate.
+Maple trace v2 typed the exact NOP control descriptor needed to extend the
+deterministic cold-boot replay. DMA 4 was the first terminal containing a fully
+joined accepted-block, selected-context, STARTRENDER, and render-done chain.
+The independently revalidated atomic package contains seven list
+initializations, four accepted blocks, one STARTRENDER, and one RenderDone.
+
+PVR register/VRAM-write ownership and framebuffer/present joins remain Phase 4
+work.
 
 Deliverables:
 

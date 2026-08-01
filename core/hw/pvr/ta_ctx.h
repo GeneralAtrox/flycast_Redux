@@ -1,6 +1,7 @@
 #pragma once
 #include "types.h"
 #include "ta_structs.h"
+#include "ta_selection.h"
 #include "pvr_regs.h"
 #include "oslib/oslib.h"
 #include <glm/glm.hpp>
@@ -244,6 +245,7 @@ struct Rect
 
 struct rend_context
 {
+	u64 researchRenderGeneration = 0;
 	f32 fZ_max;
 
 	bool isRTT;
@@ -408,7 +410,6 @@ void ta_add_triangle(const ModTriangle& tri);
 int ta_add_matrix(const float *matrix);
 int ta_add_light(const N2LightModel& light);
 u32 ta_add_ta_data(u32 *data, u32 size);
-int getTAContextAddresses(u32 *addresses);
 u32 ta_get_tileclip();
 void ta_set_tileclip(u32 tileclip);
 u32 ta_get_list_type();

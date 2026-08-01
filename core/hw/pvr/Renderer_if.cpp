@@ -9,8 +9,11 @@
 #include "hw/sh4/sh4_if.h"
 #include "hw/sh4/sh4_core.h"
 #include "hw/sh4/sh4_sched.h"
+#include "hw/pvr/pvr_mem.h"
 #include "profiler/fc_profiler.h"
 #include "network/ggpo.h"
+#include "research/pvr_presentation_observation.h"
+#include "research/pvr_ta_observation.h"
 
 #include <mutex>
 #include <deque>
@@ -39,6 +42,84 @@ static bool rendererEnabled = true;
 
 static bool presented;
 static u32 fbAddrHistory[2] { 1, 1 };
+static u64 lastScreenRenderGeneration;
+static u32 lastScreenRenderWriteAddress = UINT32_MAX;
+
+static u64 captureFramebufferObservation(const FramebufferInfo& info)
+{
+	if (!research::pvrPresentationObservationBusActive())
+		return 0;
+
+	u32 width = (info.fb_r_size.fb_x_size + 1) * 2;
+	u32 height = info.fb_r_size.fb_y_size + 1;
+	u32 modulus = (info.fb_r_size.fb_modulus - 1) * 2;
+	u32 bytesPerPixel;
+	switch (info.fb_r_ctrl.fb_depth)
+	{
+	case fbde_0555:
+	case fbde_565:
+		bytesPerPixel = 2;
+		break;
+	case fbde_888:
+		bytesPerPixel = 3;
+		width = (width * 2) / 3;
+		modulus = (modulus * 2) / 3;
+		break;
+	case fbde_C888:
+		bytesPerPixel = 4;
+		width /= 2;
+		modulus /= 2;
+		break;
+	default:
+		return 0;
+	}
+
+	u32 address = info.fb_r_sof1;
+	if (info.spg_control.interlace)
+	{
+		if (width == modulus
+				&& info.fb_r_sof2 == info.fb_r_sof1 + width * bytesPerPixel)
+		{
+			modulus = 0;
+			height *= 2;
+		}
+		else
+		{
+			address = info.spg_status.fieldnum
+					? info.fb_r_sof2 : info.fb_r_sof1;
+		}
+	}
+	else if (info.fb_r_ctrl.vclk_div == 0)
+	{
+		height = std::min<u32>(height, 240);
+	}
+
+	const u32 rowBytes = width * bytesPerPixel;
+	if (width == 0 || height == 0 || rowBytes == 0
+			|| static_cast<u64>(rowBytes) * height > 32_MB)
+		return 0;
+	std::vector<u8> bytes(static_cast<size_t>(rowBytes) * height);
+	for (u32 y = 0; y < height; ++y)
+	{
+		for (u32 x = 0; x < rowBytes; ++x)
+			bytes[static_cast<size_t>(y) * rowBytes + x] =
+					pvr_read32p<u8>(address + x);
+		address += rowBytes + modulus * bytesPerPixel;
+	}
+
+	research::PvrFramebufferConfig config;
+	config.fbReadSize = info.fb_r_size.full;
+	config.fbReadControl = info.fb_r_ctrl.full;
+	config.spgControl = info.spg_control.full;
+	config.spgStatus = info.spg_status.full;
+	config.fbReadSof1 = info.fb_r_sof1;
+	config.fbReadSof2 = info.fb_r_sof2;
+	config.videoControl = info.vo_control.full;
+	config.borderColor = info.vo_border_col.full;
+	return research::observePvrFramebufferCaptured(
+			research::PvrFramebufferKind::DreamcastVram, 0, config, width, height,
+			rowBytes, bytes.data(), bytes.size(), sh4_sched_now64());
+}
 
 class PvrMessageQueue
 {
@@ -49,16 +130,25 @@ public:
 	struct Message
 	{
 		Message() = default;
-		Message(MessageType type, FramebufferInfo config)
-			: type(type), config(config) {}
+		Message(MessageType type, FramebufferInfo config,
+				research::PvrPresentationSource source,
+				u64 sourceGeneration)
+			: type(type), config(config), source(source),
+			  sourceGeneration(sourceGeneration) {}
 
 		MessageType type = NoMessage;
 		FramebufferInfo config;
+		research::PvrPresentationSource source =
+				research::PvrPresentationSource::Render;
+		u64 sourceGeneration = 0;
 	};
 
-	void enqueue(MessageType type, FramebufferInfo config = FramebufferInfo())
+	void enqueue(MessageType type, FramebufferInfo config = FramebufferInfo(),
+			research::PvrPresentationSource source =
+					research::PvrPresentationSource::Render,
+			u64 sourceGeneration = 0)
 	{
-		Message msg { type, config };
+		Message msg { type, config, source, sourceGeneration };
 		if (config::ThreadedRendering)
 		{
 			// FIXME need some synchronization to avoid blinking in densha de go
@@ -177,13 +267,13 @@ private:
 		switch (msg.type)
 		{
 		case Render:
-			render();
+			render(msg.sourceGeneration);
 			return true;
 		case RenderFramebuffer:
-			renderFramebuffer(msg.config);
+			renderFramebuffer(msg.config, msg.sourceGeneration);
 			return true;
 		case Present:
-			present();
+			present(msg.source, msg.sourceGeneration);
 			return true;
 		case Stop:
 		case NoMessage:
@@ -192,13 +282,24 @@ private:
 		}
 	}
 
-	void render()
+	void render(u64 queuedRenderGeneration)
 	{
 		FC_PROFILE_SCOPE;
 
 		TA_context *taContext = DequeueRender();
 		if (taContext == nullptr)
 			return;
+		const u64 renderGeneration = taContext->rend.researchRenderGeneration;
+		if (queuedRenderGeneration != 0
+				&& queuedRenderGeneration != renderGeneration)
+			throw RendererException("PowerVR render generation queue mismatch");
+		const research::PvrRenderKind renderKind = taContext->rend.isRTT
+				? research::PvrRenderKind::RenderToTexture
+				: config::EmulateFramebuffer
+						? research::PvrRenderKind::FramebufferEmulation
+						: research::PvrRenderKind::Screen;
+		research::ScopedPvrRenderObservation renderObservation(
+				renderGeneration, renderKind);
 
 		int width, height;
 		getScaledFramebufferSize(taContext->rend, width, height);
@@ -226,10 +327,11 @@ private:
 			// If rendering to texture or in full framebuffer emulation, continue locking until the frame is rendered
 			renderEnd.Set();
 		rend_allow_rollback();
+		bool renderSuccessful = false;
 		{
 			FC_PROFILE_SCOPE_NAMED("Renderer::Render");
 			try {
-				renderer->Render();
+				renderSuccessful = renderer->Render();
 			} catch (...) {
 				if (!renderToScreen)
 					renderEnd.Set();
@@ -237,17 +339,24 @@ private:
 				throw;
 			}
 		}
+		research::observePvrRenderCompleted(renderGeneration, renderKind,
+				renderSuccessful, sh4_sched_now64());
+		if (renderSuccessful && renderKind == research::PvrRenderKind::Screen)
+		{
+			lastScreenRenderGeneration = renderGeneration;
+			lastScreenRenderWriteAddress = taContext->rend.fb_W_SOF1;
+		}
 
 		if (!renderToScreen)
 			renderEnd.Set();
 		else if (config::DelayFrameSwapping && fb_w_cur == FB_R_SOF1)
-			present();
+			present(research::PvrPresentationSource::Render, renderGeneration);
 
 		//clear up & free data ..
 		FinishRender(taContext);
 	}
 
-	void renderFramebuffer(const FramebufferInfo& config)
+	void renderFramebuffer(const FramebufferInfo& config, u64 framebufferGeneration)
 	{
 		FC_PROFILE_SCOPE;
 
@@ -257,13 +366,46 @@ private:
 		retro_resize_renderer(w, h, getDCFramebufferAspectRatio());
 #endif
 		renderer->RenderFramebuffer(config);
+		research::observePvrRenderCompleted(framebufferGeneration,
+				research::PvrRenderKind::DirectFramebuffer, true,
+				sh4_sched_now64());
 	}
 
-	void present()
+	void present(research::PvrPresentationSource source, u64 sourceGeneration)
 	{
 		FC_PROFILE_SCOPE;
 
-		if (renderer->Present())
+		const bool successful = renderer->Present();
+		if (successful && source == research::PvrPresentationSource::Render
+				&& research::pvrPresentationObservationBusActive())
+		{
+			std::vector<u8> rgb;
+			int width = 0;
+			int height = 0;
+			if (renderer->GetLastFrame(rgb, width, height) && width > 0 && height > 0
+					&& rgb.size() == static_cast<size_t>(width) * height * 3)
+			{
+				const research::PvrFramebufferConfig config {};
+				const u64 framebufferGeneration =
+						research::observePvrFramebufferCaptured(
+								research::PvrFramebufferKind::PresentedRgb24,
+								sourceGeneration, config, static_cast<u32>(width),
+								static_cast<u32>(height), static_cast<u32>(width * 3),
+								rgb.data(), rgb.size(), sh4_sched_now64());
+				if (framebufferGeneration != 0)
+				{
+					source = research::PvrPresentationSource::Framebuffer;
+					sourceGeneration = framebufferGeneration;
+				}
+			}
+		}
+		// The renderer may swap its empty bootstrap surface before the first
+		// completed PVR render. It has no game frame or causal source to record.
+		if (sourceGeneration == 0)
+			return;
+		research::observePvrPresentation(source, sourceGeneration, successful,
+				sh4_sched_now64());
+		if (successful)
 		{
 			presented = true;
 			if (!config::ThreadedRendering && !ggpo::active())
@@ -491,28 +633,37 @@ void rend_reset()
 	rendererEnabled = true;
 	fbAddrHistory[0] = 1;
 	fbAddrHistory[1] = 1;
+	lastScreenRenderGeneration = 0;
+	lastScreenRenderWriteAddress = UINT32_MAX;
 	swapIntervalDetector.reset();
 }
 
-void rend_start_render()
+u64 rend_start_render()
 {
 	render_called = true;
 	pend_rend = false;
 
 	TA_context *ctx = nullptr;
 	u32 addresses[MAX_PASSES];
-	int count = getTAContextAddresses(addresses);
+	bool contextAvailability[MAX_PASSES] {};
+	research::PvrTaRenderSelectionTranscript selectionTranscript;
+	research::PvrTaRenderSelectionTranscript *selectionTranscriptPtr =
+			research::pvrTaObservationBusActive() ? &selectionTranscript : nullptr;
+	int count = getTAContextAddresses(addresses, selectionTranscriptPtr);
 	if (count > 0)
 	{
 		ctx = tactx_Pop(addresses[0]);
+		contextAvailability[0] = ctx != nullptr;
 		if (ctx != nullptr)
 		{
 			TA_context *linkedCtx = ctx;
 			for (int i = 1; i < count; i++)
 			{
-				linkedCtx->nextContext = tactx_Pop(addresses[i]);
-				if (linkedCtx->nextContext != nullptr)
-					linkedCtx = linkedCtx->nextContext;
+				TA_context *nextContext = tactx_Pop(addresses[i]);
+				contextAvailability[i] = nextContext != nullptr;
+				linkedCtx->nextContext = nextContext;
+				if (nextContext != nullptr)
+					linkedCtx = nextContext;
 				else
 					INFO_LOG(PVR, "rend_start_render: Context%d @ %x not found", i, addresses[i]);
 			}
@@ -522,11 +673,17 @@ void rend_start_render()
 	}
 	else
 		INFO_LOG(PVR, "rend_start_render: No context not found");
+	const u64 renderGeneration = research::observePvrTaStartRender(
+			addresses, contextAvailability,
+			count > 0 ? static_cast<std::size_t>(count) : 0u,
+			selectionTranscriptPtr,
+			sh4_sched_now64());
 
 	scheduleRenderDone(ctx);
 
 	if (ctx == nullptr)
-		return;
+		return renderGeneration;
+	ctx->rend.researchRenderGeneration = renderGeneration;
 
 	FillBGP(ctx);
 
@@ -567,16 +724,27 @@ void rend_start_render()
 
 	if (QueueRender(ctx))
 	{
+		const research::PvrRenderKind renderKind = ctx->rend.isRTT
+				? research::PvrRenderKind::RenderToTexture
+				: config::EmulateFramebuffer
+						? research::PvrRenderKind::FramebufferEmulation
+						: research::PvrRenderKind::Screen;
+		research::observePvrRenderQueued(renderGeneration, renderKind,
+				ctx->rend.fb_W_SOF1, sh4_sched_now64());
 		palette_update();
 		pend_rend = true;
-		pvrQueue.enqueue(PvrMessageQueue::Render);
+		pvrQueue.enqueue(PvrMessageQueue::Render, FramebufferInfo {},
+				research::PvrPresentationSource::Render, renderGeneration);
 		if (!config::DelayFrameSwapping && !ctx->rend.isRTT && !config::EmulateFramebuffer)
-			pvrQueue.enqueue(PvrMessageQueue::Present);
+			pvrQueue.enqueue(PvrMessageQueue::Present, FramebufferInfo {},
+					research::PvrPresentationSource::Render, renderGeneration);
 	}
+	return renderGeneration;
 }
 
 int rend_end_render(int tag, int cycles, int jitter, void *arg)
 {
+	research::observePvrTaRenderDone(sh4_sched_now64());
 	if (settings.platform.isNaomi2())
 	{
 		asic_RaiseInterruptBothCLX(holly_RENDER_DONE);
@@ -604,8 +772,16 @@ void rend_vblank()
 		{
 			FramebufferInfo fbInfo;
 			fbInfo.update();
-			pvrQueue.enqueue(PvrMessageQueue::RenderFramebuffer, fbInfo);
-			pvrQueue.enqueue(PvrMessageQueue::Present);
+			const u64 framebufferGeneration = captureFramebufferObservation(fbInfo);
+			research::observePvrRenderQueued(framebufferGeneration,
+					research::PvrRenderKind::DirectFramebuffer,
+					fbInfo.fb_r_sof1, sh4_sched_now64());
+			pvrQueue.enqueue(PvrMessageQueue::RenderFramebuffer, fbInfo,
+					research::PvrPresentationSource::Framebuffer,
+					framebufferGeneration);
+			pvrQueue.enqueue(PvrMessageQueue::Present, FramebufferInfo {},
+					research::PvrPresentationSource::Framebuffer,
+					framebufferGeneration);
 			if (!config::EmulateFramebuffer)
 				DEBUG_LOG(PVR, "Direct framebuffer write detected");
 		}
@@ -649,7 +825,12 @@ void rend_set_fb_write_addr(u32 fb_w_sof1)
 void rend_swap_frame(u32 fb_r_sof)
 {
 	if (!config::EmulateFramebuffer && fb_r_sof == fb_w_cur && rend_is_enabled())
-		pvrQueue.enqueue(PvrMessageQueue::Present);
+	{
+		const u64 generation = lastScreenRenderWriteAddress == fb_r_sof
+				? lastScreenRenderGeneration : 0;
+		pvrQueue.enqueue(PvrMessageQueue::Present, FramebufferInfo {},
+				research::PvrPresentationSource::Render, generation);
+	}
 }
 
 void rend_disable_rollback()

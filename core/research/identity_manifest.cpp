@@ -292,6 +292,15 @@ ValidatedIdentity validateIdentityJson(const json& root)
 		runtimeConfiguration.sh4ObservationStartDma =
 				startDma.get<std::uint64_t>();
 	}
+	if (values.contains("pvr_ta_start_dma"))
+	{
+		const json& startDma = values.at("pvr_ta_start_dma");
+		if (!startDma.is_number_unsigned()
+				|| startDma.get<std::uint64_t>() == 0
+				|| startDma.get<std::uint64_t>() > MaximumMapleDmaCheckpoint)
+			invalid("configuration.values.pvr_ta_start_dma is outside [1, 10000000]");
+		runtimeConfiguration.pvrTaStartDma = startDma.get<std::uint64_t>();
+	}
 	if (!configuration.contains("sha256"))
 		invalid("configuration.sha256 is missing");
 	validateSha256(configuration.at("sha256"), "configuration.sha256");

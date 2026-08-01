@@ -3,6 +3,8 @@
 #include "Renderer_if.h"
 #include "ta.h"
 #include "spg.h"
+#include "hw/sh4/sh4_sched.h"
+#include "research/pvr_presentation_observation.h"
 #include <map>
 
 bool pal_needs_update=true;
@@ -117,6 +119,14 @@ u32 pvr_ReadReg(u32 addr)
 void pvr_WriteReg(u32 paddr,u32 data)
 {
 	u32 addr = paddr & pvr_RegMask;
+	const u32 requestedData = data;
+	const u32 previousData = PvrReg(addr, u32);
+	auto observe = [&](research::PvrRegisterWriteDisposition disposition,
+			u64 renderGeneration = 0) {
+		research::observePvrRegisterWrite(paddr, addr, requestedData,
+				previousData, PvrReg(addr, u32), disposition,
+				renderGeneration, sh4_sched_now64());
+	};
 	DEBUG_LOG(PVR, "write %s.%c = %x", regName(paddr),
 			((paddr >> 26) & 7) == 2 ? 'b' : (paddr & 0x2000000) ? '1' : '0',
 					data);
@@ -126,11 +136,16 @@ void pvr_WriteReg(u32 paddr,u32 data)
 	case ID_addr:
 	case REVISION_addr:
 	case TA_YUV_TEX_CNT_addr:
+		observe(research::PvrRegisterWriteDisposition::IgnoredReadOnly);
 		return; // read only
 
 	case STARTRENDER_addr:
-		rend_start_render();
-		YUV_init();
+		{
+			const u64 renderGeneration = rend_start_render();
+			YUV_init();
+			observe(research::PvrRegisterWriteDisposition::SideEffectOnly,
+					renderGeneration);
+		}
 		return;
 
 	case TA_LIST_INIT_addr:
@@ -140,11 +155,17 @@ void pvr_WriteReg(u32 paddr,u32 data)
 			TA_NEXT_OPB = TA_NEXT_OPB_INIT;
 			TA_ITP_CURRENT = TA_ISP_BASE;
 		}
+		observe(data >> 31
+				? research::PvrRegisterWriteDisposition::SideEffectOnly
+				: research::PvrRegisterWriteDisposition::IgnoredCondition);
 		return;
 
 	case SOFTRESET_addr:
 		if (data & 1)
 			ta_vtx_SoftReset();
+		observe(data & 1
+				? research::PvrRegisterWriteDisposition::SideEffectOnly
+				: research::PvrRegisterWriteDisposition::IgnoredCondition);
 		return;
 
 	case TA_LIST_CONT_addr:
@@ -159,6 +180,7 @@ void pvr_WriteReg(u32 paddr,u32 data)
 			PvrReg(addr, u32) = data;
 			CalculateSync();
 		}
+		observe(research::PvrRegisterWriteDisposition::Stored);
 		return;
 
 	case FB_R_CTRL_addr:
@@ -168,6 +190,7 @@ void pvr_WriteReg(u32 paddr,u32 data)
 			if (vclk_div_changed)
 				CalculateSync();
 		}
+		observe(research::PvrRegisterWriteDisposition::Stored);
 		return;
 
 	case FB_R_SIZE_addr:
@@ -177,16 +200,21 @@ void pvr_WriteReg(u32 paddr,u32 data)
 			fb_dirty = false;
 			check_framebuffer_write();
 		}
+		observe(research::PvrRegisterWriteDisposition::Stored);
 		return;
 
 	case TA_YUV_TEX_BASE_addr:
 		PvrReg(addr, u32) = data & 0x00FFFFF8;
 		YUV_init();
+		observe(PvrReg(addr, u32) == requestedData
+				? research::PvrRegisterWriteDisposition::Stored
+				: research::PvrRegisterWriteDisposition::MaskedAndStored);
 		return;
 
 	case TA_YUV_TEX_CTRL_addr:
 		PvrReg(addr, u32) = data;
 		YUV_init();
+		observe(research::PvrRegisterWriteDisposition::Stored);
 		return;
 
 	case FB_R_SOF1_addr:
@@ -210,6 +238,9 @@ void pvr_WriteReg(u32 paddr,u32 data)
 			SPG_HBLANK_INT.full = data;
 			rescheduleSPG();
 		}
+		observe(data == requestedData
+				? research::PvrRegisterWriteDisposition::Stored
+				: research::PvrRegisterWriteDisposition::MaskedAndStored);
 		return;
 
 	case PAL_RAM_CTRL_addr:
@@ -224,6 +255,9 @@ void pvr_WriteReg(u32 paddr,u32 data)
 		break;
 	}
 	PvrReg(addr, u32) = data;
+	observe(data == requestedData
+			? research::PvrRegisterWriteDisposition::Stored
+			: research::PvrRegisterWriteDisposition::MaskedAndStored);
 }
 
 void Regs_Reset(bool hard)

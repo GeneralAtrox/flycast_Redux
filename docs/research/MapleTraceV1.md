@@ -162,7 +162,8 @@ candidate invalid.
 ## V1 limitations
 
 - Only ordinary Maple START descriptors are accepted. SDCKB occupy/cancel,
-  RESET, and NOP descriptors need a future typed control-event schema.
+  RESET, and NOP descriptors are not representable in v1. Typed NOP support is
+  defined by [Maple trace v2](MapleTraceV2.md).
 - Reset and controller hot-plug/reconnect invalidate an active session.
 - The format claims emulator-observed timing, not physical bus timing.
 - Replay begins from normal boot; savestate-based starts are not supported.

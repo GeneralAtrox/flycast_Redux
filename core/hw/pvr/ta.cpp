@@ -1,7 +1,10 @@
 #include "ta.h"
 #include "ta_ctx.h"
 #include "hw/holly/holly_intc.h"
+#include "hw/sh4/sh4_sched.h"
 #include "pvr_mem.h"
+#include "research/pvr_presentation_observation.h"
+#include "research/pvr_ta_observation.h"
 
 /*
 	Threaded TA Implementation
@@ -495,6 +498,8 @@ static void markObjectListBlocks(int renderPass)
 			}
 		}
 	}
+	research::ScopedPvrVramWriteSource writeSource(
+			research::PvrVramWriteSource::TaInternal);
 	for (u32 y = 0; y <= TA_GLOB_TILE_CLIP.tile_y_num; y++)
 		for (u32 x = 0; x <= TA_GLOB_TILE_CLIP.tile_x_num; x++)
 		{
@@ -515,6 +520,9 @@ void ta_vtx_ListInit(bool continuation)
 
 	ta_cur_state = TAS_NS;
 	ta_fsm_cl = 7;
+	research::observePvrTaListBoundary(continuation,
+			ta_ctx != nullptr ? ta_ctx->Address : TA_OL_BASE, taRenderPass,
+			sh4_sched_now64());
 	if (settings.platform.isNaomi2())
 		ta_parse_reset();
 }
@@ -524,7 +532,8 @@ void ta_vtx_SoftReset()
 	ta_cur_state = TAS_NS;
 }
 
-static void DYNACALL ta_thd_data32_i(const simd256_t *data)
+static void DYNACALL ta_thd_data32_i(const simd256_t *data,
+		research::PvrTaInputSource source, u32 sourceAddress, u32 taAddress)
 {
 	if (ta_ctx == NULL)
 	{
@@ -538,6 +547,9 @@ static void DYNACALL ta_thd_data32_i(const simd256_t *data)
 		return;
 	}
 
+	const u32 contextAddress = ta_ctx->Address;
+	const u32 parserStateBefore = ta_cur_state;
+	const u32 listTypeBefore = ta_fsm_cl;
 	simd256_t* dst = (simd256_t*)ta_tad.thd_data;
 
 	// First byte is PCW
@@ -556,40 +568,42 @@ static void DYNACALL ta_thd_data32_i(const simd256_t *data)
 	bool must_handle = trans & 0xF0;
 
 
-	if (likely(!must_handle))
-	{
-		return;
-	}
-	else
-	{
+	if (unlikely(must_handle))
 		ta_handle_cmd(trans);
-	}
+
+	research::observePvrTaAcceptedBlock(source, sourceAddress, taAddress,
+			reinterpret_cast<const u8 *>(data), contextAddress, taRenderPass,
+			listTypeBefore, ta_fsm_cl, parserStateBefore, ta_cur_state,
+			sh4_sched_now64());
 }
 
-void DYNACALL ta_vtx_data32(const SQBuffer *data)
+void DYNACALL ta_vtx_data32(const SQBuffer *data,
+		research::PvrTaInputSource source, u32 sourceAddress, u32 taAddress)
 {
-	ta_thd_data32_i((const simd256_t *)data);
+	ta_thd_data32_i((const simd256_t *)data, source, sourceAddress, taAddress);
 }
 
-void ta_vtx_data(const SQBuffer *data, u32 size)
+void ta_vtx_data(const SQBuffer *data, u32 size,
+		research::PvrTaInputSource source, u32 sourceAddress, u32 taAddress)
 {
 	while (size >= 4)
 	{
-		ta_thd_data32_i((simd256_t *)data);
-		data++;
-		ta_thd_data32_i((simd256_t *)data);
-		data++;
-		ta_thd_data32_i((simd256_t *)data);
-		data++;
-		ta_thd_data32_i((simd256_t *)data);
-		data++;
+		for (u32 index = 0; index < 4; ++index)
+		{
+			ta_thd_data32_i((simd256_t *)data, source, sourceAddress, taAddress);
+			data++;
+			if (sourceAddress != UINT32_MAX)
+				sourceAddress += sizeof(SQBuffer);
+		}
 		size -= 4;
 	}
 
 	while (size > 0)
 	{
-		ta_thd_data32_i((simd256_t *)data);
+		ta_thd_data32_i((simd256_t *)data, source, sourceAddress, taAddress);
 		data++;
+		if (sourceAddress != UINT32_MAX)
+			sourceAddress += sizeof(SQBuffer);
 		size--;
 	}
 }

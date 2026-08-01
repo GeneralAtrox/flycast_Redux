@@ -337,8 +337,24 @@ if(NOT LIBRETRO)
 			core/research/identity_manifest.h
 			core/research/maple_runtime.cpp
 			core/research/maple_runtime.h
+			core/research/maple_observation.cpp
+			core/research/maple_observation.h
 			core/research/maple_trace.cpp
 			core/research/maple_trace.h
+			core/research/pvr_ta_observation.cpp
+			core/research/pvr_ta_observation.h
+			core/research/pvr_ta_artifact.cpp
+			core/research/pvr_ta_artifact.h
+			core/research/pvr_ta_capture_runtime.cpp
+			core/research/pvr_ta_capture_runtime.h
+			core/research/pvr_ta_manifest.cpp
+			core/research/pvr_ta_manifest.h
+			core/research/pvr_presentation_observation.cpp
+			core/research/pvr_presentation_observation.h
+			core/research/pvr_framebuffer.cpp
+			core/research/pvr_framebuffer.h
+			core/research/pvr_presentation_artifact.cpp
+			core/research/pvr_presentation_artifact.h
 			core/research/memory_ranges_artifact.cpp
 			core/research/memory_ranges_artifact.h
 			core/research/memory_ranges_capture.cpp
@@ -1592,6 +1608,77 @@ if(BUILD_RESEARCH_TOOLS AND NOT LIBRETRO)
 				-Wall -Wextra -Wpedantic)
 	endif()
 
+	add_executable(flycast-research-validate-pvr-ta
+			tools/research/validate_pvr_ta.cpp
+			core/research/identity_manifest.cpp
+			core/research/maple_trace.cpp
+			core/research/pvr_ta_manifest.cpp
+			core/research/pvr_ta_validator.cpp
+			core/research/sha256.cpp)
+	target_include_directories(flycast-research-validate-pvr-ta PRIVATE core core/deps/json)
+	set_target_properties(flycast-research-validate-pvr-ta PROPERTIES
+			CXX_STANDARD 17
+			CXX_STANDARD_REQUIRED ON
+			CXX_EXTENSIONS OFF)
+	if(MSVC)
+		target_compile_definitions(flycast-research-validate-pvr-ta PRIVATE
+				NOMINMAX _CRT_SECURE_NO_WARNINGS)
+		target_compile_options(flycast-research-validate-pvr-ta PRIVATE /utf-8 /W4)
+	else()
+		target_compile_options(flycast-research-validate-pvr-ta PRIVATE
+				-Wall -Wextra -Wpedantic)
+	endif()
+
+	add_executable(flycast-research-validate-pvr-ta-package
+			tools/research/validate_pvr_ta_package.cpp
+			core/research/identity_manifest.cpp
+			core/research/maple_trace.cpp
+			core/research/pvr_ta_manifest.cpp
+			core/research/pvr_ta_package.cpp
+			core/research/pvr_ta_validator.cpp
+			core/research/sh4_equivalence.cpp
+			core/research/sh4_equivalence_package.cpp
+			core/research/sh4_observation.cpp
+			core/research/sh4_observation_compare.cpp
+			core/research/sh4_observation_trace.cpp
+			core/research/sha256.cpp)
+	target_include_directories(flycast-research-validate-pvr-ta-package PRIVATE
+			core core/deps/json)
+	set_target_properties(flycast-research-validate-pvr-ta-package PROPERTIES
+			CXX_STANDARD 17
+			CXX_STANDARD_REQUIRED ON
+			CXX_EXTENSIONS OFF)
+	if(MSVC)
+		target_compile_definitions(flycast-research-validate-pvr-ta-package PRIVATE
+				NOMINMAX _CRT_SECURE_NO_WARNINGS)
+		target_compile_options(flycast-research-validate-pvr-ta-package PRIVATE
+				/utf-8 /W4)
+	else()
+		target_compile_options(flycast-research-validate-pvr-ta-package PRIVATE
+				-Wall -Wextra -Wpedantic)
+	endif()
+
+	add_executable(flycast-research-validate-pvr-presentation
+			tools/research/validate_pvr_presentation.cpp
+			core/research/identity_manifest.cpp
+			core/research/maple_trace.cpp
+			core/research/pvr_framebuffer.cpp
+			core/research/pvr_presentation_validator.cpp
+			core/research/sha256.cpp)
+	target_include_directories(flycast-research-validate-pvr-presentation PRIVATE
+			core core/deps/json)
+	set_target_properties(flycast-research-validate-pvr-presentation PROPERTIES
+			CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+	if(MSVC)
+		target_compile_definitions(flycast-research-validate-pvr-presentation PRIVATE
+				NOMINMAX _CRT_SECURE_NO_WARNINGS)
+		target_compile_options(flycast-research-validate-pvr-presentation PRIVATE
+				/utf-8 /W4)
+	else()
+		target_compile_options(flycast-research-validate-pvr-presentation PRIVATE
+				-Wall -Wextra -Wpedantic)
+	endif()
+
 	add_executable(flycast-research-validate-ghidra-export
 			tools/research/validate_ghidra_export.cpp
 			core/research/ghidra_export.cpp
@@ -1698,6 +1785,13 @@ if(BUILD_RESEARCH_TOOLS AND BUILD_TESTING AND NOT LIBRETRO)
 			tests/src/debug/GdbServerPolicyTest.cpp
 			tests/src/research/GhidraExportTest.cpp
 			tests/src/research/MapleTraceTest.cpp
+			tests/src/research/MapleObservationTest.cpp
+			tests/src/research/PvrTaObservationTest.cpp
+			tests/src/research/PvrTaArtifactTest.cpp
+			tests/src/research/PvrTaCaptureRuntimeTest.cpp
+			tests/src/research/PvrPresentationObservationTest.cpp
+			tests/src/research/PvrFramebufferTest.cpp
+			tests/src/research/PvrPresentationArtifactTest.cpp
 			tests/src/research/MemoryRangesTest.cpp
 			tests/src/research/Sh4ObservationTest.cpp
 			tests/src/research/Sh4LuaSubscriptionsTest.cpp
@@ -1709,7 +1803,17 @@ if(BUILD_RESEARCH_TOOLS AND BUILD_TESTING AND NOT LIBRETRO)
 			core/research/identity_manifest.cpp
 			core/research/ghidra_export.cpp
 			core/research/maple_runtime.cpp
+			core/research/maple_observation.cpp
 			core/research/maple_trace.cpp
+			core/research/pvr_ta_observation.cpp
+			core/research/pvr_ta_artifact.cpp
+			core/research/pvr_ta_capture_runtime.cpp
+			core/research/pvr_ta_manifest.cpp
+			core/research/pvr_ta_validator.cpp
+			core/research/pvr_presentation_observation.cpp
+			core/research/pvr_framebuffer.cpp
+			core/research/pvr_presentation_artifact.cpp
+			core/research/pvr_presentation_validator.cpp
 			core/research/memory_ranges_artifact.cpp
 			core/research/memory_ranges_capture.cpp
 			core/research/memory_ranges_manifest.cpp
@@ -1727,6 +1831,8 @@ if(BUILD_RESEARCH_TOOLS AND BUILD_TESTING AND NOT LIBRETRO)
 			core/research/sh4_observation_trace.cpp
 			core/research/sha256.cpp)
 	target_include_directories(flycast-research-tests PRIVATE core core/deps core/deps/json)
+	target_compile_definitions(flycast-research-tests PRIVATE
+			FLYCAST_RESEARCH_STANDALONE_TESTS)
 	target_link_libraries(flycast-research-tests PRIVATE GTest::gtest_main nowide::nowide)
 	set_target_properties(flycast-research-tests PROPERTIES
 			CXX_STANDARD 17
@@ -1783,6 +1889,28 @@ if(BUILD_RESEARCH_TOOLS AND BUILD_TESTING AND NOT LIBRETRO)
 				-Wall -Wextra -Wpedantic)
 	endif()
 
+	add_executable(flycast-research-pvr-ta-fixture
+			tests/src/research/PvrTaProcessFixture.cpp
+			core/research/identity_manifest.cpp
+			core/research/pvr_ta_artifact.cpp
+			core/research/pvr_ta_manifest.cpp
+			core/research/sha256.cpp)
+	target_include_directories(flycast-research-pvr-ta-fixture PRIVATE
+			core core/deps/json)
+	set_target_properties(flycast-research-pvr-ta-fixture PROPERTIES
+			CXX_STANDARD 17
+			CXX_STANDARD_REQUIRED ON
+			CXX_EXTENSIONS OFF)
+	if(MSVC)
+		target_compile_definitions(flycast-research-pvr-ta-fixture PRIVATE
+				NOMINMAX _CRT_SECURE_NO_WARNINGS)
+		target_compile_options(flycast-research-pvr-ta-fixture PRIVATE
+				/utf-8 /W4)
+	else()
+		target_compile_options(flycast-research-pvr-ta-fixture PRIVATE
+				-Wall -Wextra -Wpedantic)
+	endif()
+
 	if(WIN32)
 		find_program(FLYCAST_RESEARCH_POWERSHELL NAMES pwsh)
 		if(FLYCAST_RESEARCH_POWERSHELL)
@@ -1823,6 +1951,22 @@ if(BUILD_RESEARCH_TOOLS AND BUILD_TESTING AND NOT LIBRETRO)
 						-QuarantineSchema ${CMAKE_CURRENT_SOURCE_DIR}/docs/research/flycast-research-sh4-equivalence-package-quarantine-v1.schema.json)
 			set_tests_properties(flycast-research-sh4-equivalence-package-v1
 					PROPERTIES TIMEOUT 120)
+
+			add_test(NAME flycast-research-pvr-ta-package-v1
+				COMMAND ${FLYCAST_RESEARCH_POWERSHELL} -NoProfile -File
+						${CMAKE_CURRENT_SOURCE_DIR}/tests/research/test_pvr_ta_package_v1.ps1
+						-Sh4Fixture $<TARGET_FILE:flycast-research-sh4-equivalence-fixture>
+						-Sh4Comparator $<TARGET_FILE:flycast-research-compare-sh4>
+						-Sh4Publisher ${CMAKE_CURRENT_SOURCE_DIR}/tools/research/flycast-publish-sh4-equivalence-package-v1.ps1
+						-Sh4Validator $<TARGET_FILE:flycast-research-validate-sh4-equivalence-package>
+						-PvrFixture $<TARGET_FILE:flycast-research-pvr-ta-fixture>
+						-PvrPublisher ${CMAKE_CURRENT_SOURCE_DIR}/tools/research/flycast-publish-pvr-ta-package-v1.ps1
+						-ArtifactValidator $<TARGET_FILE:flycast-research-validate-pvr-ta>
+						-PackageValidator $<TARGET_FILE:flycast-research-validate-pvr-ta-package>
+						-JobSchema ${CMAKE_CURRENT_SOURCE_DIR}/docs/research/flycast-research-pvr-ta-package-job-v1.schema.json
+						-ValidationSchema ${CMAKE_CURRENT_SOURCE_DIR}/docs/research/flycast-research-pvr-ta-package-validation-v1.schema.json)
+			set_tests_properties(flycast-research-pvr-ta-package-v1
+					PROPERTIES TIMEOUT 180)
 		endif()
 	endif()
 endif()

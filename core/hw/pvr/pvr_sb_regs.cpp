@@ -93,7 +93,9 @@ static void pvr_do_sort_dma()
 
 		link_addr = ea_ptr[0x1C >> 2];//Next link
 		//transfer global param
-		ta_vtx_data((const SQBuffer *)ea_ptr, ea_ptr[0x18 >> 2]);
+		ta_vtx_data((const SQBuffer *)ea_ptr, ea_ptr[0x18 >> 2],
+				research::PvrTaInputSource::SortDma,
+				research::canonicalPvrTaSystemRamAddress(ea), UINT32_MAX);
 		if (link_addr == 1)
 			link_addr = calculate_start_link_addr();
 	}

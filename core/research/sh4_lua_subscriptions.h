@@ -1,5 +1,6 @@
 #pragma once
 
+#include "research/maple_observation.h"
 #include "research/sh4_observation.h"
 
 #include <cstddef>
@@ -14,13 +15,15 @@ namespace research
 {
 
 // Discovery-only, asynchronous delivery adapter for Lua. It subscribes to the
-// canonical native observation bus and queues copies; it never participates in
-// typed artifact recording or accepted-evidence publication.
+// canonical native observation buses and queues copies in one bounded order;
+// it never participates in typed artifact recording or accepted-evidence
+// publication.
 class Sh4LuaSubscriptionQueue
 {
 public:
 	using Token = std::uint64_t;
 	using Callback = std::function<void(Token, const Sh4Observation&)>;
+	using MapleCallback = std::function<void(Token, const MapleObservation&)>;
 	using ErrorCallback = std::function<void(Token, std::exception_ptr)>;
 
 	static constexpr std::size_t DefaultCapacity = 4096;
@@ -47,6 +50,9 @@ public:
 	Sh4LuaSubscriptionQueue& operator=(const Sh4LuaSubscriptionQueue&) = delete;
 
 	Token subscribe(const Sh4ObservationFilter& filter, Callback callback,
+			std::size_t capacity = DefaultCapacity,
+			ErrorCallback errorCallback = {});
+	Token subscribe(const MapleObservationFilter& filter, MapleCallback callback,
 			std::size_t capacity = DefaultCapacity,
 			ErrorCallback errorCallback = {});
 	bool unsubscribe(Token token) noexcept;

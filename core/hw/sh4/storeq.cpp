@@ -47,7 +47,7 @@ static void DYNACALL sqWrite(u32 dest, Sh4Context *ctx)
 	}
 	else
 	{
-		TAWriteSQ(address, ctx->sq_buffer);	// TODO pass the correct SQBuffer instead of letting TAWriteSQ deal with it
+		TAWriteSQ(address, ctx->sq_buffer, dest);	// TODO pass the correct SQBuffer instead of letting TAWriteSQ deal with it
 	}
 }
 
@@ -68,7 +68,7 @@ static void DYNACALL sqWrite_nommu_area_3_nonvmem(u32 dest, Sh4Context *ctx)
 
 static void DYNACALL sqWriteTA(u32 dest, Sh4Context *ctx)
 {
-	TAWriteSQ(dest, ctx->sq_buffer);
+	TAWriteSQ(dest, ctx->sq_buffer, dest);
 }
 
 void setSqwHandler()

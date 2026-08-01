@@ -8,6 +8,7 @@
 #include <fstream>
 #include <memory>
 #include <stdexcept>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -189,6 +190,45 @@ TEST(ResearchSh4LuaSubscriptions, FiltersBeforeQueueAndPreservesCanonicalCopy)
 	EXPECT_EQ(0x1122334455667788ull, delivered[0].memoryValue);
 }
 
+TEST(ResearchSh4LuaSubscriptions, CombinesMemoryAndInstructionPcFiltersBeforeQueue)
+{
+	research::Sh4LuaSubscriptionQueue queue;
+	research::Sh4ObservationFilter filter;
+	filter.typeMask = research::sh4ObservationTypeBit(
+			research::Sh4ObservationType::MemoryWrite);
+	filter.hasInstructionPcRange = true;
+	filter.instructionPcStart = 0x8c010100;
+	filter.instructionPcEndExclusive = 0x8c010200;
+	filter.hasMemoryRange = true;
+	filter.memoryStart = 0x2000;
+	filter.memoryEndExclusive = 0x2010;
+	std::vector<research::Sh4Observation> delivered;
+	queue.subscribe(filter,
+			[&delivered](research::Sh4LuaSubscriptionQueue::Token,
+					const research::Sh4Observation& observation) {
+				delivered.push_back(observation);
+			});
+
+	research::Sh4Observation wrongPc = memory(
+			research::Sh4ObservationType::MemoryWrite, 0x2000, 4, 1);
+	wrongPc.instructionPc = 0x8c010000;
+	research::publishSh4Observation(wrongPc);
+	research::Sh4Observation wrongAddress = memory(
+			research::Sh4ObservationType::MemoryWrite, 0x3000, 4, 2);
+	wrongAddress.instructionPc = 0x8c010100;
+	research::publishSh4Observation(wrongAddress);
+	research::Sh4Observation match = memory(
+			research::Sh4ObservationType::MemoryWrite, 0x200e, 4, 3);
+	match.instructionPc = 0x8c0101fe;
+	research::publishSh4Observation(match);
+
+	ASSERT_EQ(1u, queue.pendingCount());
+	ASSERT_EQ(1u, queue.drain());
+	ASSERT_EQ(1u, delivered.size());
+	EXPECT_EQ(0x8c0101feu, delivered[0].instructionPc);
+	EXPECT_EQ(0x200eu, delivered[0].memoryAddress);
+}
+
 TEST(ResearchSh4LuaSubscriptions,
 		DiscoverySubscriberCannotChangeNativeTraceBytes)
 {
@@ -347,6 +387,84 @@ TEST(ResearchSh4LuaSubscriptions, ConcurrentShutdownCannotQueueAfterDetach)
 	EXPECT_EQ(0u, queue.pendingCount());
 	EXPECT_EQ(0u, research::sh4ObservationSubscriberCount());
 	EXPECT_FALSE(research::publishSh4Observation(instruction(0x8c020000)));
+}
+
+TEST(ResearchSh4LuaSubscriptions, SharesTokensBoundsAndOrderWithMaple)
+{
+	ASSERT_EQ(0u, research::sh4ObservationSubscriberCount());
+	ASSERT_EQ(0u, research::mapleObservationSubscriberCount());
+	research::Sh4LuaSubscriptionQueue queue;
+	std::vector<std::string> delivered;
+	const auto sh4Token = queue.subscribe(interpreterInstructions(),
+			[&delivered](research::Sh4LuaSubscriptionQueue::Token,
+					const research::Sh4Observation&) {
+				delivered.emplace_back("sh4");
+			});
+	research::MapleObservationFilter mapleFilter;
+	mapleFilter.typeMask = research::mapleObservationTypeBit(
+			research::MapleObservationType::Response);
+	const auto mapleToken = queue.subscribe(mapleFilter,
+			[&delivered](research::Sh4LuaSubscriptionQueue::Token,
+					const research::MapleObservation&) {
+				delivered.emplace_back("maple-response");
+			});
+	EXPECT_NE(sh4Token, mapleToken);
+	EXPECT_EQ(2u, queue.subscriptionCount());
+
+	research::publishSh4Observation(instruction(0x8c010000));
+	research::MapleTransactionEvent transaction;
+	transaction.tick = 77;
+	transaction.deviceType = 1;
+	transaction.bus = 0;
+	transaction.port = 5;
+	transaction.command = 9;
+	transaction.flags = research::MapleTransactionDevicePresent;
+	transaction.request = {9, 0x20, 0x01, 0};
+	transaction.response = {8, 0x01, 0x20, 0};
+	research::publishMapleTransactionObservations(
+			research::beginMapleObservationDma(), transaction);
+	research::publishSh4Observation(instruction(0x8c010002));
+
+	ASSERT_EQ(3u, queue.pendingCount());
+	EXPECT_EQ(3u, queue.drain());
+	EXPECT_EQ((std::vector<std::string> {"sh4", "maple-response", "sh4"}),
+			delivered);
+	queue.clear();
+	EXPECT_EQ(0u, research::sh4ObservationSubscriberCount());
+	EXPECT_EQ(0u, research::mapleObservationSubscriberCount());
+}
+
+TEST(ResearchSh4LuaSubscriptions, MapleOverflowDropsNewestAndReportsStablePrefix)
+{
+	research::Sh4LuaSubscriptionQueue queue;
+	std::vector<std::uint8_t> deliveredCodes;
+	research::MapleObservationFilter filter;
+	filter.typeMask = research::mapleObservationTypeBit(
+			research::MapleObservationType::Response);
+	const auto token = queue.subscribe(filter,
+			[&deliveredCodes](research::Sh4LuaSubscriptionQueue::Token,
+					const research::MapleObservation& observation) {
+				deliveredCodes.push_back(observation.payload[0]);
+			}, 1);
+	research::MapleTransactionEvent first;
+	first.deviceType = 1;
+	first.command = 9;
+	first.flags = research::MapleTransactionDevicePresent;
+	first.request = {9, 0x20, 0x01, 0};
+	first.response = {8, 0x01, 0x20, 0};
+	research::publishMapleTransactionObservations(
+			research::beginMapleObservationDma(), first);
+	research::MapleTransactionEvent second = first;
+	second.response[0] = 7;
+	research::publishMapleTransactionObservations(
+			research::beginMapleObservationDma(), second);
+
+	const auto stats = queue.stats(token);
+	ASSERT_TRUE(stats.has_value());
+	EXPECT_EQ(1u, stats->queued);
+	EXPECT_EQ(1u, stats->dropped);
+	EXPECT_EQ(1u, queue.drain());
+	EXPECT_EQ((std::vector<std::uint8_t> {8}), deliveredCodes);
 }
 
 } // namespace

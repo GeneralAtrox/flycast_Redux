@@ -2,6 +2,7 @@
 #include "types.h"
 #include "ta_ctx.h"
 #include "hw/sh4/sh4_if.h"
+#include "research/pvr_ta_observation.h"
 
 constexpr u32 SZ32 = 1;
 constexpr u32 SZ64 = 2;
@@ -11,8 +12,10 @@ struct TA_context;
 void ta_vtx_ListInit(bool continuation);
 void ta_vtx_SoftReset();
 
-void DYNACALL ta_vtx_data32(const SQBuffer *data);
-void ta_vtx_data(const SQBuffer *data, u32 size);
+void DYNACALL ta_vtx_data32(const SQBuffer *data,
+		research::PvrTaInputSource source, u32 sourceAddress, u32 taAddress);
+void ta_vtx_data(const SQBuffer *data, u32 size,
+		research::PvrTaInputSource source, u32 sourceAddress, u32 taAddress);
 
 void ta_parse(TA_context *ctx, bool primRestart);
 

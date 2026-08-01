@@ -6,6 +6,7 @@
 #include <stdexcept>
 #include <unordered_map>
 #include <utility>
+#include <variant>
 
 namespace research
 {
@@ -14,8 +15,15 @@ namespace
 
 struct LuaSubscriptionEntry
 {
+	enum class Kind
+	{
+		Sh4,
+		Maple,
+	};
+
 	Sh4LuaSubscriptionQueue::Token token = 0;
-	Sh4ObservationSubscription nativeSubscription = 0;
+	Kind kind = Kind::Sh4;
+	std::uint64_t nativeSubscription = 0;
 	std::size_t capacity = 0;
 	std::size_t queued = 0;
 	std::atomic<bool> active {true};
@@ -23,13 +31,14 @@ struct LuaSubscriptionEntry
 	std::atomic<std::uint64_t> dropped {0};
 	std::atomic<std::uint64_t> callbackFailures {0};
 	Sh4LuaSubscriptionQueue::Callback callback;
+	Sh4LuaSubscriptionQueue::MapleCallback mapleCallback;
 	Sh4LuaSubscriptionQueue::ErrorCallback errorCallback;
 };
 
 struct QueuedLuaObservation
 {
 	std::shared_ptr<LuaSubscriptionEntry> entry;
-	Sh4Observation observation;
+	std::variant<Sh4Observation, MapleObservation> observation;
 };
 
 } // namespace
@@ -70,6 +79,7 @@ Sh4LuaSubscriptionQueue::Token Sh4LuaSubscriptionQueue::subscribe(
 
 	const std::shared_ptr<SharedState> currentState = state;
 	auto entry = std::make_shared<LuaSubscriptionEntry>();
+	entry->kind = LuaSubscriptionEntry::Kind::Sh4;
 	entry->capacity = capacity;
 	entry->callback = std::move(callback);
 	entry->errorCallback = std::move(errorCallback);
@@ -143,6 +153,89 @@ Sh4LuaSubscriptionQueue::Token Sh4LuaSubscriptionQueue::subscribe(
 	return entry->token;
 }
 
+Sh4LuaSubscriptionQueue::Token Sh4LuaSubscriptionQueue::subscribe(
+		const MapleObservationFilter& filter, MapleCallback callback,
+		std::size_t capacity, ErrorCallback errorCallback)
+{
+	if (!callback)
+		throw std::invalid_argument("Lua Maple subscription callback is empty");
+	if (capacity == 0 || capacity > MaximumCapacity)
+		throw std::invalid_argument("Lua Maple subscription capacity is out of range");
+
+	const std::shared_ptr<SharedState> currentState = state;
+	auto entry = std::make_shared<LuaSubscriptionEntry>();
+	entry->kind = LuaSubscriptionEntry::Kind::Maple;
+	entry->capacity = capacity;
+	entry->mapleCallback = std::move(callback);
+	entry->errorCallback = std::move(errorCallback);
+	{
+		const std::lock_guard<std::mutex> lock(currentState->mutex);
+		if (currentState->subscriptions.size() >= MaximumSubscriptions)
+			throw std::overflow_error("too many Lua research subscriptions");
+		entry->token = currentState->nextToken++;
+		if (entry->token == 0 || currentState->nextToken == 0)
+			throw std::overflow_error("Lua research subscription token overflow");
+		currentState->subscriptions.emplace(entry->token, entry);
+	}
+
+	MapleObservationSubscription nativeSubscription = 0;
+	try
+	{
+		const std::weak_ptr<SharedState> weakState = currentState;
+		const std::weak_ptr<LuaSubscriptionEntry> weakEntry = entry;
+		nativeSubscription = subscribeMapleObservations(filter,
+				[weakState, weakEntry](const MapleObservation& observation) noexcept {
+					const std::shared_ptr<SharedState> lockedState = weakState.lock();
+					const std::shared_ptr<LuaSubscriptionEntry> lockedEntry = weakEntry.lock();
+					if (lockedState == nullptr || lockedEntry == nullptr
+							|| !lockedEntry->active.load(std::memory_order_acquire))
+						return;
+					try
+					{
+						const std::lock_guard<std::mutex> lock(lockedState->mutex);
+						if (!lockedEntry->active.load(std::memory_order_relaxed)
+								|| lockedEntry->queued >= lockedEntry->capacity
+								|| lockedState->pending.size() >= MaximumTotalQueued)
+						{
+							lockedEntry->dropped.fetch_add(1, std::memory_order_relaxed);
+							return;
+						}
+						lockedState->pending.push_back(
+								QueuedLuaObservation {lockedEntry, observation});
+						++lockedEntry->queued;
+					}
+					catch (...)
+					{
+						lockedEntry->dropped.fetch_add(1, std::memory_order_relaxed);
+					}
+				});
+	}
+	catch (...)
+	{
+		const std::lock_guard<std::mutex> lock(currentState->mutex);
+		entry->active.store(false, std::memory_order_release);
+		currentState->subscriptions.erase(entry->token);
+		throw;
+	}
+
+	bool retained = false;
+	{
+		const std::lock_guard<std::mutex> lock(currentState->mutex);
+		const auto found = currentState->subscriptions.find(entry->token);
+		retained = found != currentState->subscriptions.end()
+				&& found->second == entry
+				&& entry->active.load(std::memory_order_acquire);
+		if (retained)
+			entry->nativeSubscription = nativeSubscription;
+	}
+	if (!retained)
+	{
+		unsubscribeMapleObservations(nativeSubscription);
+		throw std::runtime_error("Lua Maple subscription was cleared during setup");
+	}
+	return entry->token;
+}
+
 bool Sh4LuaSubscriptionQueue::unsubscribe(Token token) noexcept
 {
 	try
@@ -150,7 +243,8 @@ bool Sh4LuaSubscriptionQueue::unsubscribe(Token token) noexcept
 		if (token == 0)
 			return false;
 		const std::shared_ptr<SharedState> currentState = state;
-		Sh4ObservationSubscription nativeSubscription = 0;
+		std::uint64_t nativeSubscription = 0;
+		LuaSubscriptionEntry::Kind kind = LuaSubscriptionEntry::Kind::Sh4;
 		{
 			const std::lock_guard<std::mutex> lock(currentState->mutex);
 			const auto found = currentState->subscriptions.find(token);
@@ -158,6 +252,7 @@ bool Sh4LuaSubscriptionQueue::unsubscribe(Token token) noexcept
 				return false;
 			const std::shared_ptr<LuaSubscriptionEntry> entry = found->second;
 			entry->active.store(false, std::memory_order_release);
+			kind = entry->kind;
 			nativeSubscription = entry->nativeSubscription;
 			for (auto queued = currentState->pending.begin();
 					queued != currentState->pending.end();)
@@ -171,7 +266,12 @@ bool Sh4LuaSubscriptionQueue::unsubscribe(Token token) noexcept
 			currentState->subscriptions.erase(found);
 		}
 		if (nativeSubscription != 0)
-			unsubscribeSh4Observations(nativeSubscription);
+		{
+			if (kind == LuaSubscriptionEntry::Kind::Sh4)
+				unsubscribeSh4Observations(nativeSubscription);
+			else
+				unsubscribeMapleObservations(nativeSubscription);
+		}
 		return true;
 	}
 	catch (...)
@@ -239,7 +339,12 @@ std::size_t Sh4LuaSubscriptionQueue::drain(std::size_t maximumDeliveries)
 			continue;
 		try
 		{
-			queued.entry->callback(queued.entry->token, queued.observation);
+			if (queued.entry->kind == LuaSubscriptionEntry::Kind::Sh4)
+				queued.entry->callback(queued.entry->token,
+						std::get<Sh4Observation>(queued.observation));
+			else
+				queued.entry->mapleCallback(queued.entry->token,
+						std::get<MapleObservation>(queued.observation));
 		}
 		catch (...)
 		{
@@ -270,7 +375,8 @@ void Sh4LuaSubscriptionQueue::clear() noexcept
 		bool deactivated = false;
 		for (;;)
 		{
-			Sh4ObservationSubscription nativeSubscription = 0;
+			std::uint64_t nativeSubscription = 0;
+			LuaSubscriptionEntry::Kind kind = LuaSubscriptionEntry::Kind::Sh4;
 			{
 				const std::lock_guard<std::mutex> lock(currentState->mutex);
 				if (!deactivated)
@@ -287,10 +393,16 @@ void Sh4LuaSubscriptionQueue::clear() noexcept
 					break;
 				const auto found = currentState->subscriptions.begin();
 				nativeSubscription = found->second->nativeSubscription;
+				kind = found->second->kind;
 				currentState->subscriptions.erase(found);
 			}
 			if (nativeSubscription != 0)
-				unsubscribeSh4Observations(nativeSubscription);
+			{
+				if (kind == LuaSubscriptionEntry::Kind::Sh4)
+					unsubscribeSh4Observations(nativeSubscription);
+				else
+					unsubscribeMapleObservations(nativeSubscription);
+			}
 		}
 	}
 	catch (...)

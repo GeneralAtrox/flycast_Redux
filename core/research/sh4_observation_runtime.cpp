@@ -1,4 +1,5 @@
 #include "research/sh4_observation_runtime.h"
+#include "research/pvr_presentation_observation.h"
 
 #include "cfg/option.h"
 #include "hw/sh4/sh4_cycles.h"
@@ -29,6 +30,7 @@ struct EmissionInstructionFrame
 	std::uint16_t opcode = 0;
 	std::uint64_t tick = 0;
 	std::uint32_t pr = 0;
+	std::uint64_t ownerGeneration = 0;
 	std::uint64_t subscriptionGeneration = 0;
 	bool emitting = false;
 	bool memoryPending = false;
@@ -39,6 +41,9 @@ struct EmissionInstructionFrame
 };
 
 thread_local std::vector<EmissionInstructionFrame> instructionFrames;
+
+std::array<std::atomic<std::size_t>, 2> instructionOwnershipCounts {};
+std::atomic<std::uint64_t> nextInstructionOwnerGeneration {1};
 
 struct DynarecSemanticClock
 {
@@ -398,7 +403,8 @@ void sh4ObservationInstructionBegin(Sh4ObservationBackend backend,
 		const Sh4Context& context)
 {
 	const bool active = sh4ObservationBusActive(backend);
-	if (!active && instructionFrames.empty())
+	const bool ownershipActive = sh4InstructionOwnershipActive(backend);
+	if (!active && !ownershipActive && instructionFrames.empty())
 		return;
 	if (instructionFrames.size() > std::numeric_limits<std::uint16_t>::max())
 		throw std::overflow_error("SH-4 observation delay-slot depth overflow");
@@ -410,8 +416,10 @@ void sh4ObservationInstructionBegin(Sh4ObservationBackend backend,
 	const bool emitting = active && (instructionFrames.empty()
 			|| (instructionFrames.back().emitting
 					&& instructionFrames.back().subscriptionGeneration == generation));
+	const std::uint64_t ownerGeneration = nextInstructionOwnerGeneration.fetch_add(1,
+			std::memory_order_relaxed);
 	instructionFrames.push_back(EmissionInstructionFrame {backend, pc, opcode, tick,
-			context.pr, generation, emitting});
+			context.pr, ownerGeneration, generation, emitting});
 	if (!emitting)
 		return;
 	try
@@ -551,6 +559,20 @@ void sh4ObservationMemoryAccess(Sh4ObservationBackend backend,
 		return;
 	const EmissionInstructionFrame& frame = instructionFrames.back();
 	requireFrameBackend(backend, frame);
+	if (kind == Sh4MemoryAccessKind::Write
+			&& pvrPresentationObservationBusActive())
+	{
+		const std::uint32_t physical = address & 0x1fffffffu;
+		const std::uint32_t area = physical >> 24;
+		if (area == 0x04u || area == 0x06u || area == 0x07u)
+		{
+			std::uint8_t bytes[8] {};
+			for (std::uint8_t index = 0; index < width; ++index)
+				bytes[index] = static_cast<std::uint8_t>(value >> (index * 8));
+			observePvrVramWrite(PvrVramWriteSource::Sh4Area1Direct,
+					address, physical & 0x007fffffu, bytes, width, 0, frame.tick);
+		}
+	}
 	if (!frameCanEmit(frame))
 		return;
 	Sh4Observation observation;
@@ -580,7 +602,7 @@ void sh4ObservationException(Sh4ObservationBackend backend,
 	{
 		const EmissionInstructionFrame& frame = instructionFrames.back();
 		requireFrameBackend(backend, frame);
-		if (!frameCanEmit(frame))
+		if (!frameCanEmit(frame) && !pvrPresentationObservationBusActive())
 			return;
 		ownerPc = frame.pc;
 		ownerOpcode = frame.opcode;
@@ -672,6 +694,55 @@ Sh4ObservationBackend sh4ObservationCurrentInstructionBackend(
 	return instructionFrames.empty() ? fallback : instructionFrames.back().backend;
 }
 
+void retainSh4InstructionOwnership(Sh4ObservationBackend backend) noexcept
+{
+	instructionOwnershipCounts[timingBackendIndex(backend)].fetch_add(1,
+			std::memory_order_release);
+}
+
+void releaseSh4InstructionOwnership(Sh4ObservationBackend backend) noexcept
+{
+	std::atomic<std::size_t>& count =
+			instructionOwnershipCounts[timingBackendIndex(backend)];
+	std::size_t current = count.load(std::memory_order_acquire);
+	while (current != 0 && !count.compare_exchange_weak(current, current - 1,
+			std::memory_order_acq_rel, std::memory_order_acquire))
+	{
+	}
+}
+
+bool sh4InstructionOwnershipActive(Sh4ObservationBackend backend) noexcept
+{
+	return instructionOwnershipCounts[timingBackendIndex(backend)].load(
+			std::memory_order_acquire) != 0;
+}
+
+Sh4InstructionOwnerToken sh4ObservationCurrentInstructionOwner() noexcept
+{
+	if (instructionFrames.empty())
+		return {};
+	const EmissionInstructionFrame& frame = instructionFrames.back();
+	Sh4InstructionOwnerToken token;
+	token.valid = true;
+	token.backend = frame.backend;
+	token.generation = frame.ownerGeneration;
+	token.tick = frame.tick;
+	token.pc = frame.pc;
+	token.opcode = frame.opcode;
+	token.pr = frame.pr;
+	token.delaySlotDepth = static_cast<std::uint16_t>(
+			instructionFrames.size() - 1);
+	if (frame.backend == Sh4ObservationBackend::Dynarec
+			&& token.delaySlotDepth != 0 && instructionFrames.size() >= 2)
+	{
+		const EmissionInstructionFrame& parent =
+				instructionFrames[instructionFrames.size() - 2];
+		if (isCallWithDelayedPrWrite(parent.opcode))
+			token.pr = parent.pr;
+	}
+	return token;
+}
+
 Sh4DynarecObservationMarker sh4DynarecObservationMarkerFor(
 		std::uint32_t shilOpcode) noexcept
 {
@@ -701,7 +772,7 @@ void sh4DynarecObservationMemoryBegin(std::uint32_t address,
 			return;
 		EmissionInstructionFrame& frame = instructionFrames.back();
 		requireFrameBackend(Sh4ObservationBackend::Dynarec, frame);
-		if (!frameCanEmit(frame))
+		if (!frameCanEmit(frame) && !pvrPresentationObservationBusActive())
 			return;
 		if (frame.memoryPending)
 			throw std::logic_error("nested dynarec memory observation");

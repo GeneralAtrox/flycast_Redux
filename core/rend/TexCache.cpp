@@ -18,6 +18,8 @@
 #include "xbrz/xbrz.h"
 #include "hw/pvr/pvr_mem.h"
 #include "hw/mem/addrspace.h"
+#include "hw/sh4/sh4_sched.h"
+#include "research/pvr_presentation_observation.h"
 
 #include <mutex>
 #include <xxhash.h>
@@ -877,7 +879,14 @@ public:
 	TexPixelWriter(u16 *dest) : dest(dest) {}
 
 	void write(u16 pixel) {
-		*dest++ = pixel;
+		u16 *writeAddress = dest++;
+		*writeAddress = pixel;
+		const u32 physicalAddress = static_cast<u32>(
+				reinterpret_cast<u8 *>(writeAddress) - &vram[0]);
+		research::observePvrVramWrite(
+				research::PvrVramWriteSource::RendererRtt,
+				physicalAddress, physicalAddress, writeAddress, sizeof(pixel),
+				research::pvrCurrentRenderGeneration(), sh4_sched_now64());
 	}
 
 	void advance(int bytes) {

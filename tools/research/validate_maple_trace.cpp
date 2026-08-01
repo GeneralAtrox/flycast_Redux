@@ -79,7 +79,8 @@ int main(int argc, char *argv[])
 		const research::IdentityManifest identity = research::loadIdentityManifest(identityPath);
 		const research::MapleTraceSummary summary = research::validateProductionMapleTraceFile(
 				tracePath, identity.digest, maximumBytes);
-		std::printf("ACCEPTED flycast-maple-trace-v1\n");
+		std::printf("ACCEPTED flycast-maple-trace-v%u\n", summary.schemaVersion);
+		std::printf("schema_version=%u\n", summary.schemaVersion);
 		std::printf("identity_sha256=%s\n", research::sha256ToHex(identity.digest).c_str());
 		std::printf("payload_sha256=%s\n",
 				research::sha256ToHex(summary.payloadDigest).c_str());
@@ -87,6 +88,8 @@ int main(int argc, char *argv[])
 				static_cast<unsigned long long>(summary.dmaCount));
 		std::printf("transaction_count=%llu\n",
 				static_cast<unsigned long long>(summary.transactionCount));
+		std::printf("control_descriptor_count=%llu\n",
+				static_cast<unsigned long long>(summary.controlDescriptorCount));
 		std::printf("event_count=%llu\n",
 				static_cast<unsigned long long>(summary.eventCount));
 		std::printf("start_tick=%llu\n",
@@ -97,7 +100,7 @@ int main(int argc, char *argv[])
 	}
 	catch (const std::exception& exception)
 	{
-		std::fprintf(stderr, "REJECTED flycast-maple-trace-v1: %s\n", exception.what());
+		std::fprintf(stderr, "REJECTED flycast-maple-trace: %s\n", exception.what());
 		return 1;
 	}
 }

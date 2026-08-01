@@ -104,6 +104,25 @@ public:
 		return expected.response;
 	}
 
+	void controlDescriptor(MapleControlDescriptorEvent event)
+	{
+		if (mode == Mode::Record)
+		{
+			writer->writeControlDescriptor(event);
+			return;
+		}
+		const MapleControlDescriptorEvent& expected = next<MapleControlDescriptorEvent>(
+				MapleTraceEventType::ControlDescriptor);
+		exact(event.dmaOrdinal, expected.dmaOrdinal, "control descriptor DMA ordinal");
+		exact(event.tick, expected.tick, "control descriptor tick");
+		exact(event.descriptorAddress, expected.descriptorAddress,
+				"control descriptor address");
+		exact(event.descriptorHeader, expected.descriptorHeader,
+				"control descriptor header");
+		exact(event.operation, expected.operation, "control descriptor operation");
+		exact(event.last, expected.last, "control descriptor terminal flag");
+	}
+
 	void scheduleDma(MapleDmaScheduleEvent event)
 	{
 		if (mode == Mode::Record)
@@ -235,7 +254,8 @@ void applyDeterministicOverrides()
 	// Backend-equivalence capture owns this setting from its v2 identity before
 	// dc_reset selects the executor. Frozen Maple-only v1 sessions remain
 	// interpreter-only.
-	if (config::ResearchSh4ObservationRecordPath.get().empty())
+	if (config::ResearchSh4ObservationRecordPath.get().empty()
+			&& config::ResearchPvrTaRecordPath.get().empty())
 		config::DynarecEnabled.override(false);
 	config::ThreadedRendering.override(false);
 	config::AutoLoadState.override(false);
@@ -264,6 +284,9 @@ void verifyRuntimeConfiguration(const IdentityManifest& identity)
 	if (expected.mapleDmaCheckpoint
 			!= static_cast<std::uint64_t>(config::ResearchMapleDmaCheckpoint.get()))
 		throw FlycastException("research identity/runtime Maple DMA checkpoint mismatch");
+	if (expected.pvrTaStartDma
+			!= static_cast<std::uint64_t>(config::ResearchPvrTaStartDma.get()))
+		throw FlycastException("research identity/runtime PowerVR TA start DMA mismatch");
 }
 
 } // namespace
@@ -323,7 +346,8 @@ void startRuntime()
 	{
 		requireCaptureV1Identity(identity);
 		auto writer = std::make_unique<MapleTraceWriter>(tracePath, identity.digest,
-				static_cast<std::uint64_t>(config::ResearchMapleTraceMaxBytes.get()));
+				static_cast<std::uint64_t>(config::ResearchMapleTraceMaxBytes.get()),
+				MapleTraceCurrentSchemaVersion);
 		session = std::make_unique<Session>(configuredMode, std::move(identity),
 				std::move(writer), MapleTrace {}, dmaCheckpoint);
 		NOTICE_LOG(MAPLE, "Recording typed Maple research trace to %s", tracePath.string().c_str());
@@ -408,6 +432,12 @@ std::uint64_t mapleBeginDma(MapleDmaBeginEvent event)
 std::vector<std::uint8_t> mapleTransaction(MapleTransactionEvent event)
 {
 	return session == nullptr ? std::move(event.response) : session->transaction(std::move(event));
+}
+
+void mapleControlDescriptor(MapleControlDescriptorEvent event)
+{
+	if (session != nullptr)
+		session->controlDescriptor(event);
 }
 
 void mapleScheduleDma(MapleDmaScheduleEvent event)

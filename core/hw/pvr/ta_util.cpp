@@ -18,6 +18,7 @@
  */
 #include "ta_ctx.h"
 #include "pvr_mem.h"
+#include "research/pvr_ta_observation.h"
 #include <algorithm>
 #include <glm/glm.hpp>
 #include <glm/gtc/type_ptr.hpp>
@@ -257,14 +258,36 @@ void sortPolyParams(std::vector<PolyParam>& polys, int first, int end, rend_cont
 	std::stable_sort(&polys[first], pp_end);
 }
 
-void getRegionTileAddrAndSize(u32& address, u32& size)
+namespace
 {
-	address = REGION_BASE;
-	const bool type1_tile = ((FPU_PARAM_CFG >> 21) & 1) == 0;
+
+u32 readRenderSelectionVram(u32 address,
+		research::PvrTaRenderSelectionTranscript *transcript)
+{
+	const u32 value = pvr_read32p<u32>(address);
+	if (transcript != nullptr)
+		transcript->record(address, value);
+	return value;
+}
+
+void getRegionTileAddrAndSize(u32& address, u32& size,
+		research::PvrTaRenderSelectionTranscript *transcript)
+{
+	const u32 regionBase = REGION_BASE;
+	const u32 fpuParamCfg = FPU_PARAM_CFG;
+	if (transcript != nullptr)
+	{
+		transcript->regionBase = regionBase;
+		transcript->fpuParamCfg = fpuParamCfg;
+		transcript->initialized = true;
+	}
+	address = regionBase;
+	const bool type1_tile = ((fpuParamCfg >> 21) & 1) == 0;
 	size = (type1_tile ? 5 : 6) * 4;
 	bool empty_first_region = true;
 	for (int i = type1_tile ? 4 : 5; i > 0; i--)
-		if ((pvr_read32p<u32>(address + i * 4) & 0x80000000) == 0)
+		if ((readRenderSelectionVram(address + i * 4, transcript)
+				& 0x80000000) == 0)
 		{
 			empty_first_region = false;
 			break;
@@ -272,38 +295,48 @@ void getRegionTileAddrAndSize(u32& address, u32& size)
 	if (empty_first_region)
 		address += size;
 	RegionArrayTile tile;
-	tile.full = pvr_read32p<u32>(address);
+	tile.full = readRenderSelectionVram(address, transcript);
 	if (tile.PreSort)
 		// Windows CE weirdness
 		size = 6 * 4;
 }
 
-int getTAContextAddresses(u32 *addresses)
+} // namespace
+
+void getRegionTileAddrAndSize(u32& address, u32& size)
 {
+	getRegionTileAddrAndSize(address, size, nullptr);
+}
+
+int getTAContextAddresses(u32 *addresses,
+		research::PvrTaRenderSelectionTranscript *transcript)
+{
+	if (transcript != nullptr)
+		*transcript = {};
 	u32 addr;
 	u32 tile_size;
-	getRegionTileAddrAndSize(addr, tile_size);
+	getRegionTileAddrAndSize(addr, tile_size, transcript);
 
 	RegionArrayTile tile;
-	tile.full = pvr_read32p<u32>(addr);
+	tile.full = readRenderSelectionVram(addr, transcript);
 	u32 x = tile.X;
 	u32 y = tile.Y;
 	u32 count = 0;
 	do {
-		tile.full = pvr_read32p<u32>(addr);
+		tile.full = readRenderSelectionVram(addr, transcript);
 		if (tile.X != x || tile.Y != y)
 			break;
 		// Try the opaque pointer
-		u32 opbAddr = pvr_read32p<u32>(addr + 4);
+		u32 opbAddr = readRenderSelectionVram(addr + 4, transcript);
 		if (opbAddr & 0x80000000)
 		{
 			// Try the translucent pointer
-			opbAddr = pvr_read32p<u32>(addr + 12);
+			opbAddr = readRenderSelectionVram(addr + 12, transcript);
 			if (opbAddr & 0x80000000)
 			{
 				// Try the punch-through pointer
 				if (tile_size >= 24)
-					opbAddr = pvr_read32p<u32>(addr + 20);
+					opbAddr = readRenderSelectionVram(addr + 20, transcript);
 				if (opbAddr & 0x80000000)
 				{
 					INFO_LOG(PVR, "Can't find any non-null OPB for pass %d", count);
@@ -311,7 +344,7 @@ int getTAContextAddresses(u32 *addresses)
 				}
 			}
 		}
-		addresses[count++] = pvr_read32p<u32>(opbAddr);
+		addresses[count++] = readRenderSelectionVram(opbAddr, transcript);
 		addr += tile_size;
 	} while (!tile.LastRegion && count < MAX_PASSES);
 

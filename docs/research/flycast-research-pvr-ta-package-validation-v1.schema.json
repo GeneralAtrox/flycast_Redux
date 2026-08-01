@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://flycast-redux.invalid/schemas/flycast-research-pvr-ta-package-validation-v1.schema.json",
+  "title": "Flycast PowerVR TA Package Validation v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "schema_version", "package_id", "status", "entries", "validator"],
+  "properties": {
+    "schema": { "const": "flycast-research-pvr-ta-package-validation" },
+    "schema_version": { "const": 1 },
+    "package_id": { "type": "string", "pattern": "^[0-9a-f-]{36}$" },
+    "status": { "const": "accepted" },
+    "entries": { "type": "array", "minItems": 9, "maxItems": 9, "items": { "$ref": "#/$defs/blob" } },
+    "validator": { "$ref": "#/$defs/blob" }
+  },
+  "$defs": {
+    "blob": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "size", "sha256"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "size": { "type": "integer", "minimum": 1 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    }
+  }
+}

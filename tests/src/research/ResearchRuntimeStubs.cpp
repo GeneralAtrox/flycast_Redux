@@ -40,6 +40,18 @@ Option<int64_t, false> ResearchSh4ObservationMaxBytes(
 		"Sh4ObservationMaxBytes", 512ll * 1024 * 1024, "research");
 Option<int64_t, false> ResearchSh4ObservationStartDma(
 		"Sh4ObservationStartDma", 0, "research");
+Option<std::string, false> ResearchPvrTaRecordPath(
+		"PvrTaRecord", "", "research");
+Option<std::string, false> ResearchPvrTaManifestPath(
+		"PvrTaManifest", "", "research");
+Option<int64_t, false> ResearchPvrTaMaxBytes(
+		"PvrTaMaxBytes", 512ll * 1024 * 1024, "research");
+Option<int64_t, false> ResearchPvrTaStartDma(
+		"PvrTaStartDma", 0, "research");
+Option<std::string, false> ResearchPvrPresentationRecordPath(
+		"PvrPresentationRecord", "", "research");
+Option<int64_t, false> ResearchPvrPresentationMaxBytes(
+		"PvrPresentationMaxBytes", 512ll * 1024 * 1024, "research");
 Option<int64_t, false> ResearchDreamcastRtcSeed(
 		"DreamcastRtcSeed", -1, "research");
 

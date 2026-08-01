@@ -2,6 +2,7 @@
 
 #include "json.hpp"
 #include "research/identity_manifest.h"
+#include "research/maple_observation.h"
 #include "research/maple_trace.h"
 #include "research/sha256.h"
 #ifndef RESEARCH_FORMAT_ONLY
@@ -331,6 +332,74 @@ TEST(ResearchMapleTrace, V1BinaryContractRemainsByteExact)
 					tracePath, research::DefaultMaximumMapleTraceBytes)));
 }
 
+TEST(ResearchMapleTrace, V2RoundTripsTerminalNopAndPreservesDescriptorChain)
+{
+	TemporaryDirectory directory;
+	const research::IdentityManifest identity = research::loadIdentityManifest(
+			writeIdentity(directory));
+	const std::filesystem::path tracePath = directory.file("maple-v2.fcmt");
+	FixtureEvents events;
+	events.transaction.descriptorHeader1 &= 0x7fffffffu;
+
+	research::MapleControlDescriptorEvent control;
+	control.dmaOrdinal = 0;
+	control.tick = events.transaction.tick;
+	control.descriptorAddress = events.transaction.descriptorAddress + 8
+			+ static_cast<std::uint32_t>(events.transaction.request.size());
+	control.descriptorHeader = 0x80000700;
+	control.operation = research::MapleControlOperation::Nop;
+	control.last = true;
+
+	research::MapleTraceWriter writer(tracePath, identity.digest,
+			research::DefaultMaximumMapleTraceBytes,
+			research::MapleTraceSchemaVersionV2);
+	writer.beginDma(events.begin);
+	writer.writeTransaction(events.transaction);
+	EXPECT_EQ(0u, writer.writeControlDescriptor(control));
+	writer.scheduleDma(events.schedule);
+	writer.commitDma(events.commit);
+	const research::MapleTraceSummary written = writer.finalize();
+	EXPECT_EQ(research::MapleTraceSchemaVersionV2, written.schemaVersion);
+	EXPECT_EQ(1u, written.controlDescriptorCount);
+
+	const research::MapleTrace trace = research::loadProductionMapleTrace(
+			tracePath, identity.digest);
+	const research::MapleTraceSummary streamed =
+			research::validateProductionMapleTraceFile(tracePath, identity.digest);
+	ASSERT_EQ(5u, trace.events.size());
+	EXPECT_EQ(research::MapleTraceSchemaVersionV2, streamed.schemaVersion);
+	EXPECT_EQ(1u, streamed.controlDescriptorCount);
+	const auto& decoded = std::get<research::MapleControlDescriptorEvent>(
+			trace.events[2].data);
+	EXPECT_EQ(control.descriptorAddress, decoded.descriptorAddress);
+	EXPECT_EQ(control.descriptorHeader, decoded.descriptorHeader);
+	EXPECT_EQ(research::MapleControlOperation::Nop, decoded.operation);
+	EXPECT_TRUE(decoded.last);
+}
+
+TEST(ResearchMapleTrace, V2RejectsBrokenControlDescriptorContinuity)
+{
+	TemporaryDirectory directory;
+	const research::IdentityManifest identity = research::loadIdentityManifest(
+			writeIdentity(directory));
+	FixtureEvents events;
+	events.transaction.descriptorHeader1 &= 0x7fffffffu;
+	research::MapleTraceWriter writer(directory.file("bad-control.fcmt"),
+			identity.digest, research::DefaultMaximumMapleTraceBytes,
+			research::MapleTraceSchemaVersionV2);
+	writer.beginDma(events.begin);
+	writer.writeTransaction(events.transaction);
+	research::MapleControlDescriptorEvent control;
+	control.dmaOrdinal = 0;
+	control.tick = events.transaction.tick;
+	control.descriptorAddress = events.transaction.descriptorAddress + 4;
+	control.descriptorHeader = 0x80000700;
+	control.operation = research::MapleControlOperation::Nop;
+	control.last = true;
+	EXPECT_THROW(writer.writeControlDescriptor(control), std::invalid_argument);
+	writer.abandon();
+}
+
 TEST(ResearchMapleTrace, StreamsTraceLargerThanOneMebibyte)
 {
 	TemporaryDirectory directory;
@@ -482,6 +551,24 @@ TEST(ResearchMapleTrace, IndependentValidationRejectsAbortAndWireMismatch)
 #ifndef RESEARCH_FORMAT_ONLY
 unsigned checkpointCalls = 0;
 
+class MapleObservationSubscriptionGuard
+{
+public:
+	explicit MapleObservationSubscriptionGuard(
+			research::MapleObservationSubscription token)
+		: token(token)
+	{
+	}
+
+	~MapleObservationSubscriptionGuard()
+	{
+		research::unsubscribeMapleObservations(token);
+	}
+
+private:
+	research::MapleObservationSubscription token;
+};
+
 void countCheckpoint()
 {
 	++checkpointCalls;
@@ -512,6 +599,94 @@ TEST(ResearchMapleReplay, RejectsFirstRequestDivergence)
 	research::abortRuntime();
 }
 
+TEST(ResearchMapleReplay, ReplaysTypedNopControlDescriptor)
+{
+	TemporaryDirectory directory;
+	const std::filesystem::path identityPath = writeIdentity(directory);
+	const research::IdentityManifest identity = research::loadIdentityManifest(identityPath);
+	const std::filesystem::path tracePath = directory.file("nop-replay.fcmt");
+	FixtureEvents events;
+	events.transaction.descriptorHeader1 &= 0x7fffffffu;
+	research::MapleControlDescriptorEvent control;
+	control.dmaOrdinal = 0;
+	control.tick = events.transaction.tick;
+	control.descriptorAddress = events.transaction.descriptorAddress + 8
+			+ static_cast<std::uint32_t>(events.transaction.request.size());
+	control.descriptorHeader = 0x80000700;
+	control.operation = research::MapleControlOperation::Nop;
+	control.last = true;
+	{
+		research::MapleTraceWriter writer(tracePath, identity.digest,
+				research::DefaultMaximumMapleTraceBytes,
+				research::MapleTraceSchemaVersionV2);
+		writer.beginDma(events.begin);
+		writer.writeTransaction(events.transaction);
+		writer.writeControlDescriptor(control);
+		writer.scheduleDma(events.schedule);
+		writer.commitDma(events.commit);
+		writer.finalize();
+	}
+
+	config::ResearchIdentityManifestPath = identityPath.string();
+	config::ResearchMapleRecordPath = "";
+	config::ResearchMapleReplayPath = tracePath.string();
+	config::ResearchMapleDmaCheckpoint = 0;
+	config::ResearchMapleTraceMaxBytes = research::DefaultMaximumMapleTraceBytes;
+	config::setTransient("research", "IdentityManifest", identityPath.string());
+	config::setTransient("research", "MapleReplay", tracePath.string());
+	research::configureRuntime();
+	research::startRuntime();
+	EXPECT_EQ(0u, research::mapleBeginDma(events.begin));
+	research::mapleTransaction(events.transaction);
+	EXPECT_NO_THROW(research::mapleControlDescriptor(control));
+	research::mapleScheduleDma(events.schedule);
+	research::mapleCommitDma(events.commit);
+	EXPECT_NO_THROW(research::stopRuntime(true));
+}
+
+TEST(ResearchMapleReplay, LuaObservationUsesAuthenticatedReplayResponse)
+{
+	TemporaryDirectory directory;
+	const std::filesystem::path identityPath = writeIdentity(directory);
+	const research::IdentityManifest identity = research::loadIdentityManifest(identityPath);
+	const std::filesystem::path tracePath = writeTrace(directory, identity.digest);
+	FixtureEvents events;
+	const std::vector<std::uint8_t> recordedResponse = events.transaction.response;
+	std::vector<std::uint8_t> observedResponse;
+	research::MapleObservationFilter filter;
+	filter.typeMask = research::mapleObservationTypeBit(
+			research::MapleObservationType::Response);
+	MapleObservationSubscriptionGuard subscription(
+			research::subscribeMapleObservations(filter,
+					[&observedResponse](const research::MapleObservation& observation) {
+						observedResponse = observation.payload;
+					}));
+
+	config::ResearchIdentityManifestPath = identityPath.string();
+	config::ResearchMapleRecordPath = "";
+	config::ResearchMapleReplayPath = tracePath.string();
+	config::ResearchMapleTraceMaxBytes = research::DefaultMaximumMapleTraceBytes;
+	config::setTransient("research", "IdentityManifest", identityPath.string());
+	config::setTransient("research", "MapleReplay", tracePath.string());
+	research::configureRuntime();
+	research::startRuntime();
+
+	const std::uint64_t observationDma = research::beginMapleObservationDma();
+	const std::uint64_t dma = research::mapleBeginDma(events.begin);
+	events.transaction.dmaOrdinal = dma;
+	events.transaction.response[0] ^= 0xff;
+	const std::vector<std::uint8_t> selected = research::mapleTransaction(
+			events.transaction);
+	ASSERT_EQ(recordedResponse, selected);
+	ASSERT_TRUE(research::publishMapleTransactionObservations(observationDma,
+			events.transaction, selected));
+	research::mapleScheduleDma(events.schedule);
+	research::mapleCommitDma(events.commit);
+	EXPECT_NO_THROW(research::stopRuntime(true));
+	EXPECT_EQ(recordedResponse, observedResponse);
+	EXPECT_NE(events.transaction.response, observedResponse);
+}
+
 TEST(ResearchMapleReplay, DmaCheckpointStopsRecordAndReplayAtTerminalCommit)
 {
 	TemporaryDirectory directory;
@@ -540,8 +715,10 @@ TEST(ResearchMapleReplay, DmaCheckpointStopsRecordAndReplayAtTerminalCommit)
 	research::mapleCommitDma(events.commit);
 	EXPECT_EQ(1u, checkpointCalls);
 	EXPECT_NO_THROW(research::stopRuntime(true));
-	EXPECT_EQ(1u, research::validateProductionMapleTraceFile(
-			tracePath, identity.digest).dmaCount);
+	const research::MapleTraceSummary recorded = research::validateProductionMapleTraceFile(
+			tracePath, identity.digest);
+	EXPECT_EQ(1u, recorded.dmaCount);
+	EXPECT_EQ(research::MapleTraceSchemaVersionV2, recorded.schemaVersion);
 
 	checkpointCalls = 0;
 	config::ResearchMapleRecordPath = "";

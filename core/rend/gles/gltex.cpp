@@ -1,6 +1,8 @@
 #include "glcache.h"
 #include "gles.h"
 #include "hw/pvr/pvr_mem.h"
+#include "hw/sh4/sh4_sched.h"
+#include "research/pvr_presentation_observation.h"
 
 #include <memory>
 
@@ -246,6 +248,10 @@ void ReadRTTBuffer()
 				&& gl.rendContext->fbClip.size.y >= (int)h)
 		{
 			glReadPixels(0, 0, w, h, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, dst);
+			research::observePvrVramWrite(
+					research::PvrVramWriteSource::RendererRtt,
+					tex_addr, tex_addr, dst, static_cast<size_t>(w) * h * 2,
+					research::pvrCurrentRenderGeneration(), sh4_sched_now64());
 		}
 		else
 		{

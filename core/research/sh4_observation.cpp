@@ -68,6 +68,10 @@ bool matches(const Sh4ObservationFilter& filter, const Sh4Observation& observati
 		return false;
 	if ((filter.typeMask & sh4ObservationTypeBit(observation.type)) == 0)
 		return false;
+	if (filter.hasInstructionPcRange
+			&& (observation.instructionPc < filter.instructionPcStart
+					|| observation.instructionPc >= filter.instructionPcEndExclusive))
+		return false;
 	if (!filter.hasMemoryRange || !isMemoryObservation(observation.type))
 		return true;
 	const std::uint64_t width = observation.memoryWidth;
@@ -83,6 +87,10 @@ void validateFilter(const Sh4ObservationFilter& filter)
 		throw std::invalid_argument("SH-4 observation filter has an invalid backend mask");
 	if (filter.typeMask == 0 || (filter.typeMask & ~AllSh4ObservationTypes) != 0)
 		throw std::invalid_argument("SH-4 observation filter has an invalid type mask");
+	if (filter.hasInstructionPcRange
+			&& (filter.instructionPcEndExclusive > (std::uint64_t {1} << 32)
+					|| filter.instructionPcStart >= filter.instructionPcEndExclusive))
+		throw std::invalid_argument("SH-4 observation filter has an invalid PC range");
 	if (filter.hasMemoryRange
 			&& (filter.memoryEndExclusive > (std::uint64_t {1} << 32)
 					|| filter.memoryStart >= filter.memoryEndExclusive))

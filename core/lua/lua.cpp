@@ -23,6 +23,7 @@
 #include <LuaBridge/LuaBridge.h>
 #include "ui/gui.h"
 #include "ui/gui_util.h"
+#include "ui/mainui.h"
 #include "hw/mem/addrspace.h"
 #include "cfg/option.h"
 #include "emulator.h"
@@ -30,6 +31,7 @@
 #include "input/mouse.h"
 #include "hw/maple/maple_devs.h"
 #include "hw/maple/maple_if.h"
+#include "research/maple_observation.h"
 #include "research/sh4_lua_subscriptions.h"
 #include "stdclass.h"
 #include "imgui.h"
@@ -532,6 +534,18 @@ static std::string hexadecimal64(std::uint64_t value)
 	return text;
 }
 
+static std::string hexadecimalBytes(const std::vector<std::uint8_t>& bytes)
+{
+	static constexpr char Digits[] = "0123456789abcdef";
+	std::string text(bytes.size() * 2, '0');
+	for (std::size_t index = 0; index < bytes.size(); ++index)
+	{
+		text[index * 2] = Digits[bytes[index] >> 4];
+		text[index * 2 + 1] = Digits[bytes[index] & 0x0f];
+	}
+	return text;
+}
+
 static void pushRegisterSnapshot(lua_State *state,
 		const research::Sh4RegisterSnapshot& registers)
 {
@@ -607,6 +621,58 @@ static void pushResearchEvent(lua_State *state,
 	}
 }
 
+static const char *mapleObservationTypeName(research::MapleObservationType type)
+{
+	return type == research::MapleObservationType::Request
+			? "maple-request" : "maple-response";
+}
+
+static void pushMapleResearchEvent(lua_State *state,
+		const research::MapleObservation& observation)
+{
+	lua_newtable(state);
+	setBooleanField(state, "discovery", true);
+	setBooleanField(state, "authoritative_evidence", false);
+	setNumberField(state, "schema_version", observation.schemaVersion);
+	setStringField(state, "event", mapleObservationTypeName(observation.type));
+	setNumberField(state, "ordinal", observation.emissionOrdinal);
+	setStringField(state, "ordinal_decimal",
+			std::to_string(observation.emissionOrdinal));
+	setNumberField(state, "tick", observation.tick);
+	setStringField(state, "tick_decimal", std::to_string(observation.tick));
+	setNumberField(state, "dma_ordinal", observation.dmaOrdinal);
+	setStringField(state, "dma_ordinal_decimal",
+			std::to_string(observation.dmaOrdinal));
+	setNumberField(state, "transaction_ordinal", observation.transactionOrdinal);
+	setStringField(state, "transaction_ordinal_decimal",
+			std::to_string(observation.transactionOrdinal));
+	setNumberField(state, "descriptor_address", observation.descriptorAddress);
+	setNumberField(state, "destination_address", observation.destinationAddress);
+	setNumberField(state, "descriptor_header_1", observation.descriptorHeader1);
+	setNumberField(state, "descriptor_header_2", observation.descriptorHeader2);
+	setNumberField(state, "bus", observation.bus);
+	setNumberField(state, "port", observation.port);
+	setNumberField(state, "command", observation.command);
+	const bool devicePresent = (observation.flags
+			& research::MapleTransactionDevicePresent) != 0;
+	setBooleanField(state, "device_present", devicePresent);
+	if (devicePresent)
+		setNumberField(state, "device_type", observation.deviceType);
+	setNumberField(state, "byte_count", observation.payload.size());
+	const char *payload = observation.payload.empty() ? ""
+			: reinterpret_cast<const char *>(observation.payload.data());
+	lua_pushlstring(state, payload,
+			observation.payload.size());
+	lua_setfield(state, -2, "payload");
+	setStringField(state, "payload_hex", hexadecimalBytes(observation.payload));
+	if (!observation.payload.empty())
+	{
+		setNumberField(state, "frame_code", observation.payload[0]);
+		if (observation.type == research::MapleObservationType::Response)
+			setNumberField(state, "response_code", observation.payload[0]);
+	}
+}
+
 static std::optional<std::uint64_t> optionalUnsignedTableField(lua_State *state,
 		int tableIndex, const char *name)
 {
@@ -654,6 +720,15 @@ static std::optional<std::string> optionalStringTableField(lua_State *state,
 	return value;
 }
 
+static bool tableFieldPresent(lua_State *state, int tableIndex, const char *name)
+{
+	tableIndex = lua_absindex(state, tableIndex);
+	lua_getfield(state, tableIndex, name);
+	const bool present = !lua_isnil(state, -1);
+	lua_pop(state, 1);
+	return present;
+}
+
 static research::Sh4ObservationFilter researchFilterFromLua(lua_State *state,
 		std::size_t& capacity)
 {
@@ -662,8 +737,12 @@ static research::Sh4ObservationFilter researchFilterFromLua(lua_State *state,
 	if (!event.has_value())
 		throw std::invalid_argument("event is required");
 	research::Sh4ObservationType type;
-	if (*event == "instruction")
+	if (*event == "instruction-begin")
+		type = research::Sh4ObservationType::InstructionBegin;
+	else if (*event == "instruction")
 		type = research::Sh4ObservationType::InstructionEnd;
+	else if (*event == "instruction-abort")
+		type = research::Sh4ObservationType::InstructionAbort;
 	else if (*event == "call")
 		type = research::Sh4ObservationType::Call;
 	else if (*event == "return")
@@ -676,6 +755,10 @@ static research::Sh4ObservationFilter researchFilterFromLua(lua_State *state,
 		type = research::Sh4ObservationType::Exception;
 	else
 		throw std::invalid_argument("unsupported research event");
+	if (tableFieldPresent(state, 1, "bus")
+			|| tableFieldPresent(state, 1, "port")
+			|| tableFieldPresent(state, 1, "command"))
+		throw std::invalid_argument("Maple filters are only valid for Maple events");
 
 	research::Sh4ObservationFilter filter;
 	filter.typeMask = research::sh4ObservationTypeBit(type);
@@ -691,6 +774,21 @@ static research::Sh4ObservationFilter researchFilterFromLua(lua_State *state,
 				research::Sh4ObservationBackend::Dynarec);
 	else
 		throw std::invalid_argument("backend must be any, interpreter, or dynarec");
+
+	const std::optional<std::uint64_t> startPc = optionalUnsignedTableField(state, 1,
+			"start_pc");
+	const std::optional<std::uint64_t> endPc = optionalUnsignedTableField(state, 1,
+			"end_pc");
+	if (startPc.has_value() != endPc.has_value())
+		throw std::invalid_argument("start_pc and end_pc must be provided together");
+	if (startPc.has_value())
+	{
+		if (*startPc > 0xffffffffull || *endPc > 0xffffffffull || *startPc > *endPc)
+			throw std::invalid_argument("invalid inclusive SH-4 PC range");
+		filter.hasInstructionPcRange = true;
+		filter.instructionPcStart = static_cast<std::uint32_t>(*startPc);
+		filter.instructionPcEndExclusive = *endPc + 1;
+	}
 
 	const std::optional<std::uint64_t> start = optionalUnsignedTableField(state, 1,
 			"start_address");
@@ -720,6 +818,52 @@ static research::Sh4ObservationFilter researchFilterFromLua(lua_State *state,
 	return filter;
 }
 
+static research::MapleObservationFilter mapleResearchFilterFromLua(lua_State *state,
+		const std::string& event, std::size_t& capacity)
+{
+	if (tableFieldPresent(state, 1, "backend")
+			|| tableFieldPresent(state, 1, "start_pc")
+			|| tableFieldPresent(state, 1, "end_pc")
+			|| tableFieldPresent(state, 1, "start_address")
+			|| tableFieldPresent(state, 1, "end_address"))
+		throw std::invalid_argument("SH-4 filters are only valid for SH-4 events");
+	research::MapleObservationFilter filter;
+	filter.typeMask = event == "maple-request"
+			? research::mapleObservationTypeBit(research::MapleObservationType::Request)
+			: research::mapleObservationTypeBit(research::MapleObservationType::Response);
+	const std::optional<std::uint64_t> bus = optionalUnsignedTableField(state, 1,
+			"bus");
+	if (bus.has_value())
+	{
+		if (*bus > 3)
+			throw std::invalid_argument("Maple bus must be in [0, 3]");
+		filter.busMask = static_cast<std::uint8_t>(1u << *bus);
+	}
+	const std::optional<std::uint64_t> port = optionalUnsignedTableField(state, 1,
+			"port");
+	if (port.has_value())
+	{
+		if (*port > 5)
+			throw std::invalid_argument("Maple port must be in [0, 5]");
+		filter.portMask = static_cast<std::uint8_t>(1u << *port);
+	}
+	const std::optional<std::uint64_t> command = optionalUnsignedTableField(state, 1,
+			"command");
+	if (command.has_value())
+	{
+		if (*command > 0xff)
+			throw std::invalid_argument("Maple command must be in [0, 255]");
+		filter.hasCommand = true;
+		filter.command = static_cast<std::uint8_t>(*command);
+	}
+	const std::optional<std::uint64_t> requestedCapacity = optionalUnsignedTableField(
+			state, 1, "queue_capacity");
+	capacity = requestedCapacity.has_value()
+			? static_cast<std::size_t>(*requestedCapacity)
+			: research::Sh4LuaSubscriptionQueue::DefaultCapacity;
+	return filter;
+}
+
 static void deliverResearchObservation(
 		research::Sh4LuaSubscriptionQueue::Token token,
 		const research::Sh4Observation& observation)
@@ -729,6 +873,25 @@ static void deliverResearchObservation(
 		return;
 	lua_rawgeti(L, LUA_REGISTRYINDEX, found->second);
 	pushResearchEvent(L, observation);
+	if (lua_pcall(L, 1, 0, 0) != 0)
+	{
+		const char *message = lua_tostring(L, -1);
+		const std::string failure = message == nullptr
+				? "unknown Lua callback error" : message;
+		lua_pop(L, 1);
+		throw std::runtime_error(failure);
+	}
+}
+
+static void deliverMapleResearchObservation(
+		research::Sh4LuaSubscriptionQueue::Token token,
+		const research::MapleObservation& observation)
+{
+	const auto found = researchCallbackRefs.find(token);
+	if (found == researchCallbackRefs.end())
+		return;
+	lua_rawgeti(L, LUA_REGISTRYINDEX, found->second);
+	pushMapleResearchEvent(L, observation);
 	if (lua_pcall(L, 1, 0, 0) != 0)
 	{
 		const char *message = lua_tostring(L, -1);
@@ -770,16 +933,33 @@ static int researchSubscribe(lua_State *state)
 		if (lua_gettop(state) != 2 || !lua_istable(state, 1)
 				|| !lua_isfunction(state, 2))
 			throw std::invalid_argument("subscribe expects a filter table and function");
+		const std::optional<std::string> event = optionalStringTableField(state, 1,
+				"event");
+		if (!event.has_value())
+			throw std::invalid_argument("event is required");
+		const bool mapleEvent = *event == "maple-request" || *event == "maple-response";
 		std::size_t capacity = 0;
-		const research::Sh4ObservationFilter filter = researchFilterFromLua(state,
-				capacity);
 		lua_pushvalue(state, 2);
 		const int callbackRef = luaL_ref(state, LUA_REGISTRYINDEX);
 		try
 		{
-			const auto token = researchSubscriptions->subscribe(filter,
-					deliverResearchObservation, capacity,
-					reportResearchCallbackFailure);
+			research::Sh4LuaSubscriptionQueue::Token token = 0;
+			if (mapleEvent)
+			{
+				const research::MapleObservationFilter filter = mapleResearchFilterFromLua(
+						state, *event, capacity);
+				token = researchSubscriptions->subscribe(filter,
+						deliverMapleResearchObservation, capacity,
+						reportResearchCallbackFailure);
+			}
+			else
+			{
+				const research::Sh4ObservationFilter filter = researchFilterFromLua(state,
+						capacity);
+				token = researchSubscriptions->subscribe(filter,
+						deliverResearchObservation, capacity,
+						reportResearchCallbackFailure);
+			}
 			try
 			{
 				researchCallbackRefs.emplace(token, callbackRef);
@@ -909,6 +1089,7 @@ static void luaRegister(lua_State *L)
 					if (restart)
 						gui_open_settings();
 				}))
+				.addFunction("requestExit", mainui_stop)
 				.addFunction("exit", dc_exit)
 				.addFunction("displayNotification", os_notify)
 			.endNamespace()

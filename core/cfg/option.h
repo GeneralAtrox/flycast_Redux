@@ -531,6 +531,12 @@ extern Option<std::string, false> ResearchSh4ObservationRecordPath;
 extern Option<std::string, false> ResearchSh4ObservationManifestSetPath;
 extern Option<int64_t, false> ResearchSh4ObservationMaxBytes;
 extern Option<int64_t, false> ResearchSh4ObservationStartDma;
+extern Option<std::string, false> ResearchPvrTaRecordPath;
+extern Option<std::string, false> ResearchPvrTaManifestPath;
+extern Option<int64_t, false> ResearchPvrTaMaxBytes;
+extern Option<int64_t, false> ResearchPvrTaStartDma;
+extern Option<std::string, false> ResearchPvrPresentationRecordPath;
+extern Option<int64_t, false> ResearchPvrPresentationMaxBytes;
 extern Option<int64_t, false> ResearchDreamcastRtcSeed;
 
 // Profiling

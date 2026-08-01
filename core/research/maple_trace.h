@@ -13,7 +13,9 @@
 namespace research
 {
 
-constexpr std::uint32_t MapleTraceSchemaVersion = 1;
+constexpr std::uint32_t MapleTraceSchemaVersionV1 = 1;
+constexpr std::uint32_t MapleTraceSchemaVersionV2 = 2;
+constexpr std::uint32_t MapleTraceCurrentSchemaVersion = MapleTraceSchemaVersionV2;
 constexpr std::uint32_t MapleTraceHeaderSize = 160;
 constexpr std::uint32_t MapleTraceEndianSentinel = 0x01020304;
 constexpr std::uint64_t DefaultMaximumMapleTraceBytes = 512ull * 1024 * 1024;
@@ -25,6 +27,12 @@ enum class MapleTraceEventType : std::uint32_t
 	DmaSchedule = 3,
 	DmaCommit = 4,
 	DmaAbort = 5,
+	ControlDescriptor = 6,
+};
+
+enum class MapleControlOperation : std::uint8_t
+{
+	Nop = 7,
 };
 
 enum class MapleDmaTrigger : std::uint8_t
@@ -119,8 +127,20 @@ struct MapleDmaAbortEvent
 	std::uint32_t stage = 0;
 };
 
+struct MapleControlDescriptorEvent
+{
+	std::uint64_t dmaOrdinal = 0;
+	std::uint64_t controlOrdinal = 0;
+	std::uint64_t tick = 0;
+	std::uint32_t descriptorAddress = 0;
+	std::uint32_t descriptorHeader = 0;
+	MapleControlOperation operation = MapleControlOperation::Nop;
+	bool last = false;
+};
+
 using MapleTraceEventData = std::variant<MapleDmaBeginEvent, MapleTransactionEvent,
-		MapleDmaScheduleEvent, MapleDmaCommitEvent, MapleDmaAbortEvent>;
+		MapleDmaScheduleEvent, MapleDmaCommitEvent, MapleDmaAbortEvent,
+		MapleControlDescriptorEvent>;
 
 struct MapleTraceEvent
 {
@@ -131,11 +151,13 @@ struct MapleTraceEvent
 
 struct MapleTraceSummary
 {
+	std::uint32_t schemaVersion = MapleTraceSchemaVersionV1;
 	Sha256Digest identityDigest {};
 	Sha256Digest payloadDigest {};
 	std::uint64_t eventCount = 0;
 	std::uint64_t transactionCount = 0;
 	std::uint64_t dmaCount = 0;
+	std::uint64_t controlDescriptorCount = 0;
 	std::uint64_t startTick = 0;
 	std::uint64_t endTick = 0;
 	std::uint64_t payloadBytes = 0;
@@ -159,7 +181,8 @@ class MapleTraceWriter
 {
 public:
 	MapleTraceWriter(const std::filesystem::path& path, const Sha256Digest& identityDigest,
-			std::uint64_t maximumBytes = DefaultMaximumMapleTraceBytes);
+			std::uint64_t maximumBytes = DefaultMaximumMapleTraceBytes,
+			std::uint32_t schemaVersion = MapleTraceSchemaVersionV1);
 	~MapleTraceWriter();
 
 	MapleTraceWriter(const MapleTraceWriter&) = delete;
@@ -167,6 +190,7 @@ public:
 
 	std::uint64_t beginDma(MapleDmaBeginEvent event);
 	std::uint64_t writeTransaction(MapleTransactionEvent event);
+	std::uint64_t writeControlDescriptor(MapleControlDescriptorEvent event);
 	void scheduleDma(MapleDmaScheduleEvent event);
 	void commitDma(MapleDmaCommitEvent event);
 	void abortDma(MapleDmaAbortEvent event);
@@ -193,8 +217,11 @@ private:
 	std::uint64_t nextEventOrdinal = 0;
 	std::uint64_t nextDmaOrdinal = 0;
 	std::uint64_t nextTransactionOrdinal = 0;
+	std::uint64_t nextControlOrdinal = 0;
 	std::uint64_t currentDmaOrdinal = UINT64_MAX;
 	std::uint32_t currentDmaResponses = 0;
+	std::uint32_t nextDescriptorAddress = 0;
+	bool descriptorTerminalSeen = false;
 	std::deque<std::pair<std::uint64_t, std::uint32_t>> pendingDmas;
 	bool openDma = false;
 	bool finalized = false;

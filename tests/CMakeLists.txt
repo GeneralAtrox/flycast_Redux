@@ -44,6 +44,7 @@ endif()
 
 if(BUILD_RESEARCH_TOOLS AND NOT LIBRETRO)
     target_sources(${PROJECT_NAME} PRIVATE
+			src/research/PvrTaObservationTest.cpp
             src/research/Sh4DynarecDifferentialTest.cpp
             src/research/Sh4LuaApiTest.cpp)
 endif()

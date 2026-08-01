@@ -11,7 +11,9 @@
 #include "hw/pvr/pvr_mem.h"
 #include "dmac.h"
 #include "hw/sh4/sh4_interrupts.h"
+#include "hw/sh4/sh4_sched.h"
 #include "hw/holly/holly_intc.h"
+#include "research/pvr_presentation_observation.h"
 
 DMACRegisters dmac;
 
@@ -50,12 +52,12 @@ void DMAC_Ch2St()
 		{
 			u32 newLen = RAM_SIZE - (src & RAM_MASK);
 			SQBuffer *psrc = (SQBuffer *)GetMemPtr(src, newLen);
-			TAWrite(dst, psrc, newLen / sizeof(SQBuffer));
+			TAWrite(dst, psrc, newLen / sizeof(SQBuffer), src);
 			len -= newLen;
 			src += newLen;
 		}
 		SQBuffer *psrc = (SQBuffer *)GetMemPtr(src, len);
-		TAWrite(dst, psrc, len / sizeof(SQBuffer));
+		TAWrite(dst, psrc, len / sizeof(SQBuffer), src);
 		src += len;
 	}
 	// Direct Texture path and mirror
@@ -72,18 +74,34 @@ void DMAC_Ch2St()
 			if ((src & RAM_MASK) + len > RAM_SIZE)
 			{
 				u32 newLen = RAM_SIZE - (src & RAM_MASK);
+				const u32 writeAddress = dst;
+				const u32 sourceAddress = src;
 				WriteMemBlock_nommu_dma(dst, src, newLen);
+				research::observePvrVramWrite(
+						research::PvrVramWriteSource::Channel2Dma,
+						writeAddress, writeAddress & VRAM_MASK,
+						GetMemPtr(sourceAddress, newLen), newLen, 0,
+						sh4_sched_now64());
 				len -= newLen;
 				src += newLen;
 				dst += newLen;
 			}
+			const u32 writeAddress = dst;
+			const u32 sourceAddress = src;
 			WriteMemBlock_nommu_dma(dst, src, len);
+			research::observePvrVramWrite(
+					research::PvrVramWriteSource::Channel2Dma,
+					writeAddress, writeAddress & VRAM_MASK,
+					GetMemPtr(sourceAddress, len), len, 0,
+					sh4_sched_now64());
 			src += len;
 			dst += len;
 		}
 		else
 		{
 			// 32-bit path
+			research::ScopedPvrVramWriteSource source(
+					research::PvrVramWriteSource::Channel2Dma);
 			dst = (dst & 0xFFFFFF) | 0xa5000000;
 			while (len > 0)
 			{

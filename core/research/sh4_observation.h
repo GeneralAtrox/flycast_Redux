@@ -120,6 +120,9 @@ struct Sh4ObservationFilter
 {
 	std::uint32_t backendMask = AllSh4ObservationBackends;
 	std::uint64_t typeMask = AllSh4ObservationTypes;
+	bool hasInstructionPcRange = false;
+	std::uint32_t instructionPcStart = 0;
+	std::uint64_t instructionPcEndExclusive = std::uint64_t {1} << 32;
 	bool hasMemoryRange = false;
 	std::uint32_t memoryStart = 0;
 	std::uint64_t memoryEndExclusive = std::uint64_t {1} << 32;

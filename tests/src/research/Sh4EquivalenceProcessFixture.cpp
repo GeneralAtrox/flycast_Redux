@@ -43,7 +43,7 @@ json blob(const std::filesystem::path& path)
 }
 
 json identity(const char *backend, const json& emulator,
-		const std::string& mapleIdentity)
+		const std::string& mapleIdentity, const std::string& staticAnalysisDigest)
 {
 	json values {
 			{"cpu_backend", backend},
@@ -56,7 +56,7 @@ json identity(const char *backend, const json& emulator,
 			{"path", "descriptive-only.bin"}, {"size", 0},
 			{"sha256", std::string(64, '0')},
 	};
-	json boot = descriptiveBlob;
+	json boot = emulator;
 	boot["name"] = "fixture.elf";
 	return {
 			{"schema", "flycast-research-identity"}, {"schema_version", 2},
@@ -69,6 +69,10 @@ json identity(const char *backend, const json& emulator,
 					{"executable", emulator}}},
 			{"configuration", {{"values", values},
 					{"sha256", digest(values.dump())}}},
+			{"static_analysis", {
+					{"program_sha256", emulator.at("sha256")},
+					{"export_sha256", staticAnalysisDigest},
+					{"image_base", "0x8c010000"}}},
 			{"equivalence", {{"maple_replay_identity_sha256", mapleIdentity}}},
 	};
 }
@@ -206,6 +210,7 @@ int main(int argc, char *argv[])
 		std::filesystem::create_directories(root);
 
 		const std::filesystem::path emulator = root / "emulator.bin";
+		const std::filesystem::path staticAnalysis = root / "static-analysis.bin";
 		const std::filesystem::path manifest = root / "hooks.json";
 		const std::filesystem::path manifestSet = root / "manifest-set.json";
 		const std::filesystem::path replay = root / "replay.fcmt";
@@ -216,6 +221,7 @@ int main(int argc, char *argv[])
 		const std::filesystem::path dynarecTrace = root / "dynarec.fcso";
 		const std::filesystem::path sourceJob = root / "source-job.json";
 		writeText(emulator, "fixture emulator bytes");
+		writeText(staticAnalysis, "fixture static-analysis bytes");
 		writeText(manifest, "{\"hooks\":[]}");
 		writeText(manifestSet, json {
 				{"schema", "flycast-research-sh4-equivalence-manifest-set"},
@@ -229,12 +235,15 @@ int main(int argc, char *argv[])
 		const research::Sha256Digest mapleIdentity = research::sha256(
 				"maple-v1-identity", 17);
 		writeReplay(replay, mapleIdentity);
-		writeText(interpreterIdentity, identity("interpreter", blob(emulator),
-				research::sha256ToHex(mapleIdentity)).dump());
-		writeText(dynarecIdentity, identity("dynarec", blob(emulator),
-				research::sha256ToHex(mapleIdentity)).dump());
 		const research::Sha256Digest replayDigest = research::hashFileExact(replay,
 				std::filesystem::file_size(replay));
+		const std::string staticAnalysisDigest = research::sha256ToHex(
+				research::hashFileExact(staticAnalysis,
+						std::filesystem::file_size(staticAnalysis)));
+		writeText(interpreterIdentity, identity("interpreter", blob(emulator),
+				research::sha256ToHex(mapleIdentity), staticAnalysisDigest).dump());
+		writeText(dynarecIdentity, identity("dynarec", blob(emulator),
+				research::sha256ToHex(mapleIdentity), staticAnalysisDigest).dump());
 		const research::Sha256Digest setDigest = research::hashFileExact(manifestSet,
 				std::filesystem::file_size(manifestSet));
 		writeTrace(interpreterTrace, research::Sh4ObservationBackend::Interpreter,

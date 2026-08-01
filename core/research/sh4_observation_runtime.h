@@ -9,6 +9,18 @@ struct Sh4Context;
 namespace research
 {
 
+struct Sh4InstructionOwnerToken
+{
+	bool valid = false;
+	Sh4ObservationBackend backend = Sh4ObservationBackend::Interpreter;
+	std::uint64_t generation = 0;
+	std::uint64_t tick = 0;
+	std::uint32_t pc = 0;
+	std::uint32_t pr = 0;
+	std::uint16_t opcode = 0;
+	std::uint16_t delaySlotDepth = 0;
+};
+
 #ifdef LIBRETRO
 
 // Research SH-4 instruction emission is intentionally unavailable in libretro
@@ -31,6 +43,16 @@ inline void sh4ObservationInterruptRaised(Sh4ObservationBackend, std::uint32_t,
 		std::uint64_t, const Sh4Context&) noexcept {}
 inline Sh4ObservationBackend sh4ObservationCurrentInstructionBackend(
 		Sh4ObservationBackend fallback) noexcept { return fallback; }
+inline void retainSh4InstructionOwnership(Sh4ObservationBackend) noexcept {}
+inline void releaseSh4InstructionOwnership(Sh4ObservationBackend) noexcept {}
+inline bool sh4InstructionOwnershipActive(Sh4ObservationBackend) noexcept
+{
+	return false;
+}
+inline Sh4InstructionOwnerToken sh4ObservationCurrentInstructionOwner() noexcept
+{
+	return {};
+}
 using Sh4DynarecObservationMarker = void (*)(Sh4Context *, std::uint32_t,
 		std::uint32_t, std::uint32_t) noexcept;
 inline void sh4DynarecObservationMarkerUnavailable(Sh4Context *, std::uint32_t,
@@ -82,6 +104,14 @@ void sh4ObservationInterruptRaised(Sh4ObservationBackend backend,
 		const Sh4Context& context) noexcept;
 Sh4ObservationBackend sh4ObservationCurrentInstructionBackend(
 		Sh4ObservationBackend fallback) noexcept;
+// Lightweight instruction ownership can be retained by other research buses
+// without enabling full SH-4 event construction and publication.
+void retainSh4InstructionOwnership(Sh4ObservationBackend backend) noexcept;
+void releaseSh4InstructionOwnership(Sh4ObservationBackend backend) noexcept;
+bool sh4InstructionOwnershipActive(Sh4ObservationBackend backend) noexcept;
+// Returns only the currently open instruction frame. Callers must not infer an
+// owner from Sh4Context::pc after the observed hardware boundary has passed.
+Sh4InstructionOwnerToken sh4ObservationCurrentInstructionOwner() noexcept;
 // Compile-time selection for the generated marker call. Generated code embeds
 // only POD immediates, never a pointer into RuntimeBlockInfo::oplist.
 using Sh4DynarecObservationMarker = void (*)(Sh4Context *, std::uint32_t pc,
