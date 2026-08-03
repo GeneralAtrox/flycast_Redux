@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "flycast-research-sh4-ghidra-package-job-v1.schema.json",
+  "title": "Flycast SH-4/Ghidra package publication job v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "schema_version", "package_id", "output", "identity",
+    "emulator", "maple_replay", "profile", "ghidra_export", "program",
+    "exporter_script", "semantic_join", "publisher", "semantic_validator",
+    "package_validator", "limits", "metadata"
+  ],
+  "properties": {
+    "schema": { "const": "flycast-research-sh4-ghidra-package-job" },
+    "schema_version": { "const": 1 },
+    "package_id": { "$ref": "#/$defs/uuid" },
+    "output": {
+      "type": "object", "additionalProperties": false,
+      "required": ["accepted_directory"],
+      "properties": { "accepted_directory": { "$ref": "#/$defs/path" } }
+    },
+    "identity": { "$ref": "#/$defs/blob" },
+    "initial_state": { "$ref": "#/$defs/blob" },
+    "emulator": { "$ref": "#/$defs/blob" },
+    "maple_replay": { "$ref": "#/$defs/blob" },
+    "profile": {
+      "type": "object", "additionalProperties": false,
+      "required": ["candidate"],
+      "properties": { "candidate": { "$ref": "#/$defs/blob" } }
+    },
+    "ghidra_export": { "$ref": "#/$defs/blob" },
+    "program": { "$ref": "#/$defs/blob" },
+    "exporter_script": { "$ref": "#/$defs/blob" },
+    "semantic_join": {
+      "type": "object", "additionalProperties": false,
+      "required": ["candidate", "maximum_bytes"],
+      "properties": {
+        "candidate": { "$ref": "#/$defs/blob" },
+        "maximum_bytes": { "type": "integer", "minimum": 256, "maximum": 67108864 }
+      }
+    },
+    "publisher": {
+      "type": "object", "additionalProperties": false,
+      "required": ["script"],
+      "properties": { "script": { "$ref": "#/$defs/blob" } }
+    },
+    "semantic_validator": {
+      "type": "object", "additionalProperties": false,
+      "required": ["executable"],
+      "properties": { "executable": { "$ref": "#/$defs/blob" } }
+    },
+    "package_validator": {
+      "type": "object", "additionalProperties": false,
+      "required": ["executable"],
+      "properties": { "executable": { "$ref": "#/$defs/blob" } }
+    },
+    "limits": {
+      "type": "object", "additionalProperties": false,
+      "required": ["validator_timeout_seconds"],
+      "properties": {
+        "validator_timeout_seconds": { "type": "integer", "minimum": 1, "maximum": 3600 }
+      }
+    },
+    "metadata": { "type": "object", "maxProperties": 64 }
+  },
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "path": { "type": "string", "minLength": 1, "maxLength": 4096 },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "blob": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "size", "sha256"],
+      "properties": {
+        "path": { "$ref": "#/$defs/path" },
+        "size": { "type": "integer", "minimum": 1 },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    }
+  }
+}

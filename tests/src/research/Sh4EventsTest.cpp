@@ -61,6 +61,8 @@ private:
 		config::ResearchMemoryRangesRecordPath = "";
 		config::ResearchSh4EventsManifestPath = "";
 		config::ResearchSh4EventsRecordPath = "";
+		config::AutoLoadState.override(false);
+		config::SavestateSlot.override(0);
 	}
 
 	std::filesystem::path path;
@@ -166,6 +168,33 @@ json identityJson(const Sh4FixtureData& fixture)
 	track["sector_size"] = 2048;
 	track["offset"] = 0;
 	root["media"]["tracks"] = json::array({track});
+	return root;
+}
+
+json stateIdentityJson(const Sh4FixtureData& fixture,
+		const std::filesystem::path& statePath,
+		const std::vector<std::uint8_t>& stateBytes, std::uint32_t slot)
+{
+	json root = identityJson(fixture);
+	root["schema_version"] = 2;
+	root["initial_state"] = {
+		{"kind", "savestate"},
+		{"slot", slot},
+		{"blob", {
+			{"path", statePath.u8string()},
+			{"size", stateBytes.size()},
+			{"sha256", digestOf(stateBytes)},
+		}},
+	};
+	root["equivalence"] = {
+		{"maple_replay_identity_sha256", std::string(64, '1')},
+	};
+	json& values = root["configuration"]["values"];
+	values["dynarec_observation"] = false;
+	values["dreamcast_rtc_seed"] = 0;
+	values["autoload_state"] = true;
+	values["savestate_slot"] = slot;
+	root["configuration"]["sha256"] = digestOf(values.dump());
 	return root;
 }
 
@@ -723,6 +752,49 @@ TEST(ResearchSh4Events, RuntimeRejectsAliasedResearchPathsBeforeOpeningOutput)
 	research::configureSh4EventsRuntime();
 	EXPECT_THROW(research::startSh4EventsRuntime(), std::runtime_error);
 	EXPECT_FALSE(std::filesystem::exists(outputPath));
+	EXPECT_FALSE(research::sh4EventsRuntimeActive());
+}
+
+TEST(ResearchSh4Events, RuntimeUsesAuthenticatedIdentityBoundInitialState)
+{
+	Sh4EventsTemporaryDirectory directory;
+	Sh4FixtureData fixture;
+	constexpr std::uint32_t slot = 9;
+	const std::filesystem::path loadedStatePath =
+			"research-test-state-" + std::to_string(slot) + ".state";
+	ASSERT_FALSE(std::filesystem::exists(loadedStatePath));
+	struct RemoveStateFile
+	{
+		explicit RemoveStateFile(std::filesystem::path path) : path(std::move(path)) {}
+		~RemoveStateFile()
+		{
+			std::error_code error;
+			std::filesystem::remove(path, error);
+		}
+		std::filesystem::path path;
+	} removeStateFile(loadedStatePath);
+	const std::vector<std::uint8_t> stateBytes {0x46, 0x4c, 0x59, 0x53, 7, 8, 9};
+	writeBytes(loadedStatePath, stateBytes);
+	const auto identityPath = directory.file("state-identity.json");
+	writeText(identityPath,
+			stateIdentityJson(fixture, loadedStatePath, stateBytes, slot).dump(2));
+	const auto manifestPath = writeManifest(directory, fixture);
+	const auto outputPath = directory.file("state-runtime.fcsh4");
+	config::ResearchIdentityManifestPath = identityPath.string();
+	config::ResearchSh4EventsManifestPath = manifestPath.string();
+	config::ResearchSh4EventsRecordPath = outputPath.string();
+
+	research::configureSh4EventsRuntime();
+	EXPECT_FALSE(config::AutoLoadState.get());
+	research::startSh4EventsRuntime();
+	EXPECT_TRUE(config::AutoLoadState.get());
+	EXPECT_EQ(static_cast<int>(slot), config::SavestateSlot.get());
+	research::abortSh4EventsRuntime();
+
+	writeBytes(loadedStatePath, {0x46, 0x4c, 0x59, 0x53, 7, 8, 0});
+	config::ResearchSh4EventsRecordPath = directory.file("mismatch.fcsh4").string();
+	research::configureSh4EventsRuntime();
+	EXPECT_THROW(research::startSh4EventsRuntime(), std::runtime_error);
 	EXPECT_FALSE(research::sh4EventsRuntimeActive());
 }
 

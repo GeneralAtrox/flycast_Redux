@@ -62,6 +62,22 @@ struct PvrTaContextRef
 	bool available = false;
 };
 
+// Stable provenance for one exact 32-byte block accepted by the TA.  Semantic
+// decoders retain this value beside the raw TA buffer so asynchronous renderer
+// work never has to resample SH-4 state or reconstruct context ordinals.
+struct PvrTaBlockProvenance
+{
+	Sh4InstructionOwnerToken initiator;
+	std::uint32_t contextAddress = UINT32_MAX;
+	std::uint64_t contextGeneration = 0;
+	std::uint64_t contextBlockOrdinal = 0;
+	std::uint32_t renderPass = 0;
+	PvrTaInputSource source = PvrTaInputSource::StoreQueue;
+	std::uint32_t sourceAddress = UINT32_MAX;
+	std::uint32_t taAddress = UINT32_MAX;
+	bool available = false;
+};
+
 struct PvrTaVramRead
 {
 	std::uint32_t address = UINT32_MAX;
@@ -148,12 +164,13 @@ inline bool pvrTaObservationBusActive() noexcept { return false; }
 inline bool pvrTaEvidenceSubscriptionActive() noexcept { return false; }
 inline std::size_t pvrTaObservationSubscriberCount() noexcept { return 0; }
 inline std::uint64_t pvrTaObservationDroppedCount() noexcept { return 0; }
+inline void beginPvrTaProvenanceSession() noexcept {}
 inline void observePvrTaListBoundary(bool, std::uint32_t, std::uint32_t,
 		std::uint64_t) noexcept {}
-inline void observePvrTaAcceptedBlock(PvrTaInputSource, std::uint32_t,
+inline PvrTaBlockProvenance observePvrTaAcceptedBlock(PvrTaInputSource, std::uint32_t,
 		std::uint32_t, const std::uint8_t*, std::uint32_t, std::uint32_t,
 		std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t,
-		std::uint64_t) noexcept {}
+		std::uint64_t) noexcept { return {}; }
 inline std::uint64_t observePvrTaStartRender(const std::uint32_t*, const bool*,
 		std::size_t,
 		const PvrTaRenderSelectionTranscript*, std::uint64_t) noexcept { return 0; }
@@ -171,10 +188,11 @@ bool pvrTaObservationBusActive() noexcept;
 bool pvrTaEvidenceSubscriptionActive() noexcept;
 std::size_t pvrTaObservationSubscriberCount() noexcept;
 std::uint64_t pvrTaObservationDroppedCount() noexcept;
+void beginPvrTaProvenanceSession() noexcept;
 
 void observePvrTaListBoundary(bool continuation, std::uint32_t contextAddress,
 		std::uint32_t renderPass, std::uint64_t tick) noexcept;
-void observePvrTaAcceptedBlock(PvrTaInputSource source,
+PvrTaBlockProvenance observePvrTaAcceptedBlock(PvrTaInputSource source,
 		std::uint32_t sourceAddress, std::uint32_t taAddress,
 		const std::uint8_t* block, std::uint32_t contextAddress,
 		std::uint32_t renderPass, std::uint32_t listTypeBefore,

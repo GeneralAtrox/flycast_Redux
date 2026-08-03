@@ -31,6 +31,7 @@ namespace nvmem
 
 static MemChip *sys_rom;
 static WritableChip *sys_nvmem;
+static std::vector<u8> initial_flash_data;
 
 static std::string getRomPrefix()
 {
@@ -251,9 +252,13 @@ static std::string getArcadeFlashPath()
 
 static bool loadFlash()
 {
+	initial_flash_data.clear();
 	bool rc = true;
 	if (settings.platform.isConsole()) {
 		rc = sys_nvmem->Load(getRomPrefix(), "%nvmem.bin", "nvram");
+		if (rc)
+			initial_flash_data.assign(sys_nvmem->data,
+					sys_nvmem->data + settings.platform.flash_size);
 		fixUpDCFlash();
 	}
 	else if (!settings.naomi.slave)
@@ -348,6 +353,14 @@ u8 *getFlashData()
 {
 	return sys_nvmem->data;
 }
+const u8 *getInitialFlashData()
+{
+	return initial_flash_data.empty() ? nullptr : initial_flash_data.data();
+}
+size_t getInitialFlashSize()
+{
+	return initial_flash_data.size();
+}
 
 u32 readBios(u32 addr, u32 sz)
 {
@@ -364,6 +377,7 @@ u8 *getBiosData()
 
 void init()
 {
+	initial_flash_data.clear();
 	switch (settings.platform.system)
 	{
 	case DC_PLATFORM_DREAMCAST:
@@ -389,6 +403,7 @@ void init()
 
 void term()
 {
+	initial_flash_data.clear();
 	delete sys_rom;
 	sys_rom = nullptr;
 	delete sys_nvmem;

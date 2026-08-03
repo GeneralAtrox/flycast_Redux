@@ -182,6 +182,16 @@ Option<int64_t, false> ResearchSh4ObservationMaxBytes(
 		"Sh4ObservationMaxBytes", 512ll * 1024 * 1024, "research");
 Option<int64_t, false> ResearchSh4ObservationStartDma(
 		"Sh4ObservationStartDma", 0, "research");
+Option<std::string, false> ResearchSh4ProfileRecordPath(
+		"Sh4ProfileRecord", "", "research");
+Option<int64_t, false> ResearchSh4ProfileMaxBytes(
+		"Sh4ProfileMaxBytes", 256ll * 1024 * 1024, "research");
+Option<int64_t, false> ResearchSh4ProfileMaxBlocks(
+		"Sh4ProfileMaxBlocks", 1'000'000, "research");
+Option<int64_t, false> ResearchSh4ProfileMaxBranches(
+		"Sh4ProfileMaxBranches", 4'000'000, "research");
+Option<int64_t, false> ResearchSh4ProfileMaxExecutions(
+		"Sh4ProfileMaxExecutions", 1'000'000'000, "research");
 Option<std::string, false> ResearchPvrTaRecordPath(
 		"PvrTaRecord", "", "research");
 Option<std::string, false> ResearchPvrTaManifestPath(
@@ -194,8 +204,34 @@ Option<std::string, false> ResearchPvrPresentationRecordPath(
 		"PvrPresentationRecord", "", "research");
 Option<int64_t, false> ResearchPvrPresentationMaxBytes(
 		"PvrPresentationMaxBytes", 512ll * 1024 * 1024, "research");
+Option<std::string, false> ResearchPvrDrawRecordPath(
+		"PvrDrawRecord", "", "research");
+Option<int64_t, false> ResearchPvrDrawMaxBytes(
+		"PvrDrawMaxBytes", 512ll * 1024 * 1024, "research");
+Option<std::string, false> ResearchGdromRecordPath(
+		"GdromRecord", "", "research");
+Option<int64_t, false> ResearchGdromMaxBytes(
+		"GdromMaxBytes", 512ll * 1024 * 1024, "research");
+Option<std::string, false> ResearchAicaRecordPath(
+		"AicaRecord", "", "research");
+Option<int64_t, false> ResearchAicaMaxBytes(
+		"AicaMaxBytes", 512ll * 1024 * 1024, "research");
+Option<int64_t, false> ResearchAicaSampleFrames(
+		"AicaSampleFrames", 22050, "research");
+Option<std::string, false> ResearchCddaRecordPath(
+		"CddaRecord", "", "research");
+Option<int64_t, false> ResearchCddaMaxBytes(
+		"CddaMaxBytes", 64ll * 1024 * 1024, "research");
+Option<int64_t, false> ResearchCddaSampleFrames(
+		"CddaSampleFrames", 588, "research");
 Option<int64_t, false> ResearchDreamcastRtcSeed(
 		"DreamcastRtcSeed", -1, "research");
+Option<std::string, false> ResearchControlPipeName("ControlPipe", "", "research");
+Option<std::string, false> ResearchControlNonce("ControlNonce", "", "research");
+Option<std::string, false> ResearchControlClientExecutable(
+		"ControlClientExecutable", "", "research");
+Option<std::string, false> ResearchControlClientSha256(
+		"ControlClientSha256", "", "research");
 
 // Profiler
 Option<bool> ProfilerEnabled("Profiler.Enabled");

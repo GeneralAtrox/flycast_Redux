@@ -42,15 +42,21 @@
 #include "hw/pvr/pvr.h"
 #include "profiler/fc_profiler.h"
 #include "research/maple_runtime.h"
+#include "research/aica_capture_runtime.h"
+#include "research/cdda_capture_runtime.h"
+#include "research/gdrom_capture_runtime.h"
 #include "research/memory_ranges_runtime.h"
 #include "research/pvr_ta_capture_runtime.h"
+#include "research/research_control.h"
 #include "research/sh4_events_runtime.h"
 #include "research/sh4_observation_capture_runtime.h"
+#include "research/sh4_profile_capture_runtime.h"
 #include "oslib/storage.h"
 #include "wsi/context.h"
 #include <chrono>
 #ifndef LIBRETRO
 #include "ui/gui.h"
+#include "ui/mainui.h"
 #endif
 #include "hw/sh4/sh4_interpreter.h"
 #include "hw/sh4/dyna/ngen.h"
@@ -567,7 +573,18 @@ int getGamePlatform(const std::string& filename)
 void Emulator::loadGame(const char *path, LoadProgress *progress)
 {
 	init();
-	research::setMapleCheckpointHandler([] { emu.stop(); });
+	research::setMapleCheckpointHandler([] {
+#ifndef LIBRETRO
+		// A bounded GD-ROM capture owns the whole process. Exit the UI loop only
+		// after the terminal Maple commit so every research writer finalizes at
+		// the exact replay boundary. Other research sessions retain the normal
+		// paused-at-checkpoint behavior.
+		if (!config::ResearchGdromRecordPath.get().empty())
+			mainui_stop();
+		else
+#endif
+			emu.stop();
+	});
 	try {
 		DEBUG_LOG(BOOT, "Loading game %s", path == nullptr ? "(nil)" : path);
 
@@ -599,7 +616,11 @@ void Emulator::loadGame(const char *path, LoadProgress *progress)
 		config::Settings::instance().load(false);
 		research::configureRuntime();
 		research::configureSh4ObservationCaptureRuntime();
+		research::configureSh4DynarecProfileCaptureRuntime();
 		research::configurePvrTaCaptureRuntime();
+		research::configureGdromCaptureRuntime();
+		research::configureAicaCaptureRuntime();
+		research::configureCddaCaptureRuntime();
 		research::configureMemoryRangesRuntime();
 		research::configureSh4EventsRuntime();
 		dc_reset(true);
@@ -682,11 +703,19 @@ void Emulator::loadGame(const char *path, LoadProgress *progress)
 		}
 		// reload settings so that all settings can be overridden
 		loadGameSpecificSettings();
+		research::configureResearchControl();
 		research::startRuntime();
 		research::startSh4ObservationCaptureRuntime();
+		research::startSh4DynarecProfileCaptureRuntime();
 		research::startPvrTaCaptureRuntime();
+		research::startGdromCaptureRuntime();
+		research::startAicaCaptureRuntime();
+		research::startCddaCaptureRuntime();
 		research::startMemoryRangesRuntime();
 		research::startSh4EventsRuntime();
+#ifndef LIBRETRO
+		research::startResearchControl([] { mainui_stop(); });
+#endif
 		NetworkHandshake::init();
 		settings.input.fastForwardMode = false;
 		EventManager::event(Event::Start);
@@ -712,8 +741,13 @@ void Emulator::loadGame(const char *path, LoadProgress *progress)
 
 		state = Loaded;
 	} catch (...) {
+		research::stopResearchControl();
 		research::abortSh4ObservationCaptureRuntime();
+		research::abortSh4DynarecProfileCaptureRuntime();
 		research::abortPvrTaCaptureRuntime();
+		research::abortGdromCaptureRuntime();
+		research::abortAicaCaptureRuntime();
+		research::abortCddaCaptureRuntime();
 		research::abortSh4EventsRuntime();
 		research::abortMemoryRangesRuntime();
 		research::abortRuntime();
@@ -749,7 +783,9 @@ void Emulator::runInternal()
 				if (resetRequested)
 				{
 					research::abortSh4ObservationCaptureRuntime();
+					research::abortSh4DynarecProfileCaptureRuntime();
 					research::abortPvrTaCaptureRuntime();
+					research::abortGdromCaptureRuntime();
 					research::abortSh4EventsRuntime();
 					research::abortMemoryRangesRuntime();
 					nvmem::saveFiles();
@@ -780,9 +816,30 @@ void Emulator::unloadGame()
 			ERROR_LOG(COMMON, "Research runtime finalization failed: %s", e.what());
 		}
 		try {
+			research::stopSh4DynarecProfileCaptureRuntime(replayComplete);
+		} catch (const std::exception& e) {
+			replayComplete = false;
+			ERROR_LOG(COMMON, "SH-4 dynarec profile finalization failed: %s", e.what());
+		}
+		try {
 			research::stopPvrTaCaptureRuntime(replayComplete);
 		} catch (const std::exception& e) {
 			ERROR_LOG(COMMON, "PowerVR TA finalization failed: %s", e.what());
+		}
+		try {
+			research::stopGdromCaptureRuntime(replayComplete);
+		} catch (const std::exception& e) {
+			ERROR_LOG(COMMON, "GD-ROM finalization failed: %s", e.what());
+		}
+		try {
+			research::stopAicaCaptureRuntime(replayComplete);
+		} catch (const std::exception& e) {
+			ERROR_LOG(COMMON, "AICA finalization failed: %s", e.what());
+		}
+		try {
+			research::stopCddaCaptureRuntime(replayComplete);
+		} catch (const std::exception& e) {
+			ERROR_LOG(COMMON, "CD-DA finalization failed: %s", e.what());
 		}
 		try {
 			research::stopSh4ObservationCaptureRuntime(replayComplete);
@@ -818,6 +875,7 @@ void Emulator::unloadGame()
 		custom_texture.terminate();
 		state = Init;
 		EventManager::event(Event::Terminate);
+		research::stopResearchControl();
 	}
 }
 

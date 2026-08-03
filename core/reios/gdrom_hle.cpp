@@ -16,6 +16,8 @@
 #include "reios.h"
 #include "imgread/common.h"
 #include "hw/sh4/modules/mmu.h"
+#include "research/gdrom_observation.h"
+#include "research/cdda_observation.h"
 
 #include <algorithm>
 
@@ -84,6 +86,17 @@ struct gdrom_hle_state_t
 };
 static gdrom_hle_state_t gd_hle_state;
 
+static research::CddaDriveState cddaResearchState()
+{
+	research::CddaDriveState state;
+	state.status = static_cast<u32>(cdda.status);
+	state.repeats = cdda.repeats;
+	state.currentFad = cdda.CurrAddr.FAD;
+	state.startFad = cdda.StartAddr.FAD;
+	state.endFad = cdda.EndAddr.FAD;
+	return state;
+}
+
 static int schedId = -1;
 
 static int getGdromTicks()
@@ -109,6 +122,7 @@ static int schedCallback(int tag, int cycles, int jitter, void *arg)
 		gd_hle_state.result[3] = GDC_WAIT_INTERNAL;
 		SecNumber.Status = GD_STANDBY;
 		gd_hle_state.status = GDC_COMPLETE;
+		research::observeReiosGdromComplete(sh4_sched_now64());
 	}
 	gd_hle_state.result[2] = (gd_hle_state.multi_read_total - gd_hle_state.multi_read_count) * 2048;
 
@@ -133,6 +147,8 @@ void reios_deserialize(Deserializer& deser)
 }
 
 void gdrom_hle_reset() {
+	research::resetGdromObservation(sh4_sched_now64());
+	research::resetCddaObservation(sh4_sched_now64());
 	gd_hle_state = {};
 }
 
@@ -184,6 +200,9 @@ static void GDROM_HLE_ReadTOC()
 
 static void readSectors(u32 addr, u32 sector, u32 count, bool virtualAddr)
 {
+	const u32 initialAddr = addr;
+	const u32 initialSector = sector;
+	const u32 initialCount = count;
 	gd_hle_state.cur_sector = sector + count - 1;
 	if (!virtualAddr || !mmu_enabled())
 	{
@@ -192,6 +211,10 @@ static void readSectors(u32 addr, u32 sector, u32 count, bool virtualAddr)
 		if (pDst != NULL)
 		{
 			libGDR_ReadSector(pDst, sector, count, 2048);
+			if (research::reiosGdromObservationCommandActive())
+				research::observeReiosGdromTransfer(initialSector, initialCount,
+						initialAddr, pDst, static_cast<std::size_t>(initialCount) * 2048,
+						sh4_sched_now64());
 			return;
 		}
 	}
@@ -200,6 +223,10 @@ static void readSectors(u32 addr, u32 sector, u32 count, bool virtualAddr)
 	while (count > 0)
 	{
 		libGDR_ReadSector((u8 *)temp, sector, 1, sizeof(temp));
+		if (research::reiosGdromObservationCommandActive())
+			research::observeReiosGdromTransfer(sector, 1, addr,
+					(reinterpret_cast<const u8 *>(temp)), sizeof(temp),
+					sh4_sched_now64());
 
 		for (std::size_t i = 0; i < std::size(temp); i++)
 		{
@@ -384,6 +411,10 @@ u32 SecMode[4];
 
 static void GD_HLE_Command(gd_command cc)
 {
+	const bool observeCdda = research::isReiosCddaControlCommand(
+			static_cast<u32>(cc));
+	const research::CddaDriveState cddaBefore = observeCdda
+			? cddaResearchState() : research::CddaDriveState {};
 	switch(cc)
 	{
 	case GDCC_GETTOC:
@@ -659,6 +690,10 @@ static void GD_HLE_Command(gd_command cc)
 	}
 	if (gd_hle_state.status == GDC_BUSY)
 		gd_hle_state.status = GDC_COMPLETE;
+	if (observeCdda)
+		research::observeReiosCddaControlApplied(gd_hle_state.last_request_id,
+				static_cast<u32>(cc), cddaBefore, cddaResearchState(),
+				gd_hle_state.status != GDC_ERR, sh4_sched_now64());
 	gd_hle_state.command = GDCC_NONE;
 }
 
@@ -701,6 +736,13 @@ void gdrom_hle_op()
 				gd_hle_state.status = GDC_BUSY;
 				gd_hle_state.command = (gd_command)r[4];
 				gd_hle_state.multi_read_count = 0;
+				if (r[4] == GDCC_DMAREAD)
+					research::observeReiosGdromCommand(gd_hle_state.last_request_id,
+							r[4], gd_hle_state.params, sh4_sched_now64());
+				if (research::isReiosCddaControlCommand(r[4]))
+					research::observeReiosCddaControlAccepted(
+							gd_hle_state.last_request_id, r[4], gd_hle_state.params,
+							sh4_sched_now64());
 			}
 			break;
 
@@ -786,6 +828,7 @@ void gdrom_hle_op()
 			DEBUG_LOG(REIOS, "GDROM: HLE RESET");
 			gd_hle_state.last_request_id = 0xFFFFFFFF;
 			gd_hle_state.status = GDC_OK;
+			research::resetGdromObservation(sh4_sched_now64());
 			break;
 
 		case GDROM_GET_DRV_STAT:
@@ -848,6 +891,7 @@ void gdrom_hle_op()
 				r[0] = GDC_OK;
 				gd_hle_state.multi_read_count = 0;
 				gd_hle_state.xfer_end_time = 0;
+				research::observeReiosGdromAbort(r[4], sh4_sched_now64());
 			}
 			else
 			{

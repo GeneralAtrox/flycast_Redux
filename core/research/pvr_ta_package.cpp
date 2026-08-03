@@ -279,11 +279,15 @@ ValidatedPackage validatePackage(const std::filesystem::path& package,
 			|| std::filesystem::is_symlink(status))
 		invalid("package is missing, linked, or not a directory");
 
-	const std::set<std::string> expected {
+	std::set<std::string> expected {
 		"artifact-validator.exe", "identity.json", "job.json",
 		"maple-replay.fcmt", "package-validator.exe", "publisher.ps1",
 		"pvr-ta-manifest.json", "pvr-ta.fcpvr", "static-analysis.bin",
 	};
+	const bool hasPackagedInitialState =
+			std::filesystem::exists(result.root / "initial-state.state");
+	if (hasPackagedInitialState)
+		expected.insert("initial-state.state");
 	std::set<std::string> expectedWithReceipt = expected;
 	if (!issuingReceipt)
 		expectedWithReceipt.insert("package-validation.json");
@@ -291,10 +295,16 @@ ValidatedPackage validatePackage(const std::filesystem::path& package,
 		invalid("package entries do not match the fixed v1 inventory");
 
 	const json job = parseJson(result.root / "job.json", "job");
-	requireKeys(job, {"artifact", "artifact_validator", "base_equivalence_package",
+	std::set<std::string> jobKeys {"artifact", "artifact_validator", "base_equivalence_package",
 			"identity", "limits", "maple_replay", "metadata", "output",
 			"package_id", "package_validator", "publisher", "pvr_manifest",
-			"schema", "schema_version", "static_analysis"}, "job");
+			"schema", "schema_version", "static_analysis"};
+	const bool hasDeclaredInitialState = job.contains("initial_state");
+	if (hasDeclaredInitialState)
+		jobKeys.insert("initial_state");
+	requireKeys(job, jobKeys, "job");
+	if (hasDeclaredInitialState != hasPackagedInitialState)
+		invalid("job and package initial-state presence differ");
 	if (job.at("schema") != "flycast-research-pvr-ta-package-job"
 			|| !job.at("schema_version").is_number_unsigned()
 			|| job.at("schema_version").get<std::uint64_t>() != 1)
@@ -334,6 +344,14 @@ ValidatedPackage validatePackage(const std::filesystem::path& package,
 			"job.maple_replay");
 	const Blob manifestSource = verifySourceBlob(job.at("pvr_manifest"),
 			"job.pvr_manifest");
+	Blob initialStateSource;
+	if (hasDeclaredInitialState)
+	{
+		initialStateSource = verifySourceBlob(job.at("initial_state"),
+				"job.initial_state");
+		requirePackagedCopy(result.root, "initial-state.state", initialStateSource,
+				"initial state");
+	}
 	requireKeys(job.at("artifact"), {"candidate", "maximum_bytes",
 			"maximum_events"}, "job.artifact");
 	const Blob artifactSource = verifySourceBlob(job.at("artifact").at("candidate"),
@@ -356,6 +374,19 @@ ValidatedPackage validatePackage(const std::filesystem::path& package,
 
 	const IdentityManifest identity = loadIdentityManifest(result.root / "identity.json");
 	requireSh4EquivalenceIdentityV2(identity);
+	if (identity.initialState.available != hasDeclaredInitialState)
+		invalid("identity and job initial-state presence differ");
+	if (hasDeclaredInitialState)
+	{
+		if (identity.initialState.size != initialStateSource.size
+				|| !sha256Equal(identity.initialState.digest,
+						initialStateSource.digest))
+			invalid("initial-state bytes differ from the selected identity");
+		authenticateInitialStateFile(identity, result.root / "initial-state.state");
+		requireBlob(fileIdentity(base / "initial-state.state", "base initial state",
+				"base initial state"), initialStateSource,
+				"selected base initial state");
+	}
 	const Sh4ObservationBackend backend = backendName == "dynarec"
 			? Sh4ObservationBackend::Dynarec : Sh4ObservationBackend::Interpreter;
 	if ((identity.runtimeConfiguration.cpuBackend == "dynarec")

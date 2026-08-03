@@ -1,6 +1,8 @@
 #pragma once
 #include "types.h"
 #include "hw/aica/aica_if.h"
+#include "hw/sh4/sh4_sched.h"
+#include "research/aica_observation.h"
 
 namespace aica::arm
 {
@@ -36,7 +38,10 @@ static inline void DYNACALL writeMem(u32 addr, T data)
 	addr &= 0x00FFFFFF;
 	if (addr < 0x800000)
 	{
-		*(T *)&aica_ram[addr & (ARAM_MASK - (sizeof(T) - 1))] = data;
+		const u32 writeAddress = addr & (ARAM_MASK - (sizeof(T) - 1));
+		*(T *)&aica_ram[writeAddress] = data;
+		research::observeAicaRamWriteValue(research::AicaWriter::Arm7,
+				writeAddress, static_cast<u32>(data), sizeof(T), sh4_sched_now64());
 	}
 	else
 	{

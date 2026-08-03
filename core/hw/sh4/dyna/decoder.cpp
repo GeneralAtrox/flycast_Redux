@@ -19,6 +19,9 @@
 #include "decoder_opcodes.h"
 #include "cfg/option.h"
 #include "research/sh4_observation_runtime.h"
+#include "research/sh4_profile.h"
+
+#include <algorithm>
 
 #define BLOCK_MAX_SH_OPS_SOFT 500
 // Research equivalence must expose the same scheduler boundary as the
@@ -29,6 +32,33 @@
 
 static RuntimeBlockInfo* blk;
 static Sh4Cycles cycleCounter;
+
+static u16 readGuestOpcode(u32 address)
+{
+	const u16 opcode = IReadMem16(address);
+	if (!research::sh4DynarecProfileCollectorActive())
+		return opcode;
+	if (blk != nullptr && address >= blk->vaddr)
+	{
+		const std::uint64_t offset = static_cast<std::uint64_t>(address) - blk->vaddr;
+		if ((offset & 1u) == 0 && offset <= BLOCK_MAX_SH_OPS_HARD * 2u)
+		{
+			const std::size_t required = static_cast<std::size_t>(offset) + 2;
+			if (blk->research_guest_bytes.size() < required)
+			{
+				blk->research_guest_bytes.resize(required);
+				blk->research_guest_byte_valid.resize(required);
+			}
+			blk->research_guest_bytes[static_cast<std::size_t>(offset)] =
+					static_cast<u8>(opcode);
+			blk->research_guest_bytes[static_cast<std::size_t>(offset) + 1] =
+					static_cast<u8>(opcode >> 8);
+			blk->research_guest_byte_valid[static_cast<std::size_t>(offset)] = 1;
+			blk->research_guest_byte_valid[static_cast<std::size_t>(offset) + 1] = 1;
+		}
+	}
+	return opcode;
+}
 
 static inline shil_param mk_imm(u32 immv)
 {
@@ -653,7 +683,7 @@ static u32 MatchDiv32(u32 pc , Sh4RegType &reg1,Sh4RegType &reg2 , Sh4RegType &r
 	u32 match=1;
 	for (int i=0;i<32;i++)
 	{
-		u16 opcode=IReadMem16(v_pc);
+		u16 opcode=readGuestOpcode(v_pc);
 		v_pc+=2;
 		if ((opcode&MASK_N)==ROTCL_KEY)
 		{
@@ -669,7 +699,7 @@ static u32 MatchDiv32(u32 pc , Sh4RegType &reg1,Sh4RegType &reg2 , Sh4RegType &r
 			break;
 		}
 		
-		opcode=IReadMem16(v_pc);
+		opcode=readGuestOpcode(v_pc);
 		v_pc+=2;
 		if ((opcode&MASK_N_M)==DIV1_KEY)
 		{
@@ -929,7 +959,7 @@ static bool dec_generic(u32 op)
 					
 					for (int i = 1; i <= 64; i++)
 					{
-						u16 op = IReadMem16(state.cpu.rpc + i * 2);
+						u16 op = readGuestOpcode(state.cpu.rpc + i * 2);
 						blk->guest_cycles += cycleCounter.countCycles(op);
 					}
 					//skip the aggregated opcodes
@@ -966,7 +996,7 @@ static bool dec_generic(u32 op)
 
 					for (int i = 1; i <= 64; i++)
 					{
-						u16 op = IReadMem16(state.cpu.rpc + i * 2);
+						u16 op = readGuestOpcode(state.cpu.rpc + i * 2);
 						blk->guest_cycles += cycleCounter.countCycles(op);
 					}
 					//skip the aggregated opcodes
@@ -1043,6 +1073,12 @@ bool dec_DecodeBlock(RuntimeBlockInfo* rbi,u32 max_cycles)
 	state_Setup(blk->vaddr, blk->fpu_cfg);
 	
 	blk->guest_opcodes = 0;
+	blk->research_guest_bytes.clear();
+	blk->research_guest_byte_valid.clear();
+	blk->research_guest_bytes_complete = false;
+	blk->research_terminal_control_available = false;
+	blk->research_terminal_control_pc = 0;
+	blk->research_terminal_control_opcode = 0;
 	cycleCounter.reset();
 	PendingResearchDelay pendingResearchDelay;
 	// If full MMU, don't allow the block to extend past the end of the current 4K page
@@ -1067,7 +1103,7 @@ bool dec_DecodeBlock(RuntimeBlockInfo* rbi,u32 max_cycles)
 				}
 				else
 				{
-					u32 op = IReadMem16(state.cpu.rpc);
+					u32 op = readGuestOpcode(state.cpu.rpc);
 					const u32 instructionPc = state.cpu.rpc;
 					const u32 cyclesBefore = blk->guest_cycles;
 					if (researchDynarecObservationEnabled())
@@ -1122,6 +1158,13 @@ bool dec_DecodeBlock(RuntimeBlockInfo* rbi,u32 max_cycles)
 					else
 					{
 						OpDesc[op]->rec_oph(op);
+					}
+					if (research::sh4DynarecProfileCollectorActive()
+							&& !state.cpu.is_delayslot && OpDesc[op]->SetPC())
+					{
+						blk->research_terminal_control_available = true;
+						blk->research_terminal_control_pc = instructionPc;
+						blk->research_terminal_control_opcode = static_cast<u16>(op);
 					}
 					if (researchDynarecObservationEnabled())
 					{
@@ -1207,10 +1250,10 @@ bool dec_DecodeBlock(RuntimeBlockInfo* rbi,u32 max_cycles)
 				if ((state.JumpAddr >> 12) == (blk->vaddr >> 12)
 						|| (state.JumpAddr >> 12) == ((blk->vaddr + (blk->guest_opcodes - 1) * 2) >> 12))
 				{
-					u32 op = IReadMem16(state.JumpAddr);
+					u32 op = readGuestOpcode(state.JumpAddr);
 					if (op == 0x000B)	// rts
 					{
-						u16 delayOp = IReadMem16(state.JumpAddr + 2);
+						u16 delayOp = readGuestOpcode(state.JumpAddr + 2);
 						if (delayOp == 0x0000 || delayOp == 0x0009)	// nop
 						{
 							state.NextOp = NDO_NextOp;
@@ -1229,6 +1272,15 @@ bool dec_DecodeBlock(RuntimeBlockInfo* rbi,u32 max_cycles)
 
 _end:
 	blk->sh4_code_size=state.cpu.rpc-blk->vaddr;
+	if (research::sh4DynarecProfileCollectorActive())
+	{
+		blk->research_guest_bytes.resize(blk->sh4_code_size);
+		blk->research_guest_byte_valid.resize(blk->sh4_code_size);
+		blk->research_guest_bytes_complete = blk->sh4_code_size != 0
+				&& std::all_of(blk->research_guest_byte_valid.begin(),
+						blk->research_guest_byte_valid.end(),
+						[](u8 value) { return value != 0; });
+	}
 	blk->NextBlock=state.NextAddr;
 	blk->BranchBlock=state.JumpAddr;
 	blk->BlockType=state.BlockType;

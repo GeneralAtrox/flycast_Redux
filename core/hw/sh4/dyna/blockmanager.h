@@ -44,6 +44,17 @@ struct RuntimeBlockInfo
 	bool has_jcond;
 	bool read_only;
 
+	// Immutable production-dynarec profiling metadata captured while decoding.
+	// The bytes are the exact opcode values consumed by the decoder; they are
+	// never resampled after compilation.
+	std::vector<u8> research_guest_bytes;
+	std::vector<u8> research_guest_byte_valid;
+	bool research_guest_bytes_complete = false;
+	bool research_terminal_control_available = false;
+	u32 research_terminal_control_pc = 0;
+	u16 research_terminal_control_opcode = 0;
+	u64 research_profile_generation = 0;
+
 	std::vector<shil_opcode> oplist;
 	//predecessors references
 	std::vector<RuntimeBlockInfoPtr> pre_refs;

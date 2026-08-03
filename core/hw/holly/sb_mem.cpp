@@ -17,6 +17,8 @@
 #include "hw/mem/addrspace.h"
 #include "hw/bba/bba.h"
 #include "cfg/option.h"
+#include "hw/sh4/sh4_sched.h"
+#include "research/aica_observation.h"
 
 //Area 0 mem map
 //0x00000000- 0x001FFFFF	:MPX	System/Boot ROM
@@ -242,7 +244,12 @@ void DYNACALL WriteMem_area0(u32 paddr, T data)
 	case 6:
 	case 7:
 		// AICA ram
-		WriteMemArr(&aica::aica_ram[0], addr & ARAM_MASK, data);
+		{
+			const u32 writeAddress = (addr & ARAM_MASK) & ~(sizeof(T) - 1);
+			WriteMemArr(&aica::aica_ram[0], writeAddress, data);
+			research::observeAicaRamWriteValue(research::AicaWriter::Sh4Direct,
+					writeAddress, static_cast<u32>(data), sizeof(T), sh4_sched_now64());
+		}
 		return;
 
 	default:

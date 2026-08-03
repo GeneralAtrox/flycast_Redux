@@ -77,11 +77,19 @@ int main(int argc, char *argv[])
 	try
 	{
 		const research::IdentityManifest identity = research::loadIdentityManifest(identityPath);
+		if (identity.schemaVersion == 2)
+			research::requireSh4EquivalenceIdentityV2(identity);
+		else if (identity.schemaVersion == 1)
+			research::requireCaptureV1Identity(identity);
+		else
+			research::requireMapleRecordIdentityV3(identity);
+		const research::Sha256Digest& traceIdentity = identity.hasMapleReplayIdentityDigest
+				? identity.mapleReplayIdentityDigest : identity.digest;
 		const research::MapleTraceSummary summary = research::validateProductionMapleTraceFile(
-				tracePath, identity.digest, maximumBytes);
+				tracePath, traceIdentity, maximumBytes);
 		std::printf("ACCEPTED flycast-maple-trace-v%u\n", summary.schemaVersion);
 		std::printf("schema_version=%u\n", summary.schemaVersion);
-		std::printf("identity_sha256=%s\n", research::sha256ToHex(identity.digest).c_str());
+		std::printf("identity_sha256=%s\n", research::sha256ToHex(traceIdentity).c_str());
 		std::printf("payload_sha256=%s\n",
 				research::sha256ToHex(summary.payloadDigest).c_str());
 		std::printf("dma_count=%llu\n",

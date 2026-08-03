@@ -208,10 +208,13 @@ $sourceJobPath = Assert-Blob $publicationJob.equivalence_job 'job.equivalence_jo
 $sourceJobDirectory = Split-Path -Parent $sourceJobPath
 $sourceJob = Get-Content -LiteralPath $sourceJobPath -Raw -Encoding UTF8 |
     ConvertFrom-Json -Depth 64
-Assert-ExactProperties $sourceJob @(
+$sourceJobProperties = @(
     'schema', 'schema_version', 'job_id', 'interpreter', 'dynarec', 'emulator',
     'replay', 'manifest_set', 'manifests', 'comparator', 'limits', 'metadata'
-) 'equivalence job'
+)
+$hasInitialState = $sourceJob.PSObject.Properties.Name -ccontains 'initial_state'
+if ($hasInitialState) { $sourceJobProperties += 'initial_state' }
+Assert-ExactProperties $sourceJob $sourceJobProperties 'equivalence job'
 if ([string]$sourceJob.schema -cne 'flycast-research-sh4-equivalence-job' -or
         [int]$sourceJob.schema_version -ne 1) {
     throw 'Unsupported SH-4 equivalence job schema.'
@@ -265,6 +268,11 @@ try {
         'equivalence job.emulator' $sourceJobDirectory
     Copy-ExactBlob $sourceJob.replay (Join-Path $candidateDirectory 'maple-replay.fcmt') `
         'equivalence job.replay' $sourceJobDirectory
+    if ($hasInitialState) {
+        Copy-ExactBlob $sourceJob.initial_state `
+            (Join-Path $candidateDirectory 'initial-state.state') `
+            'equivalence job.initial_state' $sourceJobDirectory
+    }
     Copy-ExactBlob $sourceJob.manifest_set `
         (Join-Path $candidateDirectory 'manifest-set.json') `
         'equivalence job.manifest_set' $sourceJobDirectory
@@ -303,6 +311,7 @@ try {
     $localized.dynarec.trace.path = 'dynarec.fcso'
     $localized.emulator.path = 'emulator.bin'
     $localized.replay.path = 'maple-replay.fcmt'
+    if ($hasInitialState) { $localized.initial_state.path = 'initial-state.state' }
     $localized.manifest_set.path = 'manifest-set.json'
     $localized.comparator.executable.path = 'comparator.exe'
     for ($index = 0; $index -lt @($localized.manifests).Count; ++$index) {

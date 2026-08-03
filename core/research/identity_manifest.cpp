@@ -68,8 +68,15 @@ struct ValidatedIdentity
 {
 	std::uint32_t schemaVersion = 0;
 	IdentityRuntimeConfiguration runtimeConfiguration;
+	Sha256Digest configurationDigest {};
 	std::string mediaKind;
 	std::size_t mediaTrackCount = 0;
+	std::filesystem::path mediaSourcePath;
+	std::uint64_t mediaSourceSize = 0;
+	Sha256Digest mediaSourceDigest {};
+	std::vector<MediaTrackIdentity> mediaTracks;
+	std::vector<PersistentDeviceIdentity> persistentDevices;
+	EmulatorExecutableIdentity emulatorExecutable;
 	Sha256Digest bootExecutableDigest {};
 	bool hasStaticAnalysis = false;
 	Sha256Digest staticAnalysisProgramDigest {};
@@ -79,7 +86,25 @@ struct ValidatedIdentity
 	Sha256Digest hookManifestDigest {};
 	bool hasMapleReplayIdentityDigest = false;
 	Sha256Digest mapleReplayIdentityDigest {};
+	InitialStateIdentity initialState;
+	FirmwareIdentity firmware;
 };
+
+BlobIdentity parseBlobIdentity(const json& blob, const std::string& field,
+		bool requirePath)
+{
+	validateBlob(blob, field);
+	BlobIdentity result;
+	result.available = true;
+	result.size = blob.at("size").get<std::uint64_t>();
+	if (blob.contains("path") && !blob.at("path").get<std::string>().empty())
+		result.path = std::filesystem::u8path(blob.at("path").get<std::string>());
+	if (requirePath && result.path.empty())
+		invalid(field + ".path is missing");
+	if (!sha256FromHex(blob.at("sha256").get<std::string>(), result.digest))
+		invalid(field + ".sha256 conversion failed");
+	return result;
+}
 
 std::uint32_t parseImageBase(const std::string& value)
 {
@@ -117,6 +142,7 @@ ValidatedIdentity validateIdentityJson(const json& root)
 		"configuration",
 		"static_analysis",
 		"equivalence",
+		"initial_state",
 	};
 	for (const auto& item : root.items())
 		if (allowedTopLevel.find(item.key()) == allowedTopLevel.end())
@@ -127,11 +153,53 @@ ValidatedIdentity validateIdentityJson(const json& root)
 	if (!root.contains("schema_version") || !root.at("schema_version").is_number_unsigned())
 		invalid("unsupported schema_version");
 	const std::uint64_t schemaVersionValue = root.at("schema_version").get<std::uint64_t>();
-	if (schemaVersionValue != 1 && schemaVersionValue != 2)
+	if (schemaVersionValue != 1 && schemaVersionValue != 2
+			&& schemaVersionValue != 3)
 		invalid("unsupported schema_version");
 	const std::uint32_t schemaVersion = static_cast<std::uint32_t>(schemaVersionValue);
 	if (schemaVersion == 1 && root.contains("equivalence"))
 		invalid("identity v1 does not permit equivalence metadata");
+	if (schemaVersion == 1 && root.contains("initial_state"))
+		invalid("identity v1 does not permit initial_state");
+	if (schemaVersion == 3 && root.contains("equivalence"))
+		invalid("identity v3 does not permit equivalence metadata");
+	if (schemaVersion == 3 && !root.contains("initial_state"))
+		invalid("identity v3 requires initial_state");
+
+	InitialStateIdentity initialState;
+	if (root.contains("initial_state"))
+	{
+		const json& state = requiredObject(root, "initial_state");
+		const std::set<std::string> required {"kind", "slot", "blob"};
+		if (state.size() != required.size())
+			invalid("initial_state is incomplete or unknown");
+		for (const std::string& name : required)
+			if (!state.contains(name))
+				invalid("initial_state." + name + " is missing");
+		if (!state.at("kind").is_string()
+				|| state.at("kind").get<std::string>() != "savestate")
+			invalid("initial_state.kind must be 'savestate'");
+		if (!state.at("slot").is_number_unsigned()
+				|| state.at("slot").get<std::uint64_t>() > 9)
+			invalid("initial_state.slot is outside [0, 9]");
+		validateBlob(state.at("blob"), "initial_state.blob");
+		const json& blob = state.at("blob");
+		if (!blob.contains("path") || !blob.at("path").is_string()
+				|| blob.at("path").get<std::string>().empty())
+			invalid("initial_state.blob.path is missing");
+		if (blob.at("size").get<std::uint64_t>() == 0
+				|| blob.at("size").get<std::uint64_t>() > MaxInitialStateBytes)
+			invalid("initial_state.blob.size is outside the supported range");
+		initialState.available = true;
+		initialState.path = std::filesystem::u8path(
+				blob.at("path").get<std::string>());
+		initialState.size = blob.at("size").get<std::uint64_t>();
+		initialState.slot = static_cast<std::uint32_t>(
+				state.at("slot").get<std::uint64_t>());
+		if (!sha256FromHex(blob.at("sha256").get<std::string>(),
+				initialState.digest))
+			invalid("initial_state.blob.sha256 conversion failed");
+	}
 
 	const json& media = requiredObject(root, "media");
 	if (!media.contains("kind") || !media.at("kind").is_string())
@@ -143,6 +211,16 @@ ValidatedIdentity validateIdentityJson(const json& root)
 	if (mediaKinds.find(mediaKind) == mediaKinds.end())
 		invalid("media.kind is unsupported");
 	validateBlob(media.contains("source") ? media.at("source") : json(), "media.source");
+	const json& mediaSource = media.at("source");
+	const std::filesystem::path mediaSourcePath = mediaSource.contains("path")
+			&& !mediaSource.at("path").get<std::string>().empty()
+			? std::filesystem::u8path(mediaSource.at("path").get<std::string>())
+			: std::filesystem::path {};
+	const std::uint64_t mediaSourceSize = mediaSource.at("size").get<std::uint64_t>();
+	Sha256Digest mediaSourceDigest {};
+	if (!sha256FromHex(mediaSource.at("sha256").get<std::string>(),
+			mediaSourceDigest))
+		invalid("media.source.sha256 conversion failed");
 	validateBlob(media.contains("ip_bin") ? media.at("ip_bin") : json(), "media.ip_bin");
 	validateBlob(media.contains("boot_executable") ? media.at("boot_executable") : json(),
 			"media.boot_executable");
@@ -154,6 +232,7 @@ ValidatedIdentity validateIdentityJson(const json& root)
 			|| !media.at("boot_executable").at("name").is_string()
 			|| media.at("boot_executable").at("name").get<std::string>().empty())
 		invalid("media.boot_executable.name is missing");
+	std::vector<MediaTrackIdentity> mediaTracks;
 	if (media.contains("tracks"))
 	{
 		if (!media.at("tracks").is_array())
@@ -171,6 +250,19 @@ ValidatedIdentity validateIdentityJson(const json& root)
 			if (trackNumber == 0 || trackNumber > 99 || trackNumber <= previousTrack)
 				invalid(field + ".track must be strictly increasing in [1, 99]");
 			previousTrack = trackNumber;
+			MediaTrackIdentity parsed;
+			if (track.contains("path") && !track.at("path").get<std::string>().empty())
+				parsed.path = std::filesystem::u8path(track.at("path").get<std::string>());
+			parsed.size = track.at("size").get<std::uint64_t>();
+			if (!sha256FromHex(track.at("sha256").get<std::string>(), parsed.digest))
+				invalid(field + ".sha256 conversion failed");
+			parsed.track = static_cast<std::uint32_t>(trackNumber);
+			parsed.startFad = static_cast<std::uint32_t>(
+					track.at("start_fad").get<std::uint64_t>());
+			parsed.sectorSize = static_cast<std::uint32_t>(
+					track.at("sector_size").get<std::uint64_t>());
+			parsed.offset = track.at("offset").get<std::uint64_t>();
+			mediaTracks.push_back(std::move(parsed));
 		}
 	}
 
@@ -180,21 +272,31 @@ ValidatedIdentity validateIdentityJson(const json& root)
 	const std::string firmwareMode = firmware.at("mode").get<std::string>();
 	if (firmwareMode != "real" && firmwareMode != "hle")
 		invalid("firmware.mode must be 'real' or 'hle'");
-	validateBlob(firmware.contains("flash_initial") ? firmware.at("flash_initial") : json(),
-			"firmware.flash_initial");
+	FirmwareIdentity firmwareIdentity;
+	firmwareIdentity.mode = firmwareMode == "real" ? FirmwareMode::Real
+			: FirmwareMode::Hle;
+	firmwareIdentity.initialFlash = parseBlobIdentity(
+			firmware.contains("flash_initial") ? firmware.at("flash_initial") : json(),
+			"firmware.flash_initial", firmwareMode == "real");
 	if (firmwareMode == "real")
 	{
 		if (!firmware.contains("bios") || firmware.at("bios").is_null())
 			invalid("real firmware requires firmware.bios");
-		validateBlob(firmware.at("bios"), "firmware.bios");
+		firmwareIdentity.bios = parseBlobIdentity(firmware.at("bios"),
+				"firmware.bios", true);
 	}
 	else if (!firmware.contains("hle_identity") || !firmware.at("hle_identity").is_string()
 			|| firmware.at("hle_identity").get<std::string>().empty())
 	{
 		invalid("HLE firmware requires firmware.hle_identity");
 	}
+	else
+	{
+		firmwareIdentity.hleIdentity = firmware.at("hle_identity").get<std::string>();
+	}
 
 	const json& devices = requiredArray(root, "persistent_devices");
+	std::vector<PersistentDeviceIdentity> persistentDevices;
 	for (std::size_t i = 0; i < devices.size(); ++i)
 	{
 		const json& device = devices.at(i);
@@ -209,6 +311,14 @@ ValidatedIdentity validateIdentityJson(const json& root)
 		if (device.at("bus").get<std::uint64_t>() > 3
 				|| device.at("port").get<std::uint64_t>() > 5)
 			invalid(field + " bus/port is out of range");
+		PersistentDeviceIdentity parsed;
+		parsed.kind = device.at("kind").get<std::string>();
+		parsed.bus = static_cast<std::uint32_t>(
+				device.at("bus").get<std::uint64_t>());
+		parsed.port = static_cast<std::uint32_t>(
+				device.at("port").get<std::uint64_t>());
+		parsed.blob = parseBlobIdentity(device, field, false);
+		persistentDevices.push_back(std::move(parsed));
 	}
 
 	const json& emulator = requiredObject(root, "emulator");
@@ -222,6 +332,16 @@ ValidatedIdentity validateIdentityJson(const json& root)
 		invalid("emulator.git_commit must be 40 lowercase hexadecimal characters");
 	validateBlob(emulator.contains("executable") ? emulator.at("executable") : json(),
 			"emulator.executable");
+	const json& executable = emulator.at("executable");
+	EmulatorExecutableIdentity emulatorExecutable;
+	if (executable.contains("path")
+			&& !executable.at("path").get<std::string>().empty())
+		emulatorExecutable.path = std::filesystem::u8path(
+				executable.at("path").get<std::string>());
+	emulatorExecutable.size = executable.at("size").get<std::uint64_t>();
+	if (!sha256FromHex(executable.at("sha256").get<std::string>(),
+			emulatorExecutable.digest))
+		invalid("emulator.executable.sha256 conversion failed");
 
 	const json& configuration = requiredObject(root, "configuration");
 	if (!configuration.contains("values") || !configuration.at("values").is_object())
@@ -235,34 +355,47 @@ ValidatedIdentity validateIdentityJson(const json& root)
 		invalid("configuration.values.cpu_backend must be a string");
 	runtimeConfiguration.cpuBackend = cpuBackend.get<std::string>();
 	if (schemaVersion == 1 && runtimeConfiguration.cpuBackend != "interpreter")
-		invalid("identity v1 configuration.values.cpu_backend must be 'interpreter'");
-	if (schemaVersion == 2 && runtimeConfiguration.cpuBackend != "interpreter"
+		invalid("Maple record identity configuration.values.cpu_backend must be 'interpreter'");
+	if ((schemaVersion == 2 || schemaVersion == 3)
+			&& runtimeConfiguration.cpuBackend != "interpreter"
 			&& runtimeConfiguration.cpuBackend != "dynarec")
-		invalid("identity v2 configuration.values.cpu_backend is unsupported");
-	if (schemaVersion == 2)
+		invalid("identity configuration.values.cpu_backend is unsupported");
+	if (schemaVersion == 2 || schemaVersion == 3)
 	{
 		const json& observation = requiredConfigurationValue(values,
 				"dynarec_observation");
 		if (!observation.is_boolean())
 			invalid("configuration.values.dynarec_observation must be boolean");
 		runtimeConfiguration.dynarecObservation = observation.get<bool>();
-		if (runtimeConfiguration.dynarecObservation
-				!= (runtimeConfiguration.cpuBackend == "dynarec"))
-			invalid("identity v2 dynarec_observation must match cpu_backend");
+		if (runtimeConfiguration.cpuBackend == "interpreter"
+				&& runtimeConfiguration.dynarecObservation)
+			invalid("interpreter execution cannot enable dynarec_observation");
 		const json& rtcSeed = requiredConfigurationValue(values,
 				"dreamcast_rtc_seed");
 		if (!rtcSeed.is_number_unsigned()
 				|| rtcSeed.get<std::uint64_t>()
 						> std::numeric_limits<std::uint32_t>::max())
-			invalid("identity v2 dreamcast_rtc_seed is outside [0, 4294967295]");
+			invalid("dreamcast_rtc_seed is outside [0, 4294967295]");
 		runtimeConfiguration.dreamcastRtcSeed =
 				static_cast<std::uint32_t>(rtcSeed.get<std::uint64_t>());
 	}
+	if (values.contains("dynarec_profile"))
+	{
+		if (!values.at("dynarec_profile").is_boolean())
+			invalid("configuration.values.dynarec_profile must be boolean");
+		runtimeConfiguration.dynarecProfile =
+				values.at("dynarec_profile").get<bool>();
+		if (runtimeConfiguration.dynarecProfile
+				&& (runtimeConfiguration.cpuBackend != "dynarec"
+						|| runtimeConfiguration.dynarecObservation))
+			invalid("dynarec_profile requires normal dynarec execution without instruction markers");
+	}
+	if (schemaVersion == 3 && runtimeConfiguration.cpuBackend == "dynarec"
+			&& !runtimeConfiguration.dynarecProfile)
+		invalid("identity v3 dynarec recording requires dynarec_profile");
 	for (const auto& [name, destination] : {
 			std::pair<const char *, bool *>("threaded_rendering",
 					&runtimeConfiguration.threadedRendering),
-			std::pair<const char *, bool *>("autoload_state",
-					&runtimeConfiguration.autoLoadState),
 			std::pair<const char *, bool *>("autosave_state",
 					&runtimeConfiguration.autoSaveState),
 			std::pair<const char *, bool *>("ggpo", &runtimeConfiguration.ggpo),
@@ -273,6 +406,24 @@ ValidatedIdentity validateIdentityJson(const json& root)
 			invalid(std::string("configuration.values.") + name + " must be false");
 		*destination = false;
 	}
+	const json& autoLoadState = requiredConfigurationValue(values,
+			"autoload_state");
+	if (!autoLoadState.is_boolean()
+			|| autoLoadState.get<bool>() != initialState.available)
+		invalid("configuration.values.autoload_state must match initial_state availability");
+	runtimeConfiguration.autoLoadState = autoLoadState.get<bool>();
+	if (initialState.available)
+	{
+		const json& slot = requiredConfigurationValue(values, "savestate_slot");
+		if (!slot.is_number_unsigned()
+				|| slot.get<std::uint64_t>() != initialState.slot)
+			invalid("configuration.values.savestate_slot must match initial_state.slot");
+		runtimeConfiguration.savestateSlot = initialState.slot;
+	}
+	else if (values.contains("savestate_slot"))
+	{
+		invalid("configuration.values.savestate_slot requires initial_state");
+	}
 	if (values.contains("maple_dma_checkpoint"))
 	{
 		const json& checkpoint = values.at("maple_dma_checkpoint");
@@ -282,6 +433,13 @@ ValidatedIdentity validateIdentityJson(const json& root)
 			invalid("configuration.values.maple_dma_checkpoint is outside [1, 10000000]");
 		runtimeConfiguration.mapleDmaCheckpoint = checkpoint.get<std::uint64_t>();
 	}
+	if (schemaVersion == 3 && runtimeConfiguration.mapleDmaCheckpoint == 0)
+		invalid("identity v3 requires configuration.values.maple_dma_checkpoint");
+	if (schemaVersion == 3 && (values.contains("sh4_observation_start_dma")
+			|| values.contains("pvr_ta_start_dma")
+			|| values.contains("pvr_draw_configuration")
+			|| values.contains("aica_configuration")))
+		invalid("identity v3 only permits state-started Maple recording settings");
 	if (values.contains("sh4_observation_start_dma"))
 	{
 		const json& startDma = values.at("sh4_observation_start_dma");
@@ -300,6 +458,85 @@ ValidatedIdentity validateIdentityJson(const json& root)
 				|| startDma.get<std::uint64_t>() > MaximumMapleDmaCheckpoint)
 			invalid("configuration.values.pvr_ta_start_dma is outside [1, 10000000]");
 		runtimeConfiguration.pvrTaStartDma = startDma.get<std::uint64_t>();
+	}
+	if (values.contains("pvr_draw_configuration"))
+	{
+		if (schemaVersion != 2)
+			invalid("only identity v2 permits configuration.values.pvr_draw_configuration");
+		const json& draw = values.at("pvr_draw_configuration");
+		if (!draw.is_object())
+			invalid("configuration.values.pvr_draw_configuration must be an object");
+		const std::set<std::string> required {
+			"renderer", "per_strip_sorting", "translucent_polygon_depth_mask",
+			"modifier_volumes", "render_resolution", "emulate_framebuffer",
+			"fix_upscale_bleeding_edge",
+		};
+		if (draw.size() != required.size())
+			invalid("configuration.values.pvr_draw_configuration is incomplete or unknown");
+		for (const std::string& name : required)
+			if (!draw.contains(name))
+				invalid("configuration.values.pvr_draw_configuration." + name + " is missing");
+		PvrDrawConfiguration& parsed = runtimeConfiguration.pvrDrawConfiguration;
+		if (!draw.at("renderer").is_string()
+				|| draw.at("renderer").get<std::string>() != "directx11")
+			invalid("configuration.values.pvr_draw_configuration.renderer must be 'directx11'");
+		parsed.renderer = draw.at("renderer").get<std::string>();
+		for (const auto& [name, destination] : {
+			std::pair<const char *, bool *>("per_strip_sorting", &parsed.perStripSorting),
+			std::pair<const char *, bool *>("translucent_polygon_depth_mask",
+					&parsed.translucentPolygonDepthMask),
+			std::pair<const char *, bool *>("modifier_volumes", &parsed.modifierVolumes),
+			std::pair<const char *, bool *>("emulate_framebuffer", &parsed.emulateFramebuffer),
+			std::pair<const char *, bool *>("fix_upscale_bleeding_edge",
+					&parsed.fixUpscaleBleedingEdge),
+		})
+		{
+			if (!draw.at(name).is_boolean())
+				invalid(std::string("configuration.values.pvr_draw_configuration.")
+						+ name + " must be boolean");
+			*destination = draw.at(name).get<bool>();
+		}
+		if (!draw.at("render_resolution").is_number_unsigned()
+				|| draw.at("render_resolution").get<std::uint64_t>() == 0
+				|| draw.at("render_resolution").get<std::uint64_t>() > 16384)
+			invalid("configuration.values.pvr_draw_configuration.render_resolution is outside [1, 16384]");
+		parsed.renderResolution = static_cast<std::uint32_t>(
+				draw.at("render_resolution").get<std::uint64_t>());
+		parsed.available = true;
+	}
+	if (values.contains("aica_configuration"))
+	{
+		if (schemaVersion != 2)
+			invalid("only identity v2 permits configuration.values.aica_configuration");
+		const json& aica = values.at("aica_configuration");
+		const std::set<std::string> required {"dsp_enabled", "vmu_sound",
+				"sample_rate", "sample_format", "output_stage"};
+		if (!aica.is_object() || aica.size() != required.size())
+			invalid("configuration.values.aica_configuration is incomplete or unknown");
+		for (const std::string& name : required)
+			if (!aica.contains(name))
+				invalid("configuration.values.aica_configuration." + name + " is missing");
+		AicaConfiguration& parsed = runtimeConfiguration.aicaConfiguration;
+		if (!aica.at("dsp_enabled").is_boolean()
+				|| !aica.at("vmu_sound").is_boolean())
+			invalid("configuration.values.aica_configuration boolean field is invalid");
+		parsed.dspEnabled = aica.at("dsp_enabled").get<bool>();
+		parsed.vmuSound = aica.at("vmu_sound").get<bool>();
+		if (parsed.vmuSound)
+			invalid("configuration.values.aica_configuration.vmu_sound must be false");
+		if (!aica.at("sample_rate").is_number_unsigned()
+				|| aica.at("sample_rate").get<std::uint64_t>() != 44100)
+			invalid("configuration.values.aica_configuration.sample_rate must be 44100");
+		parsed.sampleRate = 44100;
+		if (!aica.at("sample_format").is_string()
+				|| aica.at("sample_format").get<std::string>() != "signed-pcm16-le-stereo")
+			invalid("configuration.values.aica_configuration.sample_format is unsupported");
+		parsed.sampleFormat = aica.at("sample_format").get<std::string>();
+		if (!aica.at("output_stage").is_string()
+				|| aica.at("output_stage").get<std::string>() != "pre-backend-pre-user-volume")
+			invalid("configuration.values.aica_configuration.output_stage is unsupported");
+		parsed.outputStage = aica.at("output_stage").get<std::string>();
+		parsed.available = true;
 	}
 	if (!configuration.contains("sha256"))
 		invalid("configuration.sha256 is missing");
@@ -367,8 +604,15 @@ ValidatedIdentity validateIdentityJson(const json& root)
 	ValidatedIdentity result;
 	result.schemaVersion = schemaVersion;
 	result.runtimeConfiguration = runtimeConfiguration;
+	result.configurationDigest = declaredConfiguration;
 	result.mediaKind = mediaKind;
 	result.mediaTrackCount = media.contains("tracks") ? media.at("tracks").size() : 0;
+	result.mediaSourcePath = mediaSourcePath;
+	result.mediaSourceSize = mediaSourceSize;
+	result.mediaSourceDigest = mediaSourceDigest;
+	result.mediaTracks = std::move(mediaTracks);
+	result.persistentDevices = std::move(persistentDevices);
+	result.emulatorExecutable = std::move(emulatorExecutable);
 	result.bootExecutableDigest = bootExecutableDigest;
 	result.hasStaticAnalysis = hasStaticAnalysis;
 	result.staticAnalysisProgramDigest = staticAnalysisProgramDigest;
@@ -378,6 +622,8 @@ ValidatedIdentity validateIdentityJson(const json& root)
 	result.hookManifestDigest = hookManifestDigest;
 	result.hasMapleReplayIdentityDigest = hasMapleReplayIdentityDigest;
 	result.mapleReplayIdentityDigest = mapleReplayIdentityDigest;
+	result.initialState = initialState;
+	result.firmware = std::move(firmwareIdentity);
 	return result;
 }
 
@@ -467,8 +713,16 @@ IdentityManifest loadIdentityManifest(const std::filesystem::path& path)
 		const ValidatedIdentity validated = validateIdentityJson(root);
 		manifest.schemaVersion = validated.schemaVersion;
 		manifest.runtimeConfiguration = validated.runtimeConfiguration;
+		manifest.firmware = validated.firmware;
+		manifest.configurationDigest = validated.configurationDigest;
 		manifest.mediaKind = validated.mediaKind;
 		manifest.mediaTrackCount = validated.mediaTrackCount;
+		manifest.mediaSourcePath = validated.mediaSourcePath;
+		manifest.mediaSourceSize = validated.mediaSourceSize;
+		manifest.mediaSourceDigest = validated.mediaSourceDigest;
+		manifest.mediaTracks = validated.mediaTracks;
+		manifest.persistentDevices = validated.persistentDevices;
+		manifest.emulatorExecutable = validated.emulatorExecutable;
 		manifest.bootExecutableDigest = validated.bootExecutableDigest;
 		manifest.hasStaticAnalysis = validated.hasStaticAnalysis;
 		manifest.staticAnalysisProgramDigest = validated.staticAnalysisProgramDigest;
@@ -478,6 +732,7 @@ IdentityManifest loadIdentityManifest(const std::filesystem::path& path)
 		manifest.hookManifestDigest = validated.hookManifestDigest;
 		manifest.hasMapleReplayIdentityDigest = validated.hasMapleReplayIdentityDigest;
 		manifest.mapleReplayIdentityDigest = validated.mapleReplayIdentityDigest;
+		manifest.initialState = validated.initialState;
 	}
 	catch (const nlohmann::json::exception& exception)
 	{
@@ -485,6 +740,104 @@ IdentityManifest loadIdentityManifest(const std::filesystem::path& path)
 	}
 	manifest.digest = sha256(manifest.bytes.data(), manifest.bytes.size());
 	return manifest;
+}
+
+Sha256Digest pvrDrawConfigurationDigest(const PvrDrawConfiguration& configuration)
+{
+	if (!configuration.available)
+		invalid("PowerVR draw configuration is unavailable");
+	const std::string canonical =
+			"renderer=" + configuration.renderer
+			+ ";per_strip_sorting=" + std::to_string(configuration.perStripSorting)
+			+ ";translucent_polygon_depth_mask="
+			+ std::to_string(configuration.translucentPolygonDepthMask)
+			+ ";modifier_volumes=" + std::to_string(configuration.modifierVolumes)
+			+ ";render_resolution=" + std::to_string(configuration.renderResolution)
+			+ ";emulate_framebuffer=" + std::to_string(configuration.emulateFramebuffer)
+			+ ";fix_upscale_bleeding_edge="
+			+ std::to_string(configuration.fixUpscaleBleedingEdge);
+	return sha256(canonical.data(), canonical.size());
+}
+
+Sha256Digest aicaConfigurationDigest(const AicaConfiguration& configuration)
+{
+	if (!configuration.available)
+		throw std::invalid_argument("AICA configuration is unavailable");
+	const json canonical = {
+		{"dsp_enabled", configuration.dspEnabled},
+		{"output_stage", configuration.outputStage},
+		{"sample_format", configuration.sampleFormat},
+		{"sample_rate", configuration.sampleRate},
+		{"vmu_sound", configuration.vmuSound},
+	};
+	const std::string bytes = canonical.dump();
+	return sha256(bytes.data(), bytes.size());
+}
+
+void authenticateInitialStateFile(const IdentityManifest& manifest,
+		const std::filesystem::path& loadedPath)
+{
+	if (!manifest.initialState.available)
+		return;
+	const std::vector<std::uint8_t> bytes = readFileExact(loadedPath,
+			MaxInitialStateBytes);
+	if (bytes.size() != manifest.initialState.size
+			|| !sha256Equal(sha256(bytes.data(), bytes.size()),
+					manifest.initialState.digest))
+		throw std::runtime_error(
+				"initial state loaded by Flycast differs from research identity");
+}
+
+namespace
+{
+void authenticateBlobFile(const BlobIdentity& blob, const char *description)
+{
+	if (!blob.available || blob.path.empty())
+		throw std::runtime_error(std::string(description) + " has no file authority");
+	const auto bytes = readFileExact(blob.path, blob.size);
+	if (bytes.size() != blob.size
+			|| !sha256Equal(sha256(bytes.data(), bytes.size()), blob.digest))
+		throw std::runtime_error(std::string(description)
+				+ " differs from research identity");
+}
+} // namespace
+
+void authenticateFirmwareFiles(const IdentityManifest& manifest)
+{
+	if (manifest.firmware.mode == FirmwareMode::Real)
+	{
+		authenticateBlobFile(manifest.firmware.bios, "BIOS file");
+		authenticateBlobFile(manifest.firmware.initialFlash, "initial flash file");
+	}
+}
+
+void authenticateLoadedDreamcastFirmware(const IdentityManifest& manifest,
+		bool useReios, const std::uint8_t* loadedBios, std::size_t loadedBiosBytes)
+{
+	const bool expectsReal = manifest.firmware.mode == FirmwareMode::Real;
+	if (expectsReal == useReios)
+		throw std::runtime_error("running firmware mode differs from research identity");
+	if (!expectsReal)
+		return;
+	if (!manifest.firmware.bios.available
+			|| manifest.firmware.bios.size != DreamcastBiosBytes
+			|| loadedBios == nullptr || loadedBiosBytes != DreamcastBiosBytes)
+		throw std::runtime_error("loaded Dreamcast BIOS has no valid research authority");
+	if (!sha256Equal(sha256(loadedBios, loadedBiosBytes),
+			manifest.firmware.bios.digest))
+		throw std::runtime_error("loaded Dreamcast BIOS differs from research identity");
+}
+
+void authenticateLoadedDreamcastFlash(const IdentityManifest& manifest,
+		const std::uint8_t* loadedFlash, std::size_t loadedFlashBytes)
+{
+	if (!manifest.firmware.initialFlash.available
+			|| manifest.firmware.initialFlash.size != DreamcastFlashBytes
+			|| loadedFlash == nullptr || loadedFlashBytes != DreamcastFlashBytes)
+		throw std::runtime_error("loaded Dreamcast flash has no valid research authority");
+	if (!sha256Equal(sha256(loadedFlash, loadedFlashBytes),
+			manifest.firmware.initialFlash.digest))
+		throw std::runtime_error("loaded Dreamcast flash differs from research identity");
 }
 
 void requireCaptureV1Identity(const IdentityManifest& manifest)
@@ -499,6 +852,26 @@ void requireCaptureV1Identity(const IdentityManifest& manifest)
 		invalid("capture-v1 requires at least one media track");
 }
 
+void requireMapleRecordIdentityV3(const IdentityManifest& manifest)
+{
+	if (manifest.schemaVersion != 3)
+		invalid("state-started Maple recording requires identity schema_version 3");
+	if (!manifest.initialState.available)
+		invalid("identity v3 requires an authenticated initial state");
+	const bool interpreter = manifest.runtimeConfiguration.cpuBackend == "interpreter"
+			&& !manifest.runtimeConfiguration.dynarecObservation
+			&& !manifest.runtimeConfiguration.dynarecProfile;
+	const bool profiledDynarec = manifest.runtimeConfiguration.cpuBackend == "dynarec"
+			&& !manifest.runtimeConfiguration.dynarecObservation
+			&& manifest.runtimeConfiguration.dynarecProfile;
+	if (!interpreter && !profiledDynarec)
+		invalid("identity v3 Maple recording requires interpreter or production-profile dynarec execution");
+	if (manifest.runtimeConfiguration.mapleDmaCheckpoint == 0)
+		invalid("identity v3 Maple recording requires a DMA checkpoint");
+	if (manifest.mediaKind != "gdi" || manifest.mediaTrackCount == 0)
+		invalid("identity v3 Maple recording requires GDI media with tracks");
+}
+
 void requireSh4EquivalenceIdentityV2(const IdentityManifest& manifest)
 {
 	if (manifest.schemaVersion != 2)
@@ -511,6 +884,27 @@ void requireSh4EquivalenceIdentityV2(const IdentityManifest& manifest)
 	if (manifest.runtimeConfiguration.dynarecObservation
 			!= (manifest.runtimeConfiguration.cpuBackend == "dynarec"))
 		invalid("SH-4 equivalence identity dynarec observation mismatch");
+}
+
+void requireSh4DynarecProfileIdentityV2(const IdentityManifest& manifest)
+{
+	if (manifest.schemaVersion != 2)
+		invalid("SH-4 dynarec profiling requires identity schema_version 2");
+	if (!manifest.hasMapleReplayIdentityDigest)
+		invalid("SH-4 dynarec profile identity is missing Maple replay provenance");
+	if (manifest.runtimeConfiguration.cpuBackend != "dynarec"
+			|| manifest.runtimeConfiguration.dynarecObservation
+			|| !manifest.runtimeConfiguration.dynarecProfile)
+		invalid("SH-4 dynarec profile identity does not select normal profiled dynarec execution");
+}
+
+void requireSh4DynarecProfileRecordIdentityV3(const IdentityManifest& manifest)
+{
+	requireMapleRecordIdentityV3(manifest);
+	if (manifest.runtimeConfiguration.cpuBackend != "dynarec"
+			|| manifest.runtimeConfiguration.dynarecObservation
+			|| !manifest.runtimeConfiguration.dynarecProfile)
+		invalid("SH-4 dynarec profile record identity does not select normal profiled dynarec execution");
 }
 
 bool pathsAlias(const std::filesystem::path& lhs, const std::filesystem::path& rhs)

@@ -69,7 +69,9 @@ TEST(ResearchPvrTaObservation, CapturesAcceptedBlockAndRenderCausality)
 	std::array<std::uint8_t, 32> block {};
 	for (std::size_t index = 0; index < block.size(); ++index)
 		block[index] = static_cast<std::uint8_t>(index);
-	research::observePvrTaAcceptedBlock(research::PvrTaInputSource::StoreQueue,
+	const research::PvrTaBlockProvenance provenance =
+			research::observePvrTaAcceptedBlock(
+			research::PvrTaInputSource::StoreQueue,
 			0xe0000020, 0x10000020, block.data(), 0x00100000, 0,
 			7, 0, 0, 1, 102);
 	const std::uint32_t selected[] {0x00100000};
@@ -99,6 +101,11 @@ TEST(ResearchPvrTaObservation, CapturesAcceptedBlockAndRenderCausality)
 	EXPECT_EQ(0u, observed[1].listTypeAfter);
 	EXPECT_EQ(0u, observed[1].parserStateBefore);
 	EXPECT_EQ(1u, observed[1].parserStateAfter);
+	EXPECT_TRUE(provenance.available);
+	EXPECT_EQ(observed[1].contextGeneration, provenance.contextGeneration);
+	EXPECT_EQ(observed[1].contextBlockOrdinal, provenance.contextBlockOrdinal);
+	EXPECT_EQ(observed[1].initiator.generation,
+			provenance.initiator.generation);
 	EXPECT_EQ(transcript.regionBase, observed[2].regionBase);
 	EXPECT_EQ(transcript.fpuParamCfg, observed[2].fpuParamCfg);
 	ASSERT_EQ(transcript.readCount, observed[2].renderSelectionReadCount);
@@ -189,6 +196,30 @@ TEST(ResearchPvrTaObservation,
 	ASSERT_EQ(2u, secondRender.selectedContexts.size());
 	EXPECT_EQ(0u, secondRender.selectedContexts[0].generation);
 	EXPECT_EQ(secondGeneration, secondRender.selectedContexts[1].generation);
+}
+
+TEST(ResearchPvrTaObservation,
+		RestoredContextWithoutObservedTaInputIsNotClaimedAsCausalEvidence)
+{
+	std::vector<research::PvrTaObservation> observed;
+	PvrSubscription subscription(research::subscribePvrTaObservations(
+			research::PvrTaObservationFilter {},
+			[&observed](const research::PvrTaObservation& observation) {
+				observed.push_back(observation);
+			}));
+	const std::uint32_t selected[] {0x00100000};
+	const bool rendererAvailable[] {true};
+	const auto transcript = selectionTranscript();
+
+	research::observePvrTaStartRender(selected, rendererAvailable, 1,
+			&transcript, 1);
+
+	ASSERT_EQ(1u, observed.size());
+	ASSERT_EQ(1u, observed[0].selectedContexts.size());
+	EXPECT_EQ(0x00100000u, observed[0].selectedContexts[0].address);
+	EXPECT_FALSE(observed[0].renderContextAvailable);
+	EXPECT_FALSE(observed[0].selectedContexts[0].available);
+	EXPECT_EQ(0u, observed[0].selectedContexts[0].generation);
 }
 
 TEST(ResearchPvrTaObservation, FiltersSourcesAndIsolatesCallbackFailures)

@@ -124,13 +124,19 @@ static void AicaInternalDMA()
 			u32 addr = ((CommonData->DMEA_hi << 16) | (CommonData->DMEA_lo << 2)) & ARAM_MASK;
 			u32 len = std::min(CommonData->DLG, ARAM_SIZE - addr);
 			memset(&aica_ram[addr], 0, len * 4);
+			if (research::aicaObservationBusActive())
+			{
+				std::vector<u8> zeroes(len * 4);
+				research::observeAicaRamWrite(research::AicaWriter::AicaInternalDma,
+						addr, zeroes.data(), zeroes.size(), sh4_sched_now64());
+			}
 		}
 		else
 		{
 			// to regs
 			u32 addr = CommonData->DRGA << 2;
 			for (u32 i = 0; i < CommonData->DLG; i++, addr += 4)
-				writeAicaReg(addr, (u32)0);
+				writeAicaReg(addr, (u32)0, research::AicaWriter::AicaInternalDma);
 		}
 	}
 	else
@@ -143,13 +149,20 @@ static void AicaInternalDMA()
 		{
 			// reg to wave mem
 			for (u32 i = 0; i < len; i++, waddr += 4, raddr += 4)
-				*(u32*)&aica_ram[waddr] = readAicaReg<u32>(raddr);
+			{
+				const u32 value = readAicaReg<u32>(raddr);
+				*(u32*)&aica_ram[waddr] = value;
+				research::observeAicaRamWriteValue(
+						research::AicaWriter::AicaInternalDma, waddr, value,
+						sizeof(value), sh4_sched_now64());
+			}
 		}
 		else
 		{
 			// wave mem to regs
 			for (u32 i = 0; i < len; i++, waddr += 4, raddr += 4)
-				writeAicaReg(raddr, *(u32*)&aica_ram[waddr]);
+				writeAicaReg(raddr, *(u32*)&aica_ram[waddr],
+						research::AicaWriter::AicaInternalDma);
 		}
 	}
 	CommonData->DEXE = 0;
@@ -258,6 +271,7 @@ void init()
 
 void reset(bool hard)
 {
+	research::resetAicaObservation(sh4_sched_now64());
 	if (hard)
 	{
 		initMem();

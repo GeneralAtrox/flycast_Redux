@@ -12,6 +12,7 @@
 #include "ngen.h"
 #include "decoder.h"
 #include "oslib/virtmem.h"
+#include "research/sh4_profile.h"
 
 #if FEAT_SHREC != DYNAREC_NONE
 
@@ -25,6 +26,55 @@ static u8* TempCodeCache;
 ptrdiff_t cc_rx_offset;
 
 static std::unordered_set<u32> smc_hotspots;
+
+static research::Sh4DynarecBranchKind profileBranchKind(u16 opcode)
+{
+	const u16 high = opcode & 0xff00u;
+	if (high == 0x8900u || high == 0x8b00u
+			|| high == 0x8d00u || high == 0x8f00u)
+		return research::Sh4DynarecBranchKind::Conditional;
+	if ((opcode & 0xf000u) == 0xb000u || (opcode & 0xf0ffu) == 0x0003u
+			|| (opcode & 0xf0ffu) == 0x400bu)
+		return research::Sh4DynarecBranchKind::Call;
+	if (opcode == 0x000bu || opcode == 0x002bu)
+		return research::Sh4DynarecBranchKind::Return;
+	if ((opcode & 0xf000u) == 0xa000u || (opcode & 0xf0ffu) == 0x0023u
+			|| (opcode & 0xf0ffu) == 0x402bu)
+		return research::Sh4DynarecBranchKind::Jump;
+	return research::Sh4DynarecBranchKind::None;
+}
+
+static void registerProfileBlock(RuntimeBlockInfo& block)
+{
+	if (!research::sh4DynarecProfileCollectorActive())
+		return;
+	research::Sh4DynarecBlockDefinition definition;
+	definition.virtualAddress = block.vaddr;
+	definition.physicalAddress = block.addr;
+	definition.fpuConfiguration = block.fpu_cfg.full;
+	definition.guestCodeSize = block.sh4_code_size;
+	definition.guestCycles = block.guest_cycles;
+	definition.guestOpcodes = block.guest_opcodes;
+	definition.guestBytes = block.research_guest_bytes;
+	definition.byteStatus = block.research_guest_bytes_complete
+			? research::Sh4DynarecProfileByteStatus::Complete
+			: research::Sh4DynarecProfileByteStatus::Incomplete;
+	if (block.research_terminal_control_available)
+	{
+		const auto branchKind = profileBranchKind(
+				block.research_terminal_control_opcode);
+		if (branchKind != research::Sh4DynarecBranchKind::None)
+		{
+			definition.branchSource = block.research_terminal_control_pc;
+			definition.branchOpcode = block.research_terminal_control_opcode;
+			definition.branchKind = branchKind;
+			definition.branchTarget = block.BranchBlock;
+			definition.fallthroughTarget = block.NextBlock;
+		}
+	}
+	block.research_profile_generation =
+			research::registerSh4DynarecProfileBlock(std::move(definition));
+}
 
 static Sh4CodeBuffer codeBuffer;
 Sh4Dynarec *sh4Dynarec;
@@ -113,6 +163,7 @@ bool RuntimeBlockInfo::Setup(u32 rpc,fpscr_t rfpu_cfg)
 	BlockType = BET_SCL_Intr;
 	has_fpu_op = false;
 	temp_block = false;
+	research_profile_generation = 0;
 	
 	vaddr = rpc;
 	if (vaddr & 1)
@@ -180,6 +231,7 @@ static DynarecCodeEntryPtr compilePC(u32 blockcheck_failures)
 	}
 	bool do_opts = !rbi->temp_block;
 	bool block_check = !rbi->read_only;
+	registerProfileBlock(*rbi);
 	sh4Dynarec->compile(rbi, block_check, do_opts);
 	verify(rbi->code != nullptr);
 

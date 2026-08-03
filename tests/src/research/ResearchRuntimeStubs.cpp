@@ -2,21 +2,46 @@
 #include "hw/sh4/sh4_cycles.h"
 #include "hw/sh4/sh4_opcode_list.h"
 #include "log/Log.h"
+#include "research/identity_manifest.h"
 #include "ResearchRuntimeStubs.h"
 
 #include <algorithm>
 #include <array>
 #include <cstdarg>
 #include <limits>
+#include <stdexcept>
+
+namespace nvmem
+{
+namespace
+{
+std::uint8_t bios[research::DreamcastBiosBytes] {};
+std::uint8_t flash[research::DreamcastFlashBytes] {};
+std::uint8_t initialFlash[research::DreamcastFlashBytes] {};
+}
+std::uint8_t *getBiosData() { return bios; }
+std::uint8_t *getFlashData() { return flash; }
+const std::uint8_t *getInitialFlashData() { return initialFlash; }
+size_t getInitialFlashSize() { return sizeof(initialFlash); }
+}
 
 namespace config
 {
 
 Option<bool> DynarecEnabled("Dynarec.Enabled", true);
+Option<bool> UseReios("Dreamcast.UseReios", true);
 Option<bool> ThreadedRendering("rend.ThreadedRendering", true);
 Option<bool> AutoLoadState("Dreamcast.AutoLoadState");
+Option<int, false> SavestateSlot("Dreamcast.SavestateSlot");
 Option<bool> AutoSaveState("Dreamcast.AutoSaveState");
 Option<bool> GGPOEnable("GGPO", false, "network");
+RendererOption RendererType;
+Option<bool> TranslucentPolygonDepthMask("rend.TranslucentPolygonDepthMask");
+Option<bool> ModifierVolumes("rend.ModifierVolumes", true);
+Option<bool> PerStripSorting("rend.PerStripSorting");
+Option<int> RenderResolution("rend.Resolution", 480);
+Option<bool> EmulateFramebuffer("rend.EmulateFramebuffer", false);
+Option<bool> FixUpscaleBleedingEdge("rend.FixUpscaleBleedingEdge", true);
 Option<std::string, false> ResearchIdentityManifestPath("IdentityManifest", "", "research");
 Option<std::string, false> ResearchMapleRecordPath("MapleRecord", "", "research");
 Option<std::string, false> ResearchMapleReplayPath("MapleReplay", "", "research");
@@ -40,6 +65,16 @@ Option<int64_t, false> ResearchSh4ObservationMaxBytes(
 		"Sh4ObservationMaxBytes", 512ll * 1024 * 1024, "research");
 Option<int64_t, false> ResearchSh4ObservationStartDma(
 		"Sh4ObservationStartDma", 0, "research");
+Option<std::string, false> ResearchSh4ProfileRecordPath(
+		"Sh4ProfileRecord", "", "research");
+Option<int64_t, false> ResearchSh4ProfileMaxBytes(
+		"Sh4ProfileMaxBytes", 256ll * 1024 * 1024, "research");
+Option<int64_t, false> ResearchSh4ProfileMaxBlocks(
+		"Sh4ProfileMaxBlocks", 1'000'000, "research");
+Option<int64_t, false> ResearchSh4ProfileMaxBranches(
+		"Sh4ProfileMaxBranches", 4'000'000, "research");
+Option<int64_t, false> ResearchSh4ProfileMaxExecutions(
+		"Sh4ProfileMaxExecutions", 1'000'000'000, "research");
 Option<std::string, false> ResearchPvrTaRecordPath(
 		"PvrTaRecord", "", "research");
 Option<std::string, false> ResearchPvrTaManifestPath(
@@ -52,6 +87,14 @@ Option<std::string, false> ResearchPvrPresentationRecordPath(
 		"PvrPresentationRecord", "", "research");
 Option<int64_t, false> ResearchPvrPresentationMaxBytes(
 		"PvrPresentationMaxBytes", 512ll * 1024 * 1024, "research");
+Option<std::string, false> ResearchPvrDrawRecordPath(
+		"PvrDrawRecord", "", "research");
+Option<int64_t, false> ResearchPvrDrawMaxBytes(
+		"PvrDrawMaxBytes", 512ll * 1024 * 1024, "research");
+Option<std::string, false> ResearchGdromRecordPath(
+		"GdromRecord", "", "research");
+Option<int64_t, false> ResearchGdromMaxBytes(
+		"GdromMaxBytes", 512ll * 1024 * 1024, "research");
 Option<int64_t, false> ResearchDreamcastRtcSeed(
 		"DreamcastRtcSeed", -1, "research");
 
@@ -78,6 +121,16 @@ void deleteEntry(const std::string&, const std::string&) {}
 std::vector<std::string> getEntries(const std::string&) { return {}; }
 
 } // namespace config
+
+namespace hostfs
+{
+
+std::string getSavestatePath(int index, bool)
+{
+	return "research-test-state-" + std::to_string(index) + ".state";
+}
+
+} // namespace hostfs
 
 u64 sh4_sched_now64()
 {
@@ -153,6 +206,13 @@ bool writeGuestRam(std::uint32_t address, const std::vector<std::uint8_t>& bytes
 		return false;
 	std::copy(bytes.begin(), bytes.end(), destination);
 	return true;
+}
+
+void setInitialFlashData(const std::vector<std::uint8_t>& bytes)
+{
+	if (bytes.size() != research::DreamcastFlashBytes)
+		throw std::invalid_argument("initial Dreamcast flash test bytes have the wrong size");
+	std::copy(bytes.begin(), bytes.end(), nvmem::initialFlash);
 }
 
 } // namespace research_test

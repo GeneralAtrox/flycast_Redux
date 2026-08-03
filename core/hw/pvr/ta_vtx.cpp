@@ -9,6 +9,7 @@
 #include "pvr_mem.h"
 #include "Renderer_if.h"
 #include "cfg/option.h"
+#include "hw/sh4/sh4_sched.h"
 
 #include <algorithm>
 #include <utility>
@@ -45,6 +46,12 @@ class BaseTAParser
 	}
 
 public:
+	static void setResearchBlockProvenance(
+			const research::PvrTaBlockProvenance* provenance)
+	{
+		CurrentResearchBlock = provenance;
+	}
+
 	static bool startList(u32 listType)
 	{
 		if (CurrentList != ListType_None)
@@ -105,6 +112,40 @@ protected:
 	typedef Ta_Dma* DYNACALL TaListFP(Ta_Dma* data, Ta_Dma* data_end);
 	typedef void TACALL TaPolyParamFP(void* ptr);
 
+	static void appendResearchBlock(
+			std::vector<research::PvrTaBlockProvenance>& destination)
+	{
+		if (CurrentResearchBlock != nullptr && CurrentResearchBlock->available)
+			destination.push_back(*CurrentResearchBlock);
+	}
+
+	static void markCompletedStripAwaitingSecondHalf()
+	{
+		if (CurrentPPlist != nullptr && CurrentPPlist->size() >= 2)
+		{
+			PendingVertexPPlist = CurrentPPlist;
+			PendingVertexPPIndex = CurrentPPlist->size() - 2;
+		}
+	}
+
+	static void appendResearchFirstVertexBlock()
+	{
+		PendingVertexPPlist = nullptr;
+		if (CurrentPP != nullptr)
+			appendResearchBlock(CurrentPP->researchVertexBlocks);
+	}
+
+	static void appendResearchSecondVertexBlock()
+	{
+		if (PendingVertexPPlist != nullptr
+				&& PendingVertexPPIndex < PendingVertexPPlist->size())
+			appendResearchBlock(
+					(*PendingVertexPPlist)[PendingVertexPPIndex].researchVertexBlocks);
+		else if (CurrentPP != nullptr)
+			appendResearchBlock(CurrentPP->researchVertexBlocks);
+		PendingVertexPPlist = nullptr;
+	}
+
 	static void endModVol()
 	{
 		std::vector<ModifierVolumeParam> *list = nullptr;
@@ -121,6 +162,7 @@ protected:
 			if (p->count == 0)
 				list->pop_back();
 		}
+		CurrentMVP = nullptr;
 	}
 
 	static void reset()
@@ -132,10 +174,12 @@ protected:
 		SFaceBaseColor = 0;
 		SFaceOffsColor = 0;
 		lmr = nullptr;
+		CurrentMVP = nullptr;
 		CurrentList = ListType_None;
 		CurrentPP = nullptr;
 		CurrentPPlist = nullptr;
 		VertexDataFP = NullVertexData;
+		PendingVertexPPlist = nullptr;
 	}
 
 	static const u32 *ta_type_lut;
@@ -152,9 +196,13 @@ protected:
 	static u32 SFaceOffsColor;
 	//vdec state variables
 	static ModTriangle* lmr;
+	static ModifierVolumeParam* CurrentMVP;
 
 	static u32 CurrentList;
 	static TaListFP *VertexDataFP;
+	static const research::PvrTaBlockProvenance* CurrentResearchBlock;
+	static std::vector<PolyParam>* PendingVertexPPlist;
+	static std::size_t PendingVertexPPIndex;
 public:
 	static std::vector<PolyParam> *CurrentPPlist;
 	static PolyParam* CurrentPP;
@@ -171,11 +219,15 @@ alignas(4) u8 BaseTAParser::FaceOffsColor1[4];
 u32 BaseTAParser::SFaceBaseColor;
 u32 BaseTAParser::SFaceOffsColor;
 ModTriangle* BaseTAParser::lmr;
+ModifierVolumeParam* BaseTAParser::CurrentMVP;
 u32 BaseTAParser::CurrentList;
 PolyParam* BaseTAParser::CurrentPP;
 std::vector<PolyParam>* BaseTAParser::CurrentPPlist;
 BaseTAParser::TaListFP *BaseTAParser::TaCmd;
 BaseTAParser::TaListFP *BaseTAParser::VertexDataFP;
+const research::PvrTaBlockProvenance* BaseTAParser::CurrentResearchBlock;
+std::vector<PolyParam>* BaseTAParser::PendingVertexPPlist;
+std::size_t BaseTAParser::PendingVertexPPIndex;
 
 template<int Red = 0, int Green = 1, int Blue = 2, int Alpha = 3>
 class TAParserTempl : public BaseTAParser
@@ -334,7 +386,11 @@ case num : {\
 		{
 		fist_half:
 			ta_handle_poly<poly_type,1>(data,0);
-			if (data->pcw.EndOfStrip) EndPolyStrip();
+			if (data->pcw.EndOfStrip)
+			{
+				EndPolyStrip();
+				markCompletedStripAwaitingSecondHalf();
+			}
 			TaCmd=ta_handle_poly<poly_type,2>;
 					
 			data+=SZ32;
@@ -548,6 +604,7 @@ private:
 		d_pp->tcw = pp->tcw;
 		d_pp->pcw = pp->pcw;
 		d_pp->tileclip = tileclip_val;
+		appendResearchBlock(d_pp->researchParameterBlocks);
 
 		if (d_pp->pcw.Texture && fetchTextures)
 			d_pp->texture = renderer->GetTexture(d_pp->tsp, d_pp->tcw);
@@ -598,6 +655,7 @@ private:
 
 		poly_float_color(FaceBaseColor,FaceColor);
 		poly_float_color(FaceOffsColor,FaceOffset);
+		appendResearchBlock(CurrentPP->researchParameterBlocks);
 	}
 
 	// Packed Color, with Two Volumes
@@ -632,6 +690,7 @@ private:
 
 		poly_float_color(FaceBaseColor, FaceColor0);
 		poly_float_color(FaceBaseColor1, FaceColor1);
+		appendResearchBlock(CurrentPP->researchParameterBlocks);
 	}
 
 	static void TACALL AppendPolyParamInvalid(void* vpp) {
@@ -649,6 +708,8 @@ private:
 			CurrentPP = &CurrentPPlist->back();
 			CurrentPP->first = vd_rc.verts.size();
 			CurrentPP->count = 0;
+			CurrentPP->researchPrimitiveGeneration = 0;
+			CurrentPP->researchVertexBlocks.clear();
 		}
 	}
 	
@@ -663,6 +724,7 @@ private:
 	template<class T>
 	static Vertex* vert_cvt_base_(T* vtx)
 	{
+		appendResearchFirstVertexBlock();
 		f32 invW = vtx->xyz[2];
 		vd_rc.verts.emplace_back();
 		Vertex* cv = &vd_rc.verts.back();
@@ -677,6 +739,7 @@ private:
 
 		//Resume vertex base (for B part)
 	#define vert_res_base \
+		appendResearchSecondVertexBlock(); \
 		Vertex* cv = &vd_rc.verts.back();
 
 		//uv 16/32
@@ -980,6 +1043,8 @@ private:
 		d_pp->tcw = spr->tcw;
 		d_pp->pcw = spr->pcw;
 		d_pp->tileclip = tileclip_val;
+		d_pp->researchPrimitiveKind = research::PvrPrimitiveKind::Sprite;
+		appendResearchBlock(d_pp->researchParameterBlocks);
 
 		if (d_pp->pcw.Texture && fetchTextures)
 			d_pp->texture = renderer->GetTexture(d_pp->tsp, d_pp->tcw);
@@ -1003,6 +1068,7 @@ private:
 	{
 		if (CurrentPP == nullptr)
 			return;
+		appendResearchBlock(CurrentPP->researchVertexBlocks);
         CurrentPP->count = 4;
 
         vd_rc.verts.resize(vd_rc.verts.size() + 4);
@@ -1105,6 +1171,8 @@ private:
 		CurrentPP = d_pp;
 		d_pp->first = vd_rc.verts.size();
 		d_pp->count = 0;
+		d_pp->researchPrimitiveGeneration = 0;
+		d_pp->researchVertexBlocks.clear();
 	}
 
 	// Modifier Volumes Vertex handlers
@@ -1131,12 +1199,16 @@ private:
 		p->isp.VolumeLast = param->pcw.Volume != 0;
 		p->first = vd_rc.modtrig.size();
 		p->tileclip = tileclip_val;
+		appendResearchBlock(p->researchParameterBlocks);
+		CurrentMVP = p;
 	}
 
 	static void AppendModVolVertexA(TA_ModVolA* mvv)
 	{
 		if (CurrentList != ListType_Opaque_Modifier_Volume && CurrentList != ListType_Translucent_Modifier_Volume)
 			return;
+		if (CurrentMVP != nullptr)
+			appendResearchBlock(CurrentMVP->researchVertexBlocks);
 		vd_rc.modtrig.emplace_back();
 		lmr = &vd_rc.modtrig.back();
 
@@ -1157,6 +1229,8 @@ private:
 	{
 		if (CurrentList != ListType_Opaque_Modifier_Volume && CurrentList != ListType_Translucent_Modifier_Volume)
 			return;
+		if (CurrentMVP != nullptr)
+			appendResearchBlock(CurrentMVP->researchVertexBlocks);
 		lmr->y2=mvv->y2;
 		lmr->z2=mvv->z2;
 		//update_fz(mvv->z2);
@@ -1165,6 +1239,190 @@ private:
 
 static void getRegionTileClipping(u32& xmin, u32& xmax, u32& ymin, u32& ymax);
 static void getRegionSettings(int passNumber, RenderPass& pass);
+
+static void setPrimitiveIdentity(research::PvrDrawObservation& observation,
+		const TA_context& ctx, u32 renderPass)
+{
+	observation.renderGeneration = ctx.rend.researchRenderGeneration;
+	observation.contextAddress = ctx.Address;
+	observation.renderPass = renderPass;
+	const auto useGeneration = [&observation](
+			const std::vector<research::PvrTaBlockProvenance>& blocks) {
+		for (const auto& block : blocks)
+			if (block.available)
+			{
+				observation.contextGeneration = block.contextGeneration;
+				return;
+			}
+	};
+	useGeneration(observation.parameterBlocks);
+	if (observation.contextGeneration == 0)
+		useGeneration(observation.vertexBlocks);
+}
+
+static research::PvrPrimitiveBounds polygonBounds(const rend_context& context,
+		u32 first, u32 count)
+{
+	research::PvrPrimitiveBounds bounds;
+	if (count == 0 || first > context.verts.size()
+			|| count > context.verts.size() - first)
+		return bounds;
+	const Vertex& initial = context.verts[first];
+	bounds.minimumX = bounds.maximumX = initial.x;
+	bounds.minimumY = bounds.maximumY = initial.y;
+	bounds.minimumZ = bounds.maximumZ = initial.z;
+	for (u32 index = 1; index < count; ++index)
+	{
+		const Vertex& vertex = context.verts[first + index];
+		bounds.minimumX = std::min(bounds.minimumX, vertex.x);
+		bounds.minimumY = std::min(bounds.minimumY, vertex.y);
+		bounds.minimumZ = std::min(bounds.minimumZ, vertex.z);
+		bounds.maximumX = std::max(bounds.maximumX, vertex.x);
+		bounds.maximumY = std::max(bounds.maximumY, vertex.y);
+		bounds.maximumZ = std::max(bounds.maximumZ, vertex.z);
+	}
+	bounds.available = true;
+	return bounds;
+}
+
+static research::PvrPrimitiveBounds modifierBounds(const rend_context& context,
+		u32 first, u32 count)
+{
+	research::PvrPrimitiveBounds bounds;
+	if (count == 0 || first > context.modtrig.size()
+			|| count > context.modtrig.size() - first)
+		return bounds;
+	const ModTriangle& initial = context.modtrig[first];
+	bounds.minimumX = bounds.maximumX = initial.x0;
+	bounds.minimumY = bounds.maximumY = initial.y0;
+	bounds.minimumZ = bounds.maximumZ = initial.z0;
+	const auto include = [&bounds](float x, float y, float z) {
+		bounds.minimumX = std::min(bounds.minimumX, x);
+		bounds.minimumY = std::min(bounds.minimumY, y);
+		bounds.minimumZ = std::min(bounds.minimumZ, z);
+		bounds.maximumX = std::max(bounds.maximumX, x);
+		bounds.maximumY = std::max(bounds.maximumY, y);
+		bounds.maximumZ = std::max(bounds.maximumZ, z);
+	};
+	for (u32 index = 0; index < count; ++index)
+	{
+		const ModTriangle& triangle = context.modtrig[first + index];
+		include(triangle.x0, triangle.y0, triangle.z0);
+		include(triangle.x1, triangle.y1, triangle.z1);
+		include(triangle.x2, triangle.y2, triangle.z2);
+	}
+	bounds.available = true;
+	return bounds;
+}
+
+static void observePolygonPrimitives(TA_context& ctx,
+		std::vector<PolyParam>& parameters, u32 first, u32 last,
+		u32 renderPass, u32 listType, bool includesBackground)
+{
+	if (!research::pvrDrawObservationBusActive())
+		return;
+	last = std::min<u32>(last, parameters.size());
+	for (u32 index = first; index < last; ++index)
+	{
+		PolyParam& parameter = parameters[index];
+		if (parameter.count == 0)
+			continue;
+		const bool background = includesBackground && index == 0;
+		if (!background && (parameter.researchParameterBlocks.empty()
+				|| parameter.researchVertexBlocks.empty()))
+		{
+			// A save state can restore renderer parameters without their
+			// pre-capture TA input. They remain drawable, but are not emitted
+			// as causally reconstructed guest primitives.
+			parameter.researchPrimitiveGeneration = 0;
+			continue;
+		}
+		parameter.researchPrimitiveGeneration =
+				research::allocatePvrPrimitiveGeneration();
+		if (parameter.researchPrimitiveGeneration == 0)
+			continue;
+		research::PvrDrawObservation observation;
+		observation.tick = sh4_sched_now64();
+		observation.primitiveGeneration = parameter.researchPrimitiveGeneration;
+		observation.listType = listType;
+		if (background)
+			parameter.researchPrimitiveKind = research::PvrPrimitiveKind::Background;
+		observation.primitiveKind = background
+				? research::PvrPrimitiveKind::Background
+				: parameter.researchPrimitiveKind;
+		observation.pcw = parameter.pcw.full;
+		observation.isp = parameter.isp.full;
+		observation.tsp = parameter.tsp.full;
+		observation.tcw = parameter.tcw.full;
+		observation.tsp1 = parameter.tsp1.full;
+		observation.tcw1 = parameter.tcw1.full;
+		observation.tileClip = parameter.tileclip;
+		observation.first = parameter.first;
+		observation.count = parameter.count;
+		observation.bounds = polygonBounds(ctx.rend, parameter.first,
+				parameter.count);
+		observation.parameterBlocks = parameter.researchParameterBlocks;
+		observation.vertexBlocks = parameter.researchVertexBlocks;
+		setPrimitiveIdentity(observation, ctx, renderPass);
+		research::observePvrPrimitiveDecoded(std::move(observation));
+	}
+}
+
+static void observeModifierPrimitives(TA_context& ctx,
+		std::vector<ModifierVolumeParam>& parameters, u32 first, u32 last,
+		u32 renderPass, u32 listType)
+{
+	if (!research::pvrDrawObservationBusActive())
+		return;
+	last = std::min<u32>(last, parameters.size());
+	for (u32 index = first; index < last; ++index)
+	{
+		ModifierVolumeParam& parameter = parameters[index];
+		if (parameter.count == 0)
+			continue;
+		if (parameter.researchParameterBlocks.empty()
+				|| parameter.researchVertexBlocks.empty())
+		{
+			parameter.researchPrimitiveGeneration = 0;
+			continue;
+		}
+		parameter.researchPrimitiveGeneration =
+				research::allocatePvrPrimitiveGeneration();
+		if (parameter.researchPrimitiveGeneration == 0)
+			continue;
+		research::PvrDrawObservation observation;
+		observation.tick = sh4_sched_now64();
+		observation.primitiveGeneration = parameter.researchPrimitiveGeneration;
+		observation.listType = listType;
+		observation.primitiveKind = research::PvrPrimitiveKind::ModifierVolume;
+		observation.isp = parameter.isp.full;
+		observation.tileClip = parameter.tileclip;
+		observation.first = parameter.first;
+		observation.count = parameter.count;
+		observation.bounds = modifierBounds(ctx.rend, parameter.first,
+				parameter.count);
+		observation.parameterBlocks = parameter.researchParameterBlocks;
+		observation.vertexBlocks = parameter.researchVertexBlocks;
+		setPrimitiveIdentity(observation, ctx, renderPass);
+		research::observePvrPrimitiveDecoded(std::move(observation));
+	}
+}
+
+static void observeNewPrimitives(TA_context& ctx, const RenderPass& previous,
+		const RenderPass& current, u32 renderPass)
+{
+	observePolygonPrimitives(ctx, ctx.rend.global_param_op, previous.op_count,
+			current.op_count, renderPass, ListType_Opaque, renderPass == 0);
+	observePolygonPrimitives(ctx, ctx.rend.global_param_pt, previous.pt_count,
+			current.pt_count, renderPass, ListType_Punch_Through, false);
+	observePolygonPrimitives(ctx, ctx.rend.global_param_tr, previous.tr_count,
+			current.tr_count, renderPass, ListType_Translucent, false);
+	observeModifierPrimitives(ctx, ctx.rend.global_param_mvo, previous.mvo_count,
+			current.mvo_count, renderPass, ListType_Opaque_Modifier_Volume);
+	observeModifierPrimitives(ctx, ctx.rend.global_param_mvo_tr,
+			previous.mvo_tr_count, current.mvo_tr_count, renderPass,
+			ListType_Translucent_Modifier_Volume);
+}
 
 static void parseRenderPass(RenderPass& pass, const RenderPass& previousPass, rend_context& ctx, bool primRestart)
 {
@@ -1237,13 +1495,25 @@ static void ta_parse_vdrc(TA_context* ctx, bool primRestart)
 	{
 		Ta_Dma* ta_data = (Ta_Dma *)childCtx->getTADataBegin();
 		Ta_Dma* ta_data_end = (Ta_Dma *)childCtx->getTADataEnd();
+		const auto& provenance = childCtx->getTAProvenance();
+		const std::size_t blockCount = static_cast<std::size_t>(
+				ta_data_end - ta_data);
+		const bool trackProvenance = research::pvrDrawObservationBusActive()
+				&& provenance.size() == blockCount;
+		std::size_t blockIndex = 0;
 
 		while (ta_data < ta_data_end)
 			try {
-				ta_data = BaseTAParser::TaCmd(ta_data, ta_data_end);
+				BaseTAParser::setResearchBlockProvenance(trackProvenance
+						? &provenance[blockIndex] : nullptr);
+				Ta_Dma* const callEnd = trackProvenance ? ta_data + 1 : ta_data_end;
+				Ta_Dma* const next = BaseTAParser::TaCmd(ta_data, callEnd);
+				blockIndex += static_cast<std::size_t>(next - ta_data);
+				ta_data = next;
 			} catch (const TAParserException& e) {
 				break;
 			}
+		BaseTAParser::setResearchBlockProvenance(nullptr);
 
 		// Disable blending for opaque polys of the first pass
 		if (pass == 0)
@@ -1270,6 +1540,8 @@ static void ta_parse_vdrc(TA_context* ctx, bool primRestart)
 			render_pass.mvo_count = vd_rc.global_param_mvo.size();
 			render_pass.mvo_tr_count = vd_rc.global_param_mvo_tr.size();
 
+			observeNewPrimitives(*ctx, previousPass, render_pass,
+					static_cast<u32>(pass));
 			parseRenderPass(render_pass, previousPass, vd_rc, primRestart);
 			previousPass = render_pass;
 		}

@@ -22,6 +22,7 @@
 #include "hw/pvr/pvr_mem.h"
 #include "ui/gui.h"
 #include "rend/sorter.h"
+#include "hw/sh4/sh4_sched.h"
 
 #include <memory>
 
@@ -760,6 +761,17 @@ void DX11Renderer::drawList(const std::vector<PolyParam>& gply, int first, int c
 			}
 			setRenderState<Type, SortingEnabled>(params);
 			deviceContext->DrawIndexed(params->count, params->first, 0);
+			const research::PvrDrawPass drawPass =
+					params->researchPrimitiveKind == research::PvrPrimitiveKind::Background
+							? research::PvrDrawPass::Background
+							: Type == ListType_Translucent
+									? research::PvrDrawPass::Translucent
+									: research::PvrDrawPass::Color;
+			research::observePvrDrawConsumed(
+					rendContext->researchRenderGeneration,
+					{params->researchPrimitiveGeneration},
+					research::PvrDrawBackend::DirectX11, drawPass,
+					params->first, params->count, true, sh4_sched_now64());
 		}
 
 		params++;
@@ -775,8 +787,18 @@ void DX11Renderer::drawSorted(int first, int count, bool multipass)
 	for (int p = first; p < end; p++)
 	{
 		const PolyParam* params = &rendContext->global_param_tr[rendContext->sortedTriangles[p].polyIndex];
+		const auto& primitiveGenerations =
+				rendContext->sortedTriangles[p].researchPrimitiveGenerations;
 		setRenderState<ListType_Translucent, true>(params);
 		deviceContext->DrawIndexed(rendContext->sortedTriangles[p].count, rendContext->sortedTriangles[p].first, 0);
+		research::observePvrDrawConsumed(rendContext->researchRenderGeneration,
+				primitiveGenerations.empty()
+						? std::vector<std::uint64_t> {params->researchPrimitiveGeneration}
+						: primitiveGenerations,
+				research::PvrDrawBackend::DirectX11,
+				research::PvrDrawPass::Translucent,
+				rendContext->sortedTriangles[p].first,
+				rendContext->sortedTriangles[p].count, true, sh4_sched_now64());
 	}
 	if (multipass && config::TranslucentPolygonDepthMask)
 	{
@@ -809,10 +831,23 @@ void DX11Renderer::drawSorted(int first, int count, bool multipass)
 		for (int p = first; p < end; p++)
 		{
 			const PolyParam* params = &rendContext->global_param_tr[rendContext->sortedTriangles[p].polyIndex];
+			const auto& primitiveGenerations =
+					rendContext->sortedTriangles[p].researchPrimitiveGenerations;
 			if (!params->isp.ZWriteDis)
 			{
 				setCullMode(params->isp.CullMode);
 				deviceContext->DrawIndexed(rendContext->sortedTriangles[p].count, rendContext->sortedTriangles[p].first, 0);
+				research::observePvrDrawConsumed(
+						rendContext->researchRenderGeneration,
+						primitiveGenerations.empty()
+								? std::vector<std::uint64_t> {
+										params->researchPrimitiveGeneration}
+								: primitiveGenerations,
+						research::PvrDrawBackend::DirectX11,
+						research::PvrDrawPass::Depth,
+						rendContext->sortedTriangles[p].first,
+						rendContext->sortedTriangles[p].count, true,
+						sh4_sched_now64());
 			}
 		}
 	}
@@ -838,6 +873,7 @@ void DX11Renderer::drawModVols(int first, int count)
 	const ModifierVolumeParam *params = &rendContext->global_param_mvo[first];
 
 	int mod_base = -1;
+	int mod_base_param = -1;
 	int curMVMat = -1;
 	int curProjMat = -1;
 
@@ -848,7 +884,10 @@ void DX11Renderer::drawModVols(int first, int count)
 		u32 mv_mode = param.isp.DepthMode;
 
 		if (mod_base == -1)
+		{
 			mod_base = param.first;
+			mod_base_param = cmv;
+		}
 
 		if (param.isNaomi2() && (param.mvMatrix != curMVMat || param.projMatrix != curProjMat))
 		{
@@ -872,6 +911,12 @@ void DX11Renderer::drawModVols(int first, int count)
 		{
 			setCullMode(param.isp.CullMode);
 			deviceContext->Draw(param.count * 3, param.first * 3);
+			research::observePvrDrawConsumed(
+					rendContext->researchRenderGeneration,
+					{param.researchPrimitiveGeneration},
+					research::PvrDrawBackend::DirectX11,
+					research::PvrDrawPass::ModifierVolume,
+					param.first * 3, param.count * 3, false, sh4_sched_now64());
 		}
 
 		if (mv_mode == 1 || mv_mode == 2)
@@ -879,7 +924,18 @@ void DX11Renderer::drawModVols(int first, int count)
 			// Sum the area
 			deviceContext->OMSetDepthStencilState(depthStencilStates.getMVState(mv_mode == 1 ? DepthStencilStates::Inclusion : DepthStencilStates::Exclusion), 1);
 			deviceContext->Draw((param.first + param.count - mod_base) * 3, mod_base * 3);
+			std::vector<std::uint64_t> owners;
+			for (int index = mod_base_param; index <= cmv; ++index)
+				if (params[index].researchPrimitiveGeneration != 0)
+					owners.push_back(params[index].researchPrimitiveGeneration);
+			research::observePvrDrawConsumed(
+					rendContext->researchRenderGeneration, owners,
+					research::PvrDrawBackend::DirectX11,
+					research::PvrDrawPass::ModifierResolve,
+					mod_base * 3, (param.first + param.count - mod_base) * 3,
+					false, sh4_sched_now64());
 			mod_base = -1;
+			mod_base_param = -1;
 		}
 	}
 	//disable culling
@@ -902,6 +958,18 @@ void DX11Renderer::drawModVols(int first, int count)
 	// Use the background poly as a quad
 	deviceContext->VSSetShader(shaders->getMVVertexShader(false), nullptr, 0);
 	deviceContext->DrawIndexed(4, 0, 0);
+	std::vector<std::uint64_t> resolveOwners;
+	if (!rendContext->global_param_op.empty()
+			&& rendContext->global_param_op.front().researchPrimitiveGeneration != 0)
+		resolveOwners.push_back(
+				rendContext->global_param_op.front().researchPrimitiveGeneration);
+	for (int index = 0; index < count; ++index)
+		if (params[index].researchPrimitiveGeneration != 0)
+			resolveOwners.push_back(params[index].researchPrimitiveGeneration);
+	research::observePvrDrawConsumed(rendContext->researchRenderGeneration,
+			resolveOwners, research::PvrDrawBackend::DirectX11,
+			research::PvrDrawPass::ModifierResolve, 0, 4, true,
+			sh4_sched_now64());
 }
 
 void DX11Renderer::drawStrips()

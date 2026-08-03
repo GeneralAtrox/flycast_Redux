@@ -1,0 +1,175 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://flycast-redux.invalid/schemas/flycast-research-evidence-audit-report-v1.schema.json",
+  "title": "Flycast research evidence audit report v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "schema_version",
+    "root",
+    "auditor",
+    "validator_directory",
+    "status",
+    "package_count",
+    "accepted_count",
+    "rejected_count",
+    "packages"
+  ],
+  "properties": {
+    "schema": {
+      "const": "flycast-research-evidence-audit-report"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "root": {
+      "type": "string",
+      "minLength": 1
+    },
+    "auditor": {
+      "$ref": "#/$defs/validator"
+    },
+    "validator_directory": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "enum": ["accepted", "rejected"]
+    },
+    "package_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "accepted_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "rejected_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "packages": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/package"
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "validator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "size", "sha256"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "package": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "type",
+        "schema",
+        "package_id",
+        "status",
+        "receipt_sha256",
+        "content_sha256",
+        "sh4_job_id",
+        "sh4_source_job_sha256",
+        "validators",
+        "validator_output",
+        "diagnostic"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "enum": [
+            "unknown",
+            "capture-v1",
+            "capture-v2",
+            "sh4-equivalence-v1",
+            "sh4-ghidra-v1",
+            "pvr-ta-v1",
+            "pvr-draw-v1",
+            "pvr-presentation-v1",
+            "gdrom-v1",
+            "aica-v1"
+          ]
+        },
+        "schema": {
+          "type": ["string", "null"]
+        },
+        "package_id": {
+          "oneOf": [
+            { "$ref": "#/$defs/uuid" },
+            { "type": "null" }
+          ]
+        },
+        "status": {
+          "enum": ["accepted", "rejected"]
+        },
+        "receipt_sha256": {
+          "oneOf": [
+            { "$ref": "#/$defs/sha256" },
+            { "type": "null" }
+          ]
+        },
+        "content_sha256": {
+          "oneOf": [
+            { "$ref": "#/$defs/sha256" },
+            { "type": "null" }
+          ]
+        },
+        "sh4_job_id": {
+          "oneOf": [
+            { "$ref": "#/$defs/uuid" },
+            { "type": "null" }
+          ]
+        },
+        "sh4_source_job_sha256": {
+          "oneOf": [
+            { "$ref": "#/$defs/sha256" },
+            { "type": "null" }
+          ]
+        },
+        "validators": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/validator"
+          }
+        },
+        "validator_output": {
+          "type": "string",
+          "maxLength": 8192
+        },
+        "diagnostic": {
+          "type": "string",
+          "maxLength": 16384
+        }
+      }
+    }
+  }
+}

@@ -49,17 +49,29 @@ The following values are mandatory in `configuration.values` for Maple v1:
 }
 ```
 
+State-started Maple recording uses
+`flycast-research-identity-v3.schema.json`; it does not extend the frozen v1
+schema. Identity v3 requires an authenticated nonempty save-state blob, an
+interpreter backend, a fixed RTC seed, matching autoload/slot values, and a
+positive terminal Maple DMA checkpoint. The trace remains a Maple binary v1 or
+v2 artifact; only the identity contract is versioned separately. Identity v2
+remains the replay/equivalence identity and points back to the v1 or v3 record
+identity digest that is embedded in the Maple trace.
+
 Additional effective configuration may be included. The declared
 `configuration.sha256` is SHA-256 over the compact UTF-8 serialization of the
 `values` object produced by `nlohmann::json::dump()`; object keys are ordered
 lexicographically.
 
-The emulator validates the manifest schema, configuration digest, and the five
-mandatory runtime values. It then forces and rechecks the corresponding
-Flycast options. It does **not yet** re-hash every media, firmware, executable,
-or persistent-device path named by the manifest. Those inputs must be hashed
-by trusted preparation tooling; the Phase 2 capture transaction performs
-pre-run and post-run authentication automatically.
+The emulator validates the manifest schema and configuration digest, then
+forces and rechecks the corresponding Flycast options. Real-firmware record
+and replay also re-hash the BIOS and initial flash files, require exact 2 MiB
+and 128 KiB Dreamcast sizes, and authenticate both byte arrays loaded in the
+emulated ROM/flash chips. This happens before the first Maple event, so a
+missing BIOS followed by REIOS fallback cannot produce a real-BIOS replay.
+Firmware files are reauthenticated again before clean finalization. Media,
+executable and persistent-device paths remain the responsibility of the Phase
+2 capture transaction, which performs its own pre-run and post-run checks.
 
 ## Record
 

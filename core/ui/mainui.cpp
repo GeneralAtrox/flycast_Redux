@@ -26,6 +26,7 @@
 #include "emulator.h"
 #include "imgui_driver.h"
 #include "profiler/fc_profiler.h"
+#include "research/research_control.h"
 #include "oslib/i18n.h"
 
 #include <chrono>
@@ -38,6 +39,7 @@ static bool forceReinit;
 bool mainui_rend_frame()
 {
 	FC_PROFILE_SCOPE;
+	research::pollResearchControl();
 
 	os_DoEvents();
 	os_UpdateInputState();

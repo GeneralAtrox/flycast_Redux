@@ -104,11 +104,14 @@ function Invoke-OwnedProcess([string]$Executable, [string[]]$Arguments,
 $jobPath = Get-AbsolutePath $Job 'Job' -Existing
 Assert-RegularFile $jobPath 'Job' | Out-Null
 $jobObject = Get-Content -LiteralPath $jobPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 64
-Assert-ExactProperties $jobObject @(
+$jobProperties = @(
     'schema', 'schema_version', 'package_id', 'output', 'base_equivalence_package',
     'identity', 'maple_replay', 'pvr_manifest', 'artifact', 'static_analysis',
     'publisher', 'artifact_validator', 'package_validator', 'limits', 'metadata'
-) 'job'
+)
+$hasInitialState = $jobObject.PSObject.Properties.Name -ccontains 'initial_state'
+if ($hasInitialState) { $jobProperties += 'initial_state' }
+Assert-ExactProperties $jobObject $jobProperties 'job'
 if ([string]$jobObject.schema -cne 'flycast-research-pvr-ta-package-job' -or
         [int]$jobObject.schema_version -ne 1) { throw 'Unsupported package job schema.' }
 $packageId = [string]$jobObject.package_id
@@ -163,6 +166,9 @@ $artifactValidator = Assert-Blob $jobObject.artifact_validator.executable `
     'job.artifact_validator.executable'
 $packageValidator = Assert-Blob $jobObject.package_validator.executable `
     'job.package_validator.executable'
+if ($hasInitialState) {
+    Assert-Blob $jobObject.initial_state 'job.initial_state' | Out-Null
+}
 
 try {
     [IO.Directory]::CreateDirectory($candidate) | Out-Null
@@ -172,6 +178,10 @@ try {
         'job.maple_replay'
     Copy-Blob $jobObject.pvr_manifest (Join-Path $candidate 'pvr-ta-manifest.json') `
         'job.pvr_manifest'
+    if ($hasInitialState) {
+        Copy-Blob $jobObject.initial_state (Join-Path $candidate 'initial-state.state') `
+            'job.initial_state'
+    }
     Copy-Blob $jobObject.artifact.candidate (Join-Path $candidate 'pvr-ta.fcpvr') `
         'job.artifact.candidate'
     Copy-Blob $jobObject.static_analysis.export (Join-Path $candidate 'static-analysis.bin') `

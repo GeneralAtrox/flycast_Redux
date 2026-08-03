@@ -315,6 +315,9 @@ void requireLocalizedJob(const std::filesystem::path& root)
 	setBlobPath(expected, json::json_pointer("/dynarec/trace"), "dynarec.fcso");
 	setBlobPath(expected, json::json_pointer("/emulator"), "emulator.bin");
 	setBlobPath(expected, json::json_pointer("/replay"), "maple-replay.fcmt");
+	if (expected.contains("initial_state"))
+		setBlobPath(expected, json::json_pointer("/initial_state"),
+				"initial-state.state");
 	setBlobPath(expected, json::json_pointer("/manifest_set"), "manifest-set.json");
 	setBlobPath(expected, json::json_pointer("/comparator/executable"), "comparator.exe");
 	if (!expected.contains("manifests") || !expected.at("manifests").is_array())

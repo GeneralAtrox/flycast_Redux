@@ -1,4 +1,5 @@
 #include "research/pvr_ta_observation.h"
+#include "research/pvr_draw_observation.h"
 
 #include <algorithm>
 #include <cstring>
@@ -42,6 +43,11 @@ std::atomic<std::uint64_t> nextContextGeneration {1};
 std::atomic<std::uint64_t> nextRenderGeneration {1};
 std::uint64_t pendingRenderGeneration = 0;
 thread_local bool publishingObservation = false;
+
+bool provenanceActive() noexcept
+{
+	return pvrTaObservationBusActive() || pvrDrawObservationBusActive();
+}
 
 void noteDroppedObservation() noexcept
 {
@@ -167,7 +173,7 @@ PvrTaObservationSubscription subscribe(
 		if (!evidence && activeEvidenceSubscription.load(std::memory_order_acquire))
 			throw std::logic_error(
 					"PowerVR TA evidence observation owns the bus exclusively");
-		if (subscriptions.empty())
+		if (subscriptions.empty() && !pvrDrawObservationBusActive())
 		{
 			const std::lock_guard<std::mutex> stateLock(stateMutex);
 			contexts.clear();
@@ -240,10 +246,26 @@ std::uint64_t pvrTaObservationDroppedCount() noexcept
 	return droppedObservationCount.load(std::memory_order_acquire);
 }
 
+void beginPvrTaProvenanceSession() noexcept
+{
+	try
+	{
+		if (pvrTaObservationBusActive())
+			return;
+		const std::lock_guard<std::mutex> lock(stateMutex);
+		contexts.clear();
+		pendingRenderGeneration = 0;
+	}
+	catch (...)
+	{
+		noteDroppedObservation();
+	}
+}
+
 void observePvrTaListBoundary(bool continuation, std::uint32_t contextAddress,
 		std::uint32_t renderPass, std::uint64_t tick) noexcept
 {
-	if (!pvrTaObservationBusActive())
+	if (!provenanceActive())
 		return;
 	try
 	{
@@ -277,19 +299,19 @@ void observePvrTaListBoundary(bool continuation, std::uint32_t contextAddress,
 	}
 }
 
-void observePvrTaAcceptedBlock(PvrTaInputSource source,
+PvrTaBlockProvenance observePvrTaAcceptedBlock(PvrTaInputSource source,
 		std::uint32_t sourceAddress, std::uint32_t taAddress,
 		const std::uint8_t* block, std::uint32_t contextAddress,
 		std::uint32_t renderPass, std::uint32_t listTypeBefore,
 		std::uint32_t listTypeAfter, std::uint32_t parserStateBefore,
 		std::uint32_t parserStateAfter, std::uint64_t tick) noexcept
 {
-	if (!pvrTaObservationBusActive())
-		return;
+	if (!provenanceActive())
+		return {};
 	if (block == nullptr)
 	{
 		noteDroppedObservation();
-		return;
+		return {};
 	}
 	try
 	{
@@ -314,11 +336,23 @@ void observePvrTaAcceptedBlock(PvrTaInputSource source,
 				observation.contextBlockOrdinal = found->second.nextBlockOrdinal++;
 			}
 		}
+		PvrTaBlockProvenance provenance;
+		provenance.initiator = observation.initiator;
+		provenance.contextAddress = observation.contextAddress;
+		provenance.contextGeneration = observation.contextGeneration;
+		provenance.contextBlockOrdinal = observation.contextBlockOrdinal;
+		provenance.renderPass = observation.renderPass;
+		provenance.source = observation.source;
+		provenance.sourceAddress = observation.sourceAddress;
+		provenance.taAddress = observation.taAddress;
+		provenance.available = observation.contextGeneration != 0;
 		publish(std::move(observation));
+		return provenance;
 	}
 	catch (...)
 	{
 		noteDroppedObservation();
+		return {};
 	}
 }
 
@@ -329,7 +363,7 @@ std::uint64_t observePvrTaStartRender(const std::uint32_t* contextAddresses,
 {
 	const std::uint64_t renderGeneration = nextRenderGeneration.fetch_add(1,
 			std::memory_order_relaxed);
-	if (!pvrTaObservationBusActive())
+	if (!provenanceActive())
 		return renderGeneration;
 	if ((contextCount != 0
 			&& (contextAddresses == nullptr || contextAvailability == nullptr))
@@ -344,8 +378,6 @@ std::uint64_t observePvrTaStartRender(const std::uint32_t* contextAddresses,
 		PvrTaObservation observation = baseObservation(
 				PvrTaObservationType::StartRender, tick);
 		observation.renderGeneration = renderGeneration;
-		observation.renderContextAvailable = contextCount != 0
-				&& contextAvailability[0];
 		observation.regionBase = transcript->regionBase;
 		observation.fpuParamCfg = transcript->fpuParamCfg;
 		observation.renderSelectionReadCount = transcript->readCount;
@@ -358,15 +390,24 @@ std::uint64_t observePvrTaStartRender(const std::uint32_t* contextAddresses,
 			{
 				PvrTaContextRef ref;
 				ref.address = contextAddresses[index];
-				ref.available = contextAvailability[index];
 				const auto found = contexts.find(ref.address);
-				if (ref.available && found != contexts.end())
+				// A TA context restored from a save state is available to the
+				// renderer, but its pre-capture input bytes have no observation
+				// generation. Preserve the selected address while marking that
+				// context unavailable as causal evidence. A later context built
+				// from observed TA blocks receives the normal generation.
+				ref.available = contextAvailability[index]
+						&& found != contexts.end();
+				if (ref.available)
 				{
 					ref.generation = found->second.generation;
 					contexts.erase(found);
 				}
 				observation.selectedContexts.push_back(ref);
 			}
+			observation.renderContextAvailable =
+					!observation.selectedContexts.empty()
+					&& observation.selectedContexts.front().available;
 			pendingRenderGeneration = observation.renderGeneration;
 		}
 		publish(std::move(observation));

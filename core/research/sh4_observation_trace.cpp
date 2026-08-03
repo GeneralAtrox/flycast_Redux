@@ -819,7 +819,9 @@ void Sh4ObservationTraceWriter::write(const Sh4Observation& observation)
 					- Sh4ObservationTraceHeaderSize - summary.payloadBytes)
 		throw std::runtime_error("SH-4 observation trace byte limit exceeded");
 	if (hasEvents && observation.tick < summary.endTick)
-		throw std::logic_error("SH-4 observation trace ticks are not monotonic");
+		throw std::logic_error("SH-4 observation trace ticks are not monotonic: "
+				+ std::to_string(observation.tick) + " follows "
+				+ std::to_string(summary.endTick));
 	if (!hasEvents)
 	{
 		hasEvents = true;

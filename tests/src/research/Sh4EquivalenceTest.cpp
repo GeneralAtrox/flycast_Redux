@@ -292,6 +292,30 @@ struct Fixture
 
 } // namespace
 
+TEST(ResearchSh4Equivalence, ProfileIdentitySelectsNormalDynarecWithoutMarkers)
+{
+	TemporaryDirectory directory;
+	const auto emulator = directory.file("flycast-fixture.exe");
+	const auto identityPath = directory.file("profile-identity.json");
+	writeText(emulator, "profile emulator executable bytes");
+	auto root = identity("dynarec", blob(emulator), std::string(64, '1'));
+	root["configuration"]["values"]["dynarec_observation"] = false;
+	root["configuration"]["values"]["dynarec_profile"] = true;
+	root["configuration"]["sha256"] =
+			digest(root["configuration"]["values"].dump());
+	writeText(identityPath, root.dump());
+	const auto profileIdentity = research::loadIdentityManifest(identityPath);
+	EXPECT_NO_THROW(research::requireSh4DynarecProfileIdentityV2(profileIdentity));
+	EXPECT_THROW(research::requireSh4EquivalenceIdentityV2(profileIdentity),
+			std::runtime_error);
+
+	root["configuration"]["values"]["dynarec_observation"] = true;
+	root["configuration"]["sha256"] =
+			digest(root["configuration"]["values"].dump());
+	writeText(identityPath, root.dump());
+	EXPECT_THROW(research::loadIdentityManifest(identityPath), std::runtime_error);
+}
+
 TEST(ResearchSh4Equivalence, IssuesAndRevalidatesEquivalentTypedReport)
 {
 	TemporaryDirectory directory;

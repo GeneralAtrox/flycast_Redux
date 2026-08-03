@@ -38,6 +38,8 @@ struct EmissionInstructionFrame
 	std::uint8_t memoryWidth = 0;
 	Sh4MemoryAccessKind memoryKind = Sh4MemoryAccessKind::Read;
 	std::uint64_t memoryValue = 0;
+	bool interruptPending = false;
+	Sh4Observation pendingInterrupt;
 };
 
 thread_local std::vector<EmissionInstructionFrame> instructionFrames;
@@ -222,6 +224,15 @@ std::uint64_t dynarecSemanticEndTick(std::uint16_t opcode,
 	if (OpDesc[opcode]->SetPC())
 		dynarecSemanticClock.cycles.reset();
 	return tick;
+}
+
+std::uint64_t dynarecSemanticInterruptTick(std::uint64_t fallbackTick) noexcept
+{
+	const std::uint64_t generation = sh4ObservationSubscriptionGeneration(
+			Sh4ObservationBackend::Dynarec);
+	return dynarecSemanticClock.active
+			&& dynarecSemanticClock.subscriptionGeneration == generation
+			? dynarecSemanticClock.tick : fallbackTick;
 }
 
 bool conditionalBranchTaken(std::uint16_t opcode, std::uint32_t condition) noexcept
@@ -477,6 +488,14 @@ void sh4ObservationInstructionEnd(Sh4ObservationBackend backend,
 		{
 			Sh4Observation end = instructionObservation(backend,
 					Sh4ObservationType::InstructionEnd, pc, opcode, tick, context, depth);
+			if (frame.interruptPending)
+			{
+				// UpdateSR may have entered the interrupt before the interpreter
+				// publishes this end marker. Reconstruct the architectural
+				// pre-interrupt boundary captured by the pending observation.
+				end.nextPc = frame.pendingInterrupt.exceptionPc;
+				end.registers = frame.pendingInterrupt.registers;
+			}
 			if (opcode == 0x000bu)
 			{
 				Sh4Observation returned = end;
@@ -487,6 +506,14 @@ void sh4ObservationInstructionEnd(Sh4ObservationBackend backend,
 				publishSh4Observation(std::move(returned));
 			}
 			publishSh4Observation(std::move(end));
+			if (frame.interruptPending)
+			{
+				Sh4Observation interrupt = frame.pendingInterrupt;
+				// Architecturally, the interrupt is accepted at the boundary
+				// after the SR-changing instruction completes.
+				interrupt.tick = tick;
+				publishSh4Observation(std::move(interrupt));
+			}
 		}
 	}
 	catch (...)
@@ -657,12 +684,45 @@ void sh4ObservationInterruptRaised(Sh4ObservationBackend backend,
 		WARN_LOG(SH4, "SH-4 interrupt reached with an open dynarec timing frame");
 		dynarecExecutionTiming.frames.clear();
 	}
-	// Interrupt checks are scheduler boundaries, never guest-instruction
-	// boundaries. Do not silently relabel one as owned if an earlier failure
-	// leaked a frame: clear the in-process state and leave the already-published
-	// begin unmatched so typed trace validation fails closed.
+	// The interpreter can accept an interrupt synchronously inside RTE or an
+	// LDC-to-SR instruction after the architectural SR write.  That interrupt is
+	// owned by the still-open instruction and the instruction subsequently
+	// reaches its normal end.  Dynarec interrupt checks remain scheduler
+	// boundaries, so an open dynarec frame is still treated as leaked state and
+	// fails closed.
 	if (!instructionFrames.empty())
 	{
+		if (backend == Sh4ObservationBackend::Interpreter)
+		{
+			try
+			{
+				EmissionInstructionFrame& frame = instructionFrames.back();
+				if (frame.interruptPending)
+					throw std::logic_error(
+							"multiple interrupts reached one interpreter instruction");
+				if (frameCanEmit(frame))
+				{
+					frame.pendingInterrupt = instructionObservation(backend,
+							Sh4ObservationType::Exception, context.pc, 0,
+							frame.tick, context, static_cast<std::uint16_t>(
+									0));
+					frame.pendingInterrupt.exceptionPc = context.pc;
+					frame.pendingInterrupt.vectorPc = context.vbr + 0x600u;
+					frame.pendingInterrupt.exceptionCode = interruptCode;
+					frame.interruptPending = true;
+				}
+			}
+			catch (const std::exception& exception)
+			{
+				WARN_LOG(SH4, "SH-4 interrupt observation failed: %s",
+						exception.what());
+			}
+			catch (...)
+			{
+				WARN_LOG(SH4, "SH-4 interrupt observation failed");
+			}
+			return;
+		}
 		WARN_LOG(SH4, "SH-4 interrupt reached with an open observation frame");
 		instructionFrames.clear();
 		return;
@@ -671,6 +731,8 @@ void sh4ObservationInterruptRaised(Sh4ObservationBackend backend,
 	{
 		if (!sh4ObservationBusActive(backend))
 			return;
+		if (backend == Sh4ObservationBackend::Dynarec)
+			tick = dynarecSemanticInterruptTick(tick);
 		Sh4Observation observation = instructionObservation(backend,
 				Sh4ObservationType::Exception, context.pc, 0, tick, context, 0);
 		observation.exceptionPc = context.pc;

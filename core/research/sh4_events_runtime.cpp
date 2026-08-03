@@ -4,6 +4,7 @@
 #include "cfg/option.h"
 #include "hw/sh4/sh4_if.h"
 #include "hw/sh4/sh4_mem.h"
+#include "oslib/oslib.h"
 #include "research/identity_manifest.h"
 #include "research/sh4_observation.h"
 #include "research/sh4_observation_runtime.h"
@@ -54,11 +55,14 @@ std::filesystem::path researchPath(const std::string& value)
 #endif
 }
 
-void applyDeterministicOverrides()
+void applyDeterministicOverrides(const IdentityManifest *identity = nullptr)
 {
 	config::DynarecEnabled.override(false);
 	config::ThreadedRendering.override(false);
-	config::AutoLoadState.override(false);
+	config::AutoLoadState.override(identity != nullptr
+			&& identity->runtimeConfiguration.autoLoadState);
+	if (identity != nullptr && identity->initialState.available)
+		config::SavestateSlot.override(static_cast<int>(identity->initialState.slot));
 	config::AutoSaveState.override(false);
 	config::GGPOEnable.override(false);
 }
@@ -72,6 +76,10 @@ void verifyRuntimeConfiguration(const IdentityManifest& identity)
 		throw FlycastException("SH-4 events identity/runtime threaded-rendering mismatch");
 	if (expected.autoLoadState != config::AutoLoadState.get())
 		throw FlycastException("SH-4 events identity/runtime auto-load-state mismatch");
+	if (expected.autoLoadState
+			&& static_cast<std::uint32_t>(config::SavestateSlot.get())
+					!= expected.savestateSlot)
+		throw FlycastException("SH-4 events identity/runtime save-state slot mismatch");
 	if (expected.autoSaveState != config::AutoSaveState.get())
 		throw FlycastException("SH-4 events identity/runtime auto-save-state mismatch");
 	if (expected.ggpo != config::GGPOEnable.get())
@@ -238,8 +246,6 @@ void startSh4EventsRuntime()
 		return;
 	if (session != nullptr)
 		throw FlycastException("SH-4 events runtime is already active");
-	applyDeterministicOverrides();
-
 	const std::filesystem::path identityPath = researchPath(
 			config::ResearchIdentityManifestPath.get());
 	const std::filesystem::path manifestPath = researchPath(
@@ -264,6 +270,11 @@ void startSh4EventsRuntime()
 	requireDistinctPaths(paths);
 
 	const IdentityManifest identity = loadIdentityManifest(identityPath);
+	applyDeterministicOverrides(&identity);
+	if (identity.initialState.available)
+		authenticateInitialStateFile(identity, researchPath(
+				hostfs::getSavestatePath(static_cast<int>(identity.initialState.slot),
+						false)));
 	const Sh4EventsManifest manifest = loadSh4EventsManifest(manifestPath);
 	verifyRuntimeConfiguration(identity);
 	deferredStopRequested = false;

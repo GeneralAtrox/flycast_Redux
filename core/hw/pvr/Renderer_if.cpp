@@ -341,6 +341,8 @@ private:
 		}
 		research::observePvrRenderCompleted(renderGeneration, renderKind,
 				renderSuccessful, sh4_sched_now64());
+		research::observePvrDrawRenderCompleted(renderGeneration,
+				renderSuccessful, sh4_sched_now64());
 		if (renderSuccessful && renderKind == research::PvrRenderKind::Screen)
 		{
 			lastScreenRenderGeneration = renderGeneration;

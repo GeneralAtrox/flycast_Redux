@@ -6,6 +6,8 @@
 #include "research/pvr_ta_artifact.h"
 #include "research/pvr_ta_capture_runtime.h"
 #include "research/pvr_ta_observation.h"
+#include "research/pvr_draw_artifact.h"
+#include "research/pvr_draw_observation.h"
 #include "research/pvr_presentation_artifact.h"
 #include "research/pvr_presentation_observation.h"
 #include "research/sh4_observation_runtime.h"
@@ -66,10 +68,13 @@ public:
 		config::ResearchPvrTaStartDma.set(0);
 		config::ResearchPvrPresentationRecordPath.set("");
 		config::ResearchPvrPresentationMaxBytes.set(512ll * 1024 * 1024);
+		config::ResearchPvrDrawRecordPath.set("");
+		config::ResearchPvrDrawMaxBytes.set(512ll * 1024 * 1024);
 		config::ResearchMapleTraceMaxBytes.set(512ll * 1024 * 1024);
 		config::ResearchDreamcastRtcSeed.set(-1);
 		config::ResearchDynarecObservation.set(false);
 		config::DynarecEnabled.set(false);
+		config::RendererType.set(RenderType::DirectX11);
 	}
 };
 
@@ -96,6 +101,15 @@ json identityV2(const research::Sha256Digest& replayIdentity)
 		{"autoload_state", false},
 		{"autosave_state", false},
 		{"ggpo", false},
+		{"pvr_draw_configuration", {
+			{"renderer", "directx11"},
+			{"per_strip_sorting", false},
+			{"translucent_polygon_depth_mask", false},
+			{"modifier_volumes", true},
+			{"render_resolution", 480},
+			{"emulate_framebuffer", false},
+			{"fix_upscale_bleeding_edge", true},
+		}},
 	};
 	const json blob {
 		{"path", "descriptive-only.bin"},
@@ -212,8 +226,15 @@ research::PvrTaRenderSelectionTranscript transcript()
 	return result;
 }
 
-void emitCompleteSlice()
+struct CompleteSlice
 {
+	std::uint64_t renderGeneration = 0;
+	std::array<research::PvrTaBlockProvenance, 2> blocks;
+};
+
+CompleteSlice emitCompleteSlice()
+{
+	CompleteSlice result;
 	Sh4Context context {};
 	context.pc = 0x8c010102;
 	context.pr = 0x8c020000;
@@ -222,17 +243,52 @@ void emitCompleteSlice()
 			0x8c010100, 0x2102, 100, context);
 	research::observePvrTaListBoundary(false, 0x00100000, 0, 101);
 	std::array<std::uint8_t, 32> block {};
-	research::observePvrTaAcceptedBlock(research::PvrTaInputSource::StoreQueue,
+	result.blocks[0] = research::observePvrTaAcceptedBlock(
+			research::PvrTaInputSource::StoreQueue,
 			0xe0000020, 0x10000020, block.data(), 0x00100000, 0,
 			7, 0, 0, 1, 102);
+	result.blocks[1] = research::observePvrTaAcceptedBlock(
+			research::PvrTaInputSource::StoreQueue,
+			0xe0000040, 0x10000040, block.data(), 0x00100000, 0,
+			7, 1, 0, 2, 103);
 	const std::uint32_t selected[] {0x00100000};
 	const bool available[] {true};
 	const auto reads = transcript();
-	research::observePvrTaStartRender(selected, available, 1, &reads, 103);
+	result.renderGeneration = research::observePvrTaStartRender(
+			selected, available, 1, &reads, 104);
 	research::sh4ObservationInstructionEnd(
 			research::Sh4ObservationBackend::Interpreter,
-			0x8c010100, 0x2102, 104, context);
+			0x8c010100, 0x2102, 105, context);
 	research::observePvrTaRenderDone(200);
+	return result;
+}
+
+void emitCompleteDrawSlice(const CompleteSlice& slice)
+{
+	using namespace research;
+	PvrDrawObservation primitive;
+	primitive.type = PvrDrawObservationType::PrimitiveDecoded;
+	primitive.tick = 201;
+	primitive.renderGeneration = slice.renderGeneration;
+	primitive.primitiveGeneration = allocatePvrPrimitiveGeneration();
+	primitive.contextAddress = slice.blocks[0].contextAddress;
+	primitive.contextGeneration = slice.blocks[0].contextGeneration;
+	primitive.renderPass = slice.blocks[0].renderPass;
+	primitive.listType = 0;
+	primitive.primitiveKind = PvrPrimitiveKind::PolygonStrip;
+	primitive.ownerClass = PvrPrimitiveOwnerClass::Exact;
+	primitive.count = 3;
+	primitive.bounds.available = true;
+	primitive.bounds.maximumX = 10;
+	primitive.bounds.maximumY = 10;
+	primitive.bounds.maximumZ = 1;
+	primitive.parameterBlocks = {slice.blocks[0]};
+	primitive.vertexBlocks = {slice.blocks[1]};
+	const std::uint64_t primitiveGeneration = primitive.primitiveGeneration;
+	observePvrPrimitiveDecoded(std::move(primitive));
+	observePvrDrawConsumed(slice.renderGeneration, {primitiveGeneration},
+			PvrDrawBackend::DirectX11, PvrDrawPass::Color, 0, 3, true, 202);
+	observePvrDrawRenderCompleted(slice.renderGeneration, true, 203);
 }
 
 void emitCompletePresentationSlice()
@@ -269,6 +325,7 @@ struct FixturePaths
 	std::filesystem::path manifest;
 	std::filesystem::path output;
 	std::filesystem::path presentation;
+	std::filesystem::path draw;
 	std::string manifestBytes;
 };
 
@@ -282,6 +339,7 @@ FixturePaths configureFixture(const TemporaryDirectory& directory,
 		directory.file("pvr-manifest.json"),
 		directory.file("capture.fcpvr"),
 		directory.file("presentation.fcpvrp"),
+		directory.file("draw.fcpvrd"),
 		"",
 	};
 	paths.manifestBytes = json {
@@ -333,6 +391,23 @@ research::PvrPresentationArtifactBinding presentationBindingFor(
 	return result;
 }
 
+research::PvrDrawArtifactBinding drawBindingFor(const FixturePaths& paths)
+{
+	research::PvrDrawArtifactBinding result;
+	result.backend = research::Sh4ObservationBackend::Interpreter;
+	result.identityDigest = research::loadIdentityManifest(paths.identity).digest;
+	result.replayDigest = research::hashFileExact(paths.replay,
+			std::filesystem::file_size(paths.replay));
+	result.taArtifactDigest = research::hashFileExact(paths.output,
+			std::filesystem::file_size(paths.output));
+	result.presentationArtifactDigest = research::hashFileExact(
+			paths.presentation, std::filesystem::file_size(paths.presentation));
+	result.rendererConfigurationDigest = research::pvrDrawConfigurationDigest(
+			research::loadIdentityManifest(paths.identity).runtimeConfiguration
+					.pvrDrawConfiguration);
+	return result;
+}
+
 } // namespace
 
 TEST(ResearchPvrTaCaptureRuntime, FinalizesAuthenticatedCompleteSlice)
@@ -348,7 +423,7 @@ TEST(ResearchPvrTaCaptureRuntime, FinalizesAuthenticatedCompleteSlice)
 	EXPECT_FALSE(research::pvrTaCaptureRuntimeActive());
 	const auto summary = research::validatePvrTaArtifactFile(paths.output,
 			bindingFor(paths), 1024 * 1024, 100);
-	EXPECT_EQ(4u, summary.eventCount);
+	EXPECT_EQ(5u, summary.eventCount);
 }
 
 TEST(ResearchPvrTaCaptureRuntime, FinalizesSameRunPresentationArtifact)
@@ -366,6 +441,60 @@ TEST(ResearchPvrTaCaptureRuntime, FinalizesSameRunPresentationArtifact)
 	const auto presentation = research::validatePvrPresentationArtifactFile(
 			paths.presentation, presentationBindingFor(paths), 1024 * 1024, 100);
 	EXPECT_TRUE(presentation.completeVerticalSlice);
+}
+
+TEST(ResearchPvrTaCaptureRuntime, FinalizesDrawArtifactBoundToSameRun)
+{
+	RuntimeReset reset;
+	TemporaryDirectory directory;
+	const FixturePaths paths = configureFixture(directory);
+	config::RendererType.set(RenderType::DirectX11);
+	config::ResearchPvrPresentationRecordPath.set(paths.presentation.u8string());
+	config::ResearchPvrPresentationMaxBytes.set(1024 * 1024);
+	config::ResearchPvrDrawRecordPath.set(paths.draw.u8string());
+	config::ResearchPvrDrawMaxBytes.set(1024 * 1024);
+	research::configurePvrTaCaptureRuntime();
+	research::startPvrTaCaptureRuntime();
+	const CompleteSlice slice = emitCompleteSlice();
+	emitCompleteDrawSlice(slice);
+	emitCompletePresentationSlice();
+	research::stopPvrTaCaptureRuntime(true);
+	const auto draw = research::validatePvrDrawArtifactFile(paths.draw,
+			drawBindingFor(paths), 1024 * 1024, 100);
+	EXPECT_TRUE(draw.completeVerticalSlice);
+}
+
+TEST(ResearchPvrTaCaptureRuntime, RejectsDrawWithoutIdentityRendererConfiguration)
+{
+	RuntimeReset reset;
+	TemporaryDirectory directory;
+	const FixturePaths paths = configureFixture(directory);
+	json identity = json::parse(std::ifstream(paths.identity));
+	json& values = identity["configuration"]["values"];
+	values.erase("pvr_draw_configuration");
+	identity["configuration"]["sha256"] = digestHex(values.dump());
+	writeText(paths.identity, identity.dump());
+	config::ResearchPvrPresentationRecordPath.set(paths.presentation.u8string());
+	config::ResearchPvrDrawRecordPath.set(paths.draw.u8string());
+	EXPECT_THROW(research::configurePvrTaCaptureRuntime(), std::runtime_error);
+}
+
+TEST(ResearchPvrTaCaptureRuntime, RendererMutationAbandonsDrawSlice)
+{
+	RuntimeReset reset;
+	TemporaryDirectory directory;
+	const FixturePaths paths = configureFixture(directory);
+	config::ResearchPvrPresentationRecordPath.set(paths.presentation.u8string());
+	config::ResearchPvrDrawRecordPath.set(paths.draw.u8string());
+	research::configurePvrTaCaptureRuntime();
+	research::startPvrTaCaptureRuntime();
+	const CompleteSlice slice = emitCompleteSlice();
+	emitCompleteDrawSlice(slice);
+	emitCompletePresentationSlice();
+	config::ModifierVolumes.set(false);
+	EXPECT_THROW(research::stopPvrTaCaptureRuntime(true), std::runtime_error);
+	EXPECT_THROW(research::validatePvrDrawArtifactFile(paths.draw,
+			drawBindingFor(paths), 1024 * 1024, 100), std::runtime_error);
 }
 
 TEST(ResearchPvrTaCaptureRuntime, ChangedManifestLeavesCandidateIncomplete)

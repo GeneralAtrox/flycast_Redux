@@ -19,6 +19,7 @@
     "dynarec": { "$ref": "#/$defs/backend" },
     "emulator": { "$ref": "#/$defs/blob" },
     "replay": { "$ref": "#/$defs/blob" },
+    "initial_state": { "$ref": "#/$defs/blob" },
     "manifest_set": { "$ref": "#/$defs/blob" },
     "manifests": {
       "type": "array",

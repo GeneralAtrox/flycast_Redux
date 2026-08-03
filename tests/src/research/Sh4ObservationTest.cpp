@@ -624,6 +624,52 @@ TEST(ResearchSh4Observation,
 
 }
 
+TEST(ResearchSh4Observation,
+		DynarecBoundaryInterruptUsesTheActiveSemanticClock)
+{
+	using Backend = research::Sh4ObservationBackend;
+	config::ResearchDynarecObservation.override(true);
+	research::sh4DynarecExecutionTimingReset();
+	struct Cleanup
+	{
+		~Cleanup()
+		{
+			research::sh4ObservationResetPreciseTiming();
+			research::sh4DynarecExecutionTimingReset();
+			config::ResearchDynarecObservation.override(false);
+		}
+	} cleanup;
+	std::vector<research::Sh4Observation> observed;
+	research::Sh4ObservationFilter filter;
+	filter.backendMask = research::sh4ObservationBackendBit(Backend::Dynarec);
+	ObservationSubscription subscription(research::subscribeSh4Observations(filter,
+			[&](const research::Sh4Observation& observation) {
+				observed.push_back(observation);
+			}));
+	research::sh4ObservationSetPreciseTiming(Backend::Dynarec, true);
+	Sh4Context context {};
+	context.cycle_counter = 1000;
+	context.vbr = 0x8c000000;
+	shil_opcode begin {};
+	begin.op = shop_research_begin;
+	begin.rs1 = shil_param(0x8c010000);
+	begin.rs2 = shil_param(0x0009);
+	shil_opcode end {};
+	end.op = shop_research_end;
+	end.rs1 = begin.rs1;
+	end.rs2 = begin.rs2;
+	end.rs3 = shil_param(0x8c010002);
+	invokeDynarecMarker(context, begin);
+	invokeDynarecMarker(context, end);
+	context.pc = 0x8c020000;
+	research::sh4ObservationInterruptRaised(Backend::Dynarec, 0x320,
+			observed.back().tick + 500, context);
+
+	ASSERT_EQ(3u, observed.size());
+	EXPECT_EQ(research::Sh4ObservationType::Exception, observed[2].type);
+	EXPECT_EQ(observed[1].tick, observed[2].tick);
+}
+
 TEST(ResearchSh4Observation, DynarecMemoryMarkersPublishOnlyCompletedAccesses)
 {
 	using Backend = research::Sh4ObservationBackend;
@@ -810,6 +856,42 @@ TEST(ResearchSh4Observation,
 	EXPECT_EQ(Type::Exception, observed[1].type);
 	EXPECT_EQ(0u, observed[1].opcode);
 	EXPECT_EQ(0u, observed[1].delaySlotDepth);
+}
+
+TEST(ResearchSh4Observation,
+		InterpreterSynchronousInterruptRetainsInstructionOwnership)
+{
+	using Backend = research::Sh4ObservationBackend;
+	using Type = research::Sh4ObservationType;
+	std::vector<research::Sh4Observation> observed;
+	research::Sh4ObservationFilter filter;
+	filter.backendMask = research::sh4ObservationBackendBit(Backend::Interpreter);
+	ObservationSubscription subscription(research::subscribeSh4Observations(filter,
+			[&](const research::Sh4Observation& observation) {
+				observed.push_back(observation);
+			}));
+	Sh4Context context {};
+	context.pc = 0x8c010002;
+	context.vbr = 0x8c000000;
+	research::sh4ObservationInstructionBegin(Backend::Interpreter, 0x8c010000,
+			0x402eu, 120, context);
+	context.pc = 0x8c020000;
+	research::sh4ObservationInterruptRaised(Backend::Interpreter, 0x320, 121,
+			context);
+	research::sh4ObservationInstructionEnd(Backend::Interpreter, 0x8c010000,
+			0x402eu, 122, context);
+
+	ASSERT_EQ(3u, observed.size());
+	EXPECT_EQ(Type::InstructionBegin, observed[0].type);
+	EXPECT_EQ(Type::InstructionEnd, observed[1].type);
+	EXPECT_EQ(Type::Exception, observed[2].type);
+	EXPECT_EQ(0x8c020000u, observed[2].instructionPc);
+	EXPECT_EQ(0u, observed[2].opcode);
+	EXPECT_EQ(0u, observed[2].delaySlotDepth);
+	EXPECT_EQ(0x8c020000u, observed[2].exceptionPc);
+	EXPECT_EQ(0x8c000600u, observed[2].vectorPc);
+	EXPECT_EQ(122u, observed[2].tick);
+	EXPECT_EQ(0x8c020000u, observed[1].nextPc);
 }
 
 TEST(ResearchSh4Observation, ConditionalDelayMarkersMatchInterpreterNesting)

@@ -11,6 +11,7 @@ using namespace Xbyak::util;
 #include "types.h"
 #include "hw/sh4/sh4_opcode_list.h"
 #include "hw/sh4/dyna/ngen.h"
+#include "research/sh4_profile.h"
 #include "hw/sh4/modules/mmu.h"
 #include "hw/sh4/sh4_interrupts.h"
 
@@ -149,6 +150,11 @@ public:
 		}
 		if (!config::ResearchDynarecObservation.get())
 		{
+			if (block->research_profile_generation != 0)
+			{
+				mov(call_regs64[0], block->research_profile_generation);
+				GenCall((void (*)())research::sh4DynarecProfileBlockEnter);
+			}
 			mov(rax, (uintptr_t)&sh4ctx.cycle_counter);
 			sub(dword[rax], block->guest_cycles);
 		}
@@ -632,6 +638,13 @@ public:
 
 		default:
 			die("Invalid block end type");
+		}
+		if (block->research_profile_generation != 0)
+		{
+			mov(call_regs64[0], block->research_profile_generation);
+			mov(rax, (uintptr_t)&sh4ctx.pc);
+			mov(call_regs[1], dword[rax]);
+			GenCall((void (*)())research::sh4DynarecProfileBlockExit);
 		}
 
 		L(exit_block);

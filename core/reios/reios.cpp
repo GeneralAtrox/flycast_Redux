@@ -428,10 +428,10 @@ static void reios_setup_state(u32 boot_addr)
 	}
 
 	// Set up AICA interrupt masks
-	aica::writeAicaReg(SCIEB_addr, (u16)0x48);
-	aica::writeAicaReg(SCILV0_addr, (u8)0x18);
-	aica::writeAicaReg(SCILV1_addr, (u8)0x50);
-	aica::writeAicaReg(SCILV2_addr, (u8)0x08);
+	aica::writeAicaReg(SCIEB_addr, (u16)0x48, research::AicaWriter::ReiosHle);
+	aica::writeAicaReg(SCILV0_addr, (u8)0x18, research::AicaWriter::ReiosHle);
+	aica::writeAicaReg(SCILV1_addr, (u8)0x50, research::AicaWriter::ReiosHle);
+	aica::writeAicaReg(SCILV2_addr, (u8)0x08, research::AicaWriter::ReiosHle);
 
 	// KOS seems to expect this
 	DMAC_DMAOR.full = 0x8201;

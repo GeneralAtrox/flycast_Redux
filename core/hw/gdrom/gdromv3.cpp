@@ -9,10 +9,14 @@
 #include "hw/holly/holly_intc.h"
 #include "hw/holly/sb.h"
 #include "hw/sh4/modules/dmac.h"
+#include "hw/sh4/sh4_cycles.h"
 #include "hw/sh4/sh4_mem.h"
 #include "hw/sh4/sh4_mmr.h"
 #include "hw/sh4/sh4_sched.h"
 #include "imgread/common.h"
+#include "research/aica_observation.h"
+#include "research/cdda_observation.h"
+#include "research/gdrom_hardware_observation.h"
 #include "serialize.h"
 
 int gdrom_schid;
@@ -66,11 +70,29 @@ GD_HardwareInfo_t GD_HardwareInfo;
 #define printf_spicmd(...) DEBUG_LOG(GDROM, __VA_ARGS__)
 #define printf_subcode(...) DEBUG_LOG(GDROM, __VA_ARGS__)
 
-void libCore_CDDA_Sector(s16* sector)
+static research::CddaDriveState cddaResearchState()
 {
+	research::CddaDriveState state;
+	state.status = static_cast<u32>(cdda.status);
+	state.repeats = cdda.repeats;
+	state.currentFad = cdda.CurrAddr.FAD;
+	state.startFad = cdda.StartAddr.FAD;
+	state.endFad = cdda.EndAddr.FAD;
+	return state;
+}
+
+u64 libCore_CDDA_Sector(s16* sector, CddaSectorProvenance* provenance)
+{
+	const u32 requestedFad = cdda.CurrAddr.FAD;
+	const u32 status = static_cast<u32>(cdda.status);
+	const u32 repeats = cdda.repeats;
+	const research::CddaDriveState before = cddaResearchState();
+	bool readSuccessful = false;
 	if (cdda.status == cdda_t::Playing)
 	{
-		if (libGDR_ReadSector((u8*)sector, cdda.CurrAddr.FAD, 1, 2352, true) == 0)
+		readSuccessful = libGDR_ReadSector((u8*)sector, cdda.CurrAddr.FAD,
+				1, 2352, true) != 0;
+		if (!readSuccessful)
 		{
 			// Stop
 			cdda.CurrAddr.FAD--;	// should stay on the last sector read (reported by subcode with cdda status=terminated)
@@ -102,6 +124,24 @@ void libCore_CDDA_Sector(s16* sector)
 	else {
 		memset(sector, 0, 2352);
 	}
+	const u64 aicaGeneration = research::observeAicaCddaSector(
+			requestedFad, status, repeats,
+			readSuccessful, reinterpret_cast<const u8*>(sector), 2352,
+			sh4_cycles_now());
+	const u64 controlGeneration = research::currentCddaControlGeneration();
+	if (provenance != nullptr)
+	{
+		provenance->available = true;
+		provenance->fad = requestedFad;
+		provenance->status = status;
+		provenance->repeats = repeats;
+		provenance->readSuccessful = readSuccessful;
+		provenance->controlGeneration = controlGeneration;
+	}
+	research::observeCddaSector(aicaGeneration, requestedFad, before,
+			cddaResearchState(), readSuccessful,
+		reinterpret_cast<const u8*>(sector), 2352, sh4_cycles_now());
+	return aicaGeneration;
 }
 
 static void gd_spi_pio_end(const u8* buffer, u32 len, gd_states next_state = gds_pio_end);
@@ -117,7 +157,11 @@ void DmaBuffer::fill(read_params_t& params)
 	u32 count = std::min(params.remaining_sectors, NSECT);
 	size = count * params.sector_type;
 
-	libGDR_ReadSector(cache, params.start_sector, count, params.sector_type);
+	const u32 observedStartFad = params.start_sector;
+	const bool successful = libGDR_ReadSector(cache, params.start_sector,
+			count, params.sector_type) != 0;
+	research::observeGdromHardwareBufferFill(observedStartFad, count,
+			params.sector_type, successful, sh4_cycles_now());
 	params.start_sector += count;
 	params.remaining_sectors -= count;
 }
@@ -235,6 +279,7 @@ static void gd_set_state(gd_states state)
 			GDStatus.BSY=0;
 			//(4)   INTRQ is set, and a host interrupt is issued.
 			asic_RaiseInterrupt(holly_GDROM_CMD);
+			research::observeGdromHardwareCommandInterrupt(sh4_cycles_now());
 			/*
 			The number of bytes normally is the byte number in the register at the time of receiving 
 			the command, but it may also be the total of several devices handled by the buffer at that point.
@@ -259,7 +304,13 @@ static void gd_set_state(gd_states state)
 				}
 
 				u16 *buffer = pio_buff.fill(sector_count * read_params.sector_type);
-				libGDR_ReadSector((u8*)buffer, read_params.start_sector, sector_count, read_params.sector_type);
+				const u32 observedStartFad = read_params.start_sector;
+				const bool successful = libGDR_ReadSector((u8*)buffer,
+						read_params.start_sector, sector_count,
+						read_params.sector_type) != 0;
+				research::observeGdromHardwarePioReady(observedStartFad,
+						sector_count, read_params.sector_type, successful,
+						sh4_cycles_now());
 				read_params.start_sector += sector_count;
 				read_params.remaining_sectors -= sector_count;
 
@@ -295,6 +346,8 @@ static void gd_set_state(gd_states state)
 			GDStatus.BSY=0;
 			//Make INTRQ valid
 			asic_RaiseInterrupt(holly_GDROM_CMD);
+			research::observeGdromHardwareCommandInterrupt(sh4_cycles_now());
+			research::observeGdromHardwareComplete(sh4_cycles_now());
 
 			//command finished !
 			gd_set_state(gds_waitcmd);
@@ -707,6 +760,10 @@ u32 gd_get_subcode(u32 format, u32 fad, u8 *subc_info)
 
 static void gd_process_spi_cmd()
 {
+	const bool observeCdda = research::isGdromPacketCddaControlCommand(
+			packet_cmd.data_8[0]);
+	const research::CddaDriveState cddaBefore = observeCdda
+			? cddaResearchState() : research::CddaDriveState {};
 
 	printf_spi("Sense: %02x %02x %02x", sns_asc, sns_ascq, sns_key);
 
@@ -765,6 +822,10 @@ static void gd_process_spi_cmd()
 			else
 				read_params.remaining_sectors = (readcmd.b[6] << 8) | readcmd.b[7];
 			read_params.sector_type = sector_type;//yeah i know , not really many types supported...
+			research::observeGdromHardwarePacket(packet_cmd.data_8,
+					read_params.start_sector, read_params.remaining_sectors,
+					read_params.sector_type, Features.CDRead.DMA == 1,
+					sh4_cycles_now());
 
 			printf_spicmd("SPI_CD_READ - Sector=%d Size=%d/%d DMA=%d",read_params.start_sector,read_params.remaining_sectors,read_params.sector_type,Features.CDRead.DMA);
 			if (Features.CDRead.DMA == 1) {
@@ -1036,6 +1097,9 @@ static void gd_process_spi_cmd()
 		gd_set_state(gds_procpacketdone);
 		break;
 	}
+	if (observeCdda)
+		research::observeGdromPacketCddaControlApplied(packet_cmd.data_8[0],
+				cddaBefore, cddaResearchState(), true, sh4_cycles_now());
 }
 //Read handler
 u32 ReadMem_gdrom(u32 Addr, u32 sz)
@@ -1044,12 +1108,17 @@ u32 ReadMem_gdrom(u32 Addr, u32 sz)
 	{
 		//cancel interrupt
 	case GD_STATUS_Read :
+		{
+		const u32 observedStatus = GDStatus.full;
 		asic_CancelInterrupt(holly_GDROM_CMD);	//Clear INTRQ signal
+		research::observeGdromHardwareStatusAcknowledged(observedStatus,
+				sh4_cycles_now());
 		if (DriveSel & 0x10)
 			// slave drive doesn't exist
 			return 0;
 		printf_rm("GDROM: STATUS [cancel int](v=%X)",GDStatus.full);
-		return GDStatus.full;
+		return observedStatus;
+		}
 
 	case GD_ALTSTAT_Read:
 		//printf_rm("GDROM: AltStatus (v=%X)",GDStatus.full);
@@ -1076,6 +1145,8 @@ u32 ReadMem_gdrom(u32 Addr, u32 sz)
 			else
 			{
 				u32 rv = pio_buff.read();
+				research::observeGdromHardwarePioWord(static_cast<u16>(rv),
+						sh4_cycles_now());
 				ByteCount.full -= sizeof(u16);
 				if (pio_buff.atEnd())
 				{
@@ -1141,7 +1212,11 @@ void WriteMem_gdrom(u32 Addr, u32 data, u32 sz)
 				packet_cmd.data_16[packet_cmd.index]=(u16)data;
 				packet_cmd.index+=1;
 				if (packet_cmd.index==6)
+				{
+					research::observeGdromPacketCddaControlAccepted(
+							packet_cmd.data_8, sh4_cycles_now());
 					gd_set_state(gds_procpacket);
+				}
 			}
 			else if (gd_state == gds_pio_get_data)
 			{
@@ -1196,6 +1271,10 @@ void WriteMem_gdrom(u32 Addr, u32 data, u32 sz)
 			if (data != ATA_NOP && data != ATA_SOFT_RESET)
 				verify(gd_state == gds_waitcmd);
 			ata_command = (u8)data;
+			if (ata_command == ATA_SPI_PACKET)
+				research::observeGdromHardwareAtaPacket(Features.full,
+						ByteCount.full, static_cast<u32>(gd_state),
+						sh4_cycles_now());
 			gd_set_state(gds_procata);
 		}
 		else
@@ -1279,7 +1358,10 @@ static int GDRomschd(int tag, int cycles, int jitter, void *arg)
 			// transfer up to len bytes
 			const u32 buff_size = std::min(dma_buff.getSize(), len);
 
-			WriteMemBlock_nommu_ptr(src, (const u32 *)dma_buff.read(buff_size), buff_size);
+			const u8 *transferBytes = dma_buff.read(buff_size);
+			WriteMemBlock_nommu_ptr(src, (const u32 *)transferBytes, buff_size);
+			research::observeGdromHardwareDmaTransfer(src, transferBytes,
+					buff_size, sh4_cycles_now());
 			src += buff_size;
 			len -= buff_size;
 		}
@@ -1296,6 +1378,7 @@ static int GDRomschd(int tag, int cycles, int jitter, void *arg)
 	{
 		SB_GDST = 0;
 		asic_RaiseInterrupt(holly_GDROM_DMA);
+		research::observeGdromHardwareDmaInterrupt(sh4_cycles_now());
 	}
 	// Read ALL sectors and all buffer
 	if (read_params.remaining_sectors == 0 && dma_buff.isEmpty())
@@ -1319,6 +1402,8 @@ static void GDROM_DmaStart(u32 addr, u32 data)
 		}
 		SB_GDSTARD = SB_GDSTAR;
 		SB_GDLEND = 0;
+		research::observeGdromHardwareDmaBegin(SB_GDSTAR, SB_GDLEN,
+				SB_GDDIR, SB_GDEN, sh4_cycles_now());
 		DEBUG_LOG(GDROM, "GDROM-DMA start addr %08X len %d fad %x", SB_GDSTAR, SB_GDLEN, read_params.start_sector);
 
 		int ticks = getGDROMTicks();
@@ -1339,6 +1424,9 @@ static void GDROM_DmaEnable(u32 addr, u32 data)
 	{
 		printf_spi("GD-DMA aborted");
 		SB_GDST = 0;
+		research::observeGdromHardwareAbort(
+				research::GdromHardwareAbortReason::DmaDisabled,
+				sh4_cycles_now());
 	}
 }
 
@@ -1357,6 +1445,8 @@ void gdrom_reg_Term()
 
 void gdrom_reg_Reset(bool hard)
 {
+	research::resetCddaObservation(sh4_cycles_now());
+	research::resetGdromHardwareObservation(sh4_cycles_now());
 	if (hard)
 	{
 		hollyRegs.setWriteHandler<SB_GDST_addr>(GDROM_DmaStart);
@@ -1421,6 +1511,8 @@ void serialize(Serializer& ser)
 	pio_buff.serialize(ser);
 	ser << ata_command;
 	ser << cdda;
+	const u64 cddaControlGeneration = research::currentCddaControlGeneration();
+	ser << cddaControlGeneration;
 	ser << gd_state;
 	ser << gd_disk_type;
 	ser << data_write_mode;
@@ -1457,6 +1549,16 @@ void deserialize(Deserializer& deser)
 	deser.skip<u32>(Deserializer::V44); // set_mode_offset (repeat)
 	deser >> ata_command;
 	deser >> cdda;
+	if (deser.version() >= Deserializer::V60)
+	{
+		u64 cddaControlGeneration = 0;
+		deser >> cddaControlGeneration;
+		research::restoreCddaControlGeneration(cddaControlGeneration);
+	}
+	else
+	{
+		research::restoreCddaControlGeneration(0);
+	}
 	deser >> gd_state;
 	deser >> gd_disk_type;
 	deser >> data_write_mode;
@@ -1469,6 +1571,7 @@ void deserialize(Deserializer& deser)
 	deser >> SecNumber;
 	deser >> GDStatus;
 	deser >> ByteCount;
+	research::loadStateGdromHardwareObservation(sh4_cycles_now());
 }
 
 }

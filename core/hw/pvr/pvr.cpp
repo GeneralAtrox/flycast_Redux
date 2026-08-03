@@ -26,6 +26,7 @@
 #include "elan.h"
 #include "hw/sh4/sh4_sched.h"
 #include "research/pvr_presentation_observation.h"
+#include "research/pvr_draw_observation.h"
 #include "research/pvr_ta_observation.h"
 
 // ta.cpp
@@ -42,6 +43,7 @@ void reset(bool hard)
 {
 	research::resetPvrTaObservation(sh4_sched_now64());
 	research::resetPvrPresentationObservation(sh4_sched_now64());
+	research::resetPvrDrawObservation(sh4_sched_now64());
 	Regs_Reset(hard);
 	spg_Reset(hard);
 	if (hard)
@@ -93,6 +95,7 @@ void deserialize(Deserializer& deser)
 {
 	research::resetPvrTaObservation(sh4_sched_now64());
 	research::resetPvrPresentationObservation(sh4_sched_now64());
+	research::resetPvrDrawObservation(sh4_sched_now64());
 	YUV_deserialize(deser);
 
 	deser >> pvr_regs;

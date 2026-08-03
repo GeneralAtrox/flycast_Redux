@@ -2,10 +2,11 @@
 
 ## Boundary
 
-`flycast.research` is a discovery-only view of the canonical native SH-4 and
-Maple observation buses. Lua receives a newly constructed table copied from a
-native observation. It cannot modify the native observation, recorder state,
-typed trace, validator, equivalence receipt, or atomic evidence package.
+`flycast.research` is a discovery-only view of the canonical native SH-4,
+Maple, PowerVR, GD-ROM, and AICA observation buses. Lua receives a newly
+constructed table copied from a native observation. It cannot modify the
+native observation, recorder state, typed trace, validator, equivalence
+receipt, or atomic evidence package.
 
 Lua output is never accepted evidence. Evidence still comes from the native
 typed recorder, independent validator, and atomic publication workflow.
@@ -20,6 +21,10 @@ For a targeted second pass after a producer PC is known, see
 [Lua causal-slice watcher](CausalSliceLuaWatcher.md). It joins the producer's
 pre/post registers, matching accesses, outcome, and explicitly partial
 observed call path without tracing every instruction.
+For filtered hardware discovery, see the
+[hardware Lua watcher](HardwareLuaWatcher.md). It records selected TA,
+semantic draw, PVR register/VRAM, framebuffer/presentation, GD-ROM, and AICA
+events in a bounded JSONL session.
 
 ## API
 
@@ -55,6 +60,17 @@ The initial `event` values are:
 - `maple-request`; and
 - `maple-response`.
 
+PowerVR events are `pvr-ta-list-init`, `pvr-ta-list-continue`, `pvr-ta-block`,
+`pvr-start-render`, `pvr-render-done`, `pvr-ta-reset`, `pvr-register-write`,
+`pvr-vram-write`, `pvr-render-queued`, `pvr-render-completed`,
+`pvr-framebuffer`, `pvr-presentation`, `pvr-presentation-reset`,
+`pvr-primitive`, `pvr-draw`, `pvr-draw-render-completed`, and `pvr-draw-reset`.
+GD-ROM events are `gdrom-command`, `gdrom-transfer`, `gdrom-complete`,
+`gdrom-abort`, and `gdrom-reset`. AICA events are `aica-register-write`,
+`aica-ram-write`, `aica-dma-begin`, `aica-dma-transfer`, `aica-dma-complete`,
+`aica-key-on`, `aica-key-off`, `aica-sample`, `aica-reset`, `aica-key-batch`,
+`aica-cdda-sector`, and `aica-sample-suppressed`.
+
 `event` is required. For SH-4 events, `backend` defaults to `any`. Address
 fields must be provided together, form an inclusive 32-bit interval, and are
 valid only for memory events. `start_pc` and `end_pc` must also be provided
@@ -66,6 +82,15 @@ queue. Maple-only filters on SH-4 events and SH-4-only filters on Maple events
 are rejected rather than ignored. `queue_capacity` defaults to 4096 and may be
 from 1 through 65536. At most 64 Lua subscriptions and 65536 total queued
 deliveries are allowed in one Lua runtime.
+
+`pvr-ta-block` accepts `source` (`store-queue`, `channel2-dma`, or `sort-dma`).
+PVR register/VRAM writes accept an inclusive `start_address`/`end_address`
+range. PVR draw events accept `render_generation`. `gdrom-transfer` accepts an
+inclusive `start_fad`/`end_fad` range. AICA register/RAM writes accept an
+inclusive address range; AICA events accept `writer`; and key events accept a
+zero-based `channel`. These filters execute before an event enters the Lua
+queue. Discovery subscriptions cannot coexist with an exclusive evidence
+subscriber on the same PowerVR, GD-ROM, or AICA bus.
 
 Maple subscriptions accept optional zero-based `bus` (`0..3`), resolved
 `port` (`0..5`, where `5` is the main device), and initiating `command`
@@ -130,9 +155,10 @@ process-local discovery ordinals, not frozen Maple trace ordinals.
 
 ## Delivery and overflow
 
-The native observation buses apply backend, event, address, PC, and Maple
-topology/command filters before queuing. Emulator producer threads never call
-Lua. Matching observations are copied into one bounded native queue in
+The native observation buses and discovery adapters apply backend, event,
+address, PC, Maple topology/command, hardware source, generation, FAD, writer,
+and channel filters before queuing. Emulator producer threads never call Lua.
+Matching observations are copied into one bounded native queue in
 canonical enqueue order and delivered from `lua::overlay` on the thread that
 created the Lua runtime. Each overlay delivers at most 1024 callbacks so a
 discovery script cannot monopolize a frame.

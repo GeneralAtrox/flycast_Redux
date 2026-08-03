@@ -229,6 +229,35 @@ TEST(ResearchIdentity, V2RequiresBoundedDreamcastRtcSeed)
 	EXPECT_THROW(research::loadIdentityManifest(oversizedPath), std::runtime_error);
 }
 
+TEST(ResearchIdentity, V2AuthenticatesExactAicaConfiguration)
+{
+	TemporaryDirectory directory;
+	json identity = identityV2("interpreter", false, std::string(64, '1'));
+	identity["configuration"]["values"]["aica_configuration"] = {
+		{"dsp_enabled", false},
+		{"vmu_sound", false},
+		{"sample_rate", 44100},
+		{"sample_format", "signed-pcm16-le-stereo"},
+		{"output_stage", "pre-backend-pre-user-volume"},
+	};
+	identity["configuration"]["sha256"] = digestHex(
+			identity["configuration"]["values"].dump());
+	const auto path = directory.file("identity-v2-aica.json");
+	writeText(path, identity.dump());
+	const auto parsed = research::loadIdentityManifest(path);
+	EXPECT_TRUE(parsed.runtimeConfiguration.aicaConfiguration.available);
+	EXPECT_FALSE(parsed.runtimeConfiguration.aicaConfiguration.dspEnabled);
+	EXPECT_FALSE(parsed.runtimeConfiguration.aicaConfiguration.vmuSound);
+	EXPECT_NE(research::Sha256Digest {}, research::aicaConfigurationDigest(
+			parsed.runtimeConfiguration.aicaConfiguration));
+
+	identity["configuration"]["values"]["aica_configuration"]["vmu_sound"] = true;
+	identity["configuration"]["sha256"] = digestHex(
+			identity["configuration"]["values"].dump());
+	writeText(path, identity.dump());
+	EXPECT_THROW(research::loadIdentityManifest(path), std::runtime_error);
+}
+
 TEST(ResearchIdentity, V1RejectsV2OnlyDynarecObservationField)
 {
 	TemporaryDirectory directory;

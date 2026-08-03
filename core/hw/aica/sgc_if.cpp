@@ -25,7 +25,9 @@
 #include "dsp.h"
 #include "audio/audiostream.h"
 #include "hw/gdrom/gdrom_if.h"
+#include "hw/sh4/sh4_sched.h"
 #include "cfg/option.h"
+#include "research/aica_observation.h"
 #include "serialize.h"
 
 #include <algorithm>
@@ -740,10 +742,10 @@ struct ChannelEx
 		}
 	}
 
-	void KEY_ON()
+	bool KEY_ON()
 	{
 		if (AEG.state != EG_Release)
-			return;
+			return false;
 
 		enable();
 
@@ -762,20 +764,28 @@ struct ChannelEx
 		adpcm.Reset(this);
 
 		(this->*StepStreamInitial)();
+		research::observeAicaKeyTransition(true,
+				static_cast<std::uint8_t>(ChannelNumber),
+				reinterpret_cast<const std::uint8_t*>(ccd), sh4_sched_now64());
 		key_printf("[%d] KEY_ON %s @ %g Hz, loop %d - AEG AR %d DC1R %d DC2V %d DC2R %d RR %d - KRS %d OCT %d FNS %d - SA %x LSA %x LEA %x",
 				ChannelNumber, stream_names[ccd->PCMS], (44100.0 * update_rate) / 1024, ccd->LPCTL,
 				ccd->AR, ccd->D1R, ccd->DL << 5, ccd->D2R, ccd->RR,
 				ccd->KRS, ccd->OCT, ccd->FNS,
 				SA, ccd->LSA, ccd->LEA);
+		return true;
 	}
 
-	void KEY_OFF()
+	bool KEY_OFF()
 	{
 		if (AEG.state == EG_Release)
-			return;
+			return false;
+		research::observeAicaKeyTransition(false,
+				static_cast<std::uint8_t>(ChannelNumber),
+				reinterpret_cast<const std::uint8_t*>(ccd), sh4_sched_now64());
 		key_printf("[%d] KEY_OFF -> Release", ChannelNumber);
 		SetAegState(EG_Release);
 		SetFegState(EG_Release);
+		return true;
 	}
 
 	//PCMS,SSCTL,LPCTL,LPSLNK
@@ -940,13 +950,20 @@ struct ChannelEx
 			if ((offset == 1 || size == 2) && ccd->KYONEX)
 			{
 				ccd->KYONEX=0;
+				std::uint64_t keyOnMask = 0;
+				std::uint64_t keyOffMask = 0;
 				for (ChannelEx& channel : Chans)
 				{
 					if (channel.ccd->KYONB)
-						channel.KEY_ON();
-					else
-						channel.KEY_OFF();
+					{
+						if (channel.KEY_ON())
+							keyOnMask |= 1ull << channel.ChannelNumber;
+					}
+					else if (channel.KEY_OFF())
+						keyOffMask |= 1ull << channel.ChannelNumber;
 				}
+				research::observeAicaKeyBatchComplete(keyOnMask, keyOffMask,
+						sh4_sched_now64());
 			}
 			break;
 
@@ -1548,6 +1565,64 @@ void vmuBeep(int on, int period)
 constexpr int CDDA_SIZE = 2352 / 2;
 static s16 cdda_sector[CDDA_SIZE];
 static u32 cdda_index = CDDA_SIZE;
+static u64 cdda_generation = 0;
+static CddaSectorProvenance cdda_provenance;
+
+research::AicaCheckpoint captureResearchCheckpoint()
+{
+	research::AicaCheckpoint checkpoint;
+	checkpoint.tick = sh4_sched_now64();
+	std::copy(std::begin(aica_reg), std::end(aica_reg), checkpoint.registers.begin());
+	checkpoint.ram.resize(ARAM_SIZE);
+	for (std::size_t i = 0; i < checkpoint.ram.size(); ++i)
+		checkpoint.ram[i] = aica_ram[i];
+	for (const ChannelEx& channel : ChannelEx::Chans)
+	{
+		auto& output = checkpoint.channels[channel.ChannelNumber];
+		output.sampleAddress = channel.SA;
+		output.currentAddress = channel.CA;
+		output.step = channel.step.full;
+		output.sample0 = channel.s0;
+		output.sample1 = channel.s1;
+		output.looped = channel.loop.looped;
+		output.adpcmLastQuant = channel.adpcm.last_quant;
+		output.adpcmLoopQuant = channel.adpcm.loopstart_quant;
+		output.adpcmLoopSample = channel.adpcm.loopstart_prev_sample;
+		output.adpcmInLoop = channel.adpcm.in_loop;
+		output.noiseState = channel.noise_state;
+		output.aegValue = channel.AEG.val;
+		output.aegState = static_cast<std::uint32_t>(channel.AEG.state);
+		output.fegValue = channel.FEG.value;
+		output.fegState = static_cast<std::uint32_t>(channel.FEG.state);
+		output.fegPrevious1 = channel.FEG.prev1;
+		output.fegPrevious2 = channel.FEG.prev2;
+		output.fegFraction = channel.FEG.fractSave;
+		output.lfoCounter = channel.lfo.counter;
+		output.lfoState = channel.lfo.state;
+		output.enabled = channel.enabled;
+		if (channel.enabled)
+			checkpoint.activeChannelMask |= 1ull << channel.ChannelNumber;
+	}
+	std::copy(std::begin(dsp::state.TEMP), std::end(dsp::state.TEMP),
+			checkpoint.dspTemp.begin());
+	std::copy(std::begin(dsp::state.MEMS), std::end(dsp::state.MEMS),
+			checkpoint.dspMems.begin());
+	std::copy(std::begin(dsp::state.MIXS), std::end(dsp::state.MIXS),
+			checkpoint.dspMixs.begin());
+	checkpoint.dspRingBufferPointer = dsp::state.RBP;
+	checkpoint.dspRingBufferLength = dsp::state.RBL;
+	checkpoint.dspMemoryDecodeCounter = dsp::state.MDEC_CT;
+	std::memcpy(checkpoint.cddaSector.data(), cdda_sector, sizeof(cdda_sector));
+	checkpoint.cddaIndex = cdda_index;
+	checkpoint.cddaGeneration = cdda_generation;
+	checkpoint.cddaSourceAvailable = cdda_provenance.available;
+	checkpoint.cddaFad = cdda_provenance.fad;
+	checkpoint.cddaStatus = cdda_provenance.status;
+	checkpoint.cddaRepeats = cdda_provenance.repeats;
+	checkpoint.cddaReadSuccessful = cdda_provenance.readSuccessful;
+	checkpoint.cddaControlGeneration = cdda_provenance.controlGeneration;
+	return checkpoint;
+}
 
 void AICA_Sample()
 {
@@ -1556,7 +1631,16 @@ void AICA_Sample()
 	mixr = 0;
 	memset(dsp::state.MIXS, 0, sizeof(dsp::state.MIXS));
 
+	std::uint64_t activeChannelMask = 0;
+	if (research::aicaObservationBusActive())
+	{
+		for (const ChannelEx& channel : ChannelEx::Chans)
+			if (channel.enabled)
+				activeChannelMask |= 1ull << channel.ChannelNumber;
+	}
 	ChannelEx::StepAll(mixl,mixr);
+	const SampleType dryLeft = mixl;
+	const SampleType dryRight = mixr;
 	
 	//OK , generated all Channels  , now DSP/ect + final mix ;p
 	//CDDA EXTS input
@@ -1564,8 +1648,9 @@ void AICA_Sample()
 	if (cdda_index >= CDDA_SIZE)
 	{
 		cdda_index = 0;
-		libCore_CDDA_Sector(cdda_sector);
+		cdda_generation = libCore_CDDA_Sector(cdda_sector, &cdda_provenance);
 	}
+	const u16 cddaFrameIndex = static_cast<u16>(cdda_index / 2);
 	s32 EXTS0L = cdda_sector[cdda_index];
 	s32 EXTS0R = cdda_sector[cdda_index+1];
 	cdda_index += 2;
@@ -1576,10 +1661,14 @@ void AICA_Sample()
 	//CDDA
 	VolumePan(EXTS0L, dsp_out_vol[16].EFSDL, dsp_out_vol[16].EFPAN, mixl, mixr);
 	VolumePan(EXTS0R, dsp_out_vol[17].EFSDL, dsp_out_vol[17].EFPAN, mixl, mixr);
+	const SampleType cddaContributionLeft = mixl - dryLeft;
+	const SampleType cddaContributionRight = mixr - dryRight;
 
 	DSPData->EXTS[0] = EXTS0L;
 	DSPData->EXTS[1] = EXTS0R;
 
+	const SampleType beforeDspLeft = mixl;
+	const SampleType beforeDspRight = mixr;
 	if (config::DSPEnabled)
 	{
 		dsp::step();
@@ -1587,13 +1676,27 @@ void AICA_Sample()
 		for (int i = 0; i < 16; i++)
 			VolumePan(*(s16*)&DSPData->EFREG[i], dsp_out_vol[i].EFSDL, dsp_out_vol[i].EFPAN, mixl, mixr);
 	}
+	const SampleType dspContributionLeft = mixl - beforeDspLeft;
+	const SampleType dspContributionRight = mixr - beforeDspRight;
 
 #ifdef LIBRETRO
 	if (settings.aica.muteAudio)
 #else
 	if (settings.input.fastForwardMode || settings.aica.muteAudio)
 #endif
+	{
+		std::uint8_t suppression = 0;
+		if (settings.aica.muteAudio)
+			suppression |= static_cast<std::uint8_t>(research::AicaSampleSuppression::Muted);
+#ifndef LIBRETRO
+		if (settings.input.fastForwardMode)
+			suppression |= static_cast<std::uint8_t>(research::AicaSampleSuppression::FastForward);
+#endif
+		research::observeAicaSampleSuppressed(
+				static_cast<research::AicaSampleSuppression>(suppression),
+				sh4_sched_now64());
 		return;
+	}
 
 	if (config::VmuSound)
 	{
@@ -1630,6 +1733,11 @@ void AICA_Sample()
 	mixl = std::clamp(mixl, -32768, 32767);
 	mixr = std::clamp(mixr, -32768, 32767);
 
+	research::observeAicaSampleFrame(activeChannelMask, dryLeft, dryRight,
+			EXTS0L, EXTS0R, cddaContributionLeft, cddaContributionRight,
+			config::DSPEnabled, dspContributionLeft, dspContributionRight,
+			static_cast<s16>(mixl), static_cast<s16>(mixr), cdda_generation,
+			cddaFrameIndex, sh4_sched_now64());
 	WriteSample(mixr, mixl);
 }
 
@@ -1664,6 +1772,13 @@ void serialize(Serializer& ser)
 	beep.serialize(ser);
 	ser << cdda_sector;
 	ser << cdda_index;
+	ser << cdda_generation;
+	ser << cdda_provenance.available;
+	ser << cdda_provenance.fad;
+	ser << cdda_provenance.status;
+	ser << cdda_provenance.repeats;
+	ser << cdda_provenance.readSuccessful;
+	ser << cdda_provenance.controlGeneration;
 	ser << (u32)midiSendBuffer.size();
 	for (u8 b : midiSendBuffer)
 		ser << b;
@@ -1720,6 +1835,22 @@ void deserialize(Deserializer& deser)
 	beep.deserialize(deser);
 	deser >> cdda_sector;
 	deser >> cdda_index;
+	if (deser.version() >= Deserializer::V60)
+	{
+		deser >> cdda_generation;
+		deser >> cdda_provenance.available;
+		deser >> cdda_provenance.fad;
+		deser >> cdda_provenance.status;
+		deser >> cdda_provenance.repeats;
+		deser >> cdda_provenance.readSuccessful;
+		deser >> cdda_provenance.controlGeneration;
+		research::restoreAicaCddaGeneration(cdda_generation);
+	}
+	else
+	{
+		cdda_generation = 0;
+		cdda_provenance = {};
+	}
 	midiSendBuffer.clear();
 	if (deser.version() >= Deserializer::V28)
 	{

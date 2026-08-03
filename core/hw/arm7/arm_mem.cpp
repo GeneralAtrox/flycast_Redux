@@ -1,5 +1,7 @@
 #include "arm_mem.h"
 #include "hw/aica/aica_mem.h"
+#include "hw/sh4/sh4_sched.h"
+#include "research/aica_observation.h"
 
 namespace aica::arm
 {
@@ -62,6 +64,9 @@ template <typename T>
 void writeReg(u32 addr, T data)
 {
 	addr &= 0x7FFF;
+	research::AicaWriterScope writerScope(research::AicaWriter::Arm7);
+	research::observeAicaRegisterWrite(research::AicaWriter::Arm7, addr,
+			sizeof(T), static_cast<u32>(data), sh4_sched_now64());
 	if (addr == REG_L)
 	{
 		return; // Shouldn't really happen (read only)

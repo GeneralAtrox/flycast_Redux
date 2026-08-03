@@ -2,7 +2,9 @@
 
 #include "cfg/cfg.h"
 #include "cfg/option.h"
+#include "hw/flashrom/nvmem.h"
 #include "research/identity_manifest.h"
+#include "oslib/oslib.h"
 #include "types.h"
 
 #include <filesystem>
@@ -172,6 +174,7 @@ public:
 
 	void finish()
 	{
+		authenticateFirmwareFiles(identity);
 		if (dmaCheckpoint != 0 && !checkpointReached)
 			divergence("DMA checkpoint was not reached");
 		if (mode == Mode::Record)
@@ -249,16 +252,27 @@ std::filesystem::path researchPath(const std::string& value)
 #endif
 }
 
-void applyDeterministicOverrides()
+void applyDeterministicOverrides(const IdentityManifest *identity = nullptr)
 {
 	// Backend-equivalence capture owns this setting from its v2 identity before
 	// dc_reset selects the executor. Frozen Maple-only v1 sessions remain
 	// interpreter-only.
 	if (config::ResearchSh4ObservationRecordPath.get().empty()
-			&& config::ResearchPvrTaRecordPath.get().empty())
+			&& config::ResearchSh4ProfileRecordPath.get().empty()
+			&& config::ResearchPvrTaRecordPath.get().empty()
+			&& config::ResearchGdromRecordPath.get().empty())
 		config::DynarecEnabled.override(false);
 	config::ThreadedRendering.override(false);
-	config::AutoLoadState.override(false);
+	if (identity != nullptr)
+	{
+		config::ResearchDreamcastRtcSeed.override(
+				identity->runtimeConfiguration.dreamcastRtcSeed);
+		config::UseReios.override(identity->firmware.mode == FirmwareMode::Hle);
+	}
+	config::AutoLoadState.override(identity != nullptr
+			&& identity->runtimeConfiguration.autoLoadState);
+	if (identity != nullptr && identity->initialState.available)
+		config::SavestateSlot.override(static_cast<int>(identity->initialState.slot));
 	config::AutoSaveState.override(false);
 	config::GGPOEnable.override(false);
 }
@@ -273,10 +287,17 @@ void verifyRuntimeConfiguration(const IdentityManifest& identity)
 	if (expected.dynarecObservation
 			!= config::ResearchDynarecObservation.get())
 		throw FlycastException("research identity/runtime dynarec observation mismatch");
+	if (expected.dreamcastRtcSeed
+			!= static_cast<std::uint32_t>(config::ResearchDreamcastRtcSeed.get()))
+		throw FlycastException("research identity/runtime Dreamcast RTC seed mismatch");
 	if (expected.threadedRendering != config::ThreadedRendering.get())
 		throw FlycastException("research identity/runtime threaded-rendering mismatch");
 	if (expected.autoLoadState != config::AutoLoadState.get())
 		throw FlycastException("research identity/runtime auto-load-state mismatch");
+	if (expected.autoLoadState
+			&& static_cast<std::uint32_t>(config::SavestateSlot.get())
+					!= expected.savestateSlot)
+		throw FlycastException("research identity/runtime save-state slot mismatch");
 	if (expected.autoSaveState != config::AutoSaveState.get())
 		throw FlycastException("research identity/runtime auto-save-state mismatch");
 	if (expected.ggpo != config::GGPOEnable.get())
@@ -318,7 +339,10 @@ void configureRuntime()
 	if (config::ResearchMapleDmaCheckpoint.get() != 0
 			&& !config::isTransient("research", "MapleDmaCheckpoint"))
 		throw FlycastException("research.MapleDmaCheckpoint must be transient");
-	applyDeterministicOverrides();
+	const IdentityManifest identity = loadIdentityManifest(researchPath(
+			config::ResearchIdentityManifestPath.get()));
+	authenticateFirmwareFiles(identity);
+	applyDeterministicOverrides(&identity);
 }
 
 void startRuntime()
@@ -327,8 +351,6 @@ void startRuntime()
 		return;
 	if (session != nullptr)
 		throw FlycastException("research runtime is already active");
-	applyDeterministicOverrides();
-
 	const std::filesystem::path identityPath = researchPath(config::ResearchIdentityManifestPath.get());
 	const std::filesystem::path tracePath = configuredMode == Mode::Record
 			? researchPath(config::ResearchMapleRecordPath.get())
@@ -336,15 +358,34 @@ void startRuntime()
 	if (pathsAlias(identityPath, tracePath))
 		throw FlycastException("research identity and Maple trace paths alias");
 	IdentityManifest identity = loadIdentityManifest(identityPath);
+	authenticateFirmwareFiles(identity);
+	applyDeterministicOverrides(&identity);
+	authenticateLoadedDreamcastFirmware(identity, config::UseReios.get(),
+			nvmem::getBiosData(), DreamcastBiosBytes);
+	if (identity.firmware.mode == FirmwareMode::Real)
+		authenticateLoadedDreamcastFlash(identity, nvmem::getInitialFlashData(),
+				nvmem::getInitialFlashSize());
+	if (identity.initialState.available)
+		authenticateInitialStateFile(identity, researchPath(
+				hostfs::getSavestatePath(static_cast<int>(identity.initialState.slot),
+						false)));
 	const std::uint64_t dmaCheckpoint = static_cast<std::uint64_t>(
 			config::ResearchMapleDmaCheckpoint.get());
 	if (identity.schemaVersion == 2)
-		requireSh4EquivalenceIdentityV2(identity);
+	{
+		if (identity.runtimeConfiguration.dynarecProfile)
+			requireSh4DynarecProfileIdentityV2(identity);
+		else
+			requireSh4EquivalenceIdentityV2(identity);
+	}
 	verifyRuntimeConfiguration(identity);
 
 	if (configuredMode == Mode::Record)
 	{
-		requireCaptureV1Identity(identity);
+		if (identity.schemaVersion == 1)
+			requireCaptureV1Identity(identity);
+		else
+			requireMapleRecordIdentityV3(identity);
 		auto writer = std::make_unique<MapleTraceWriter>(tracePath, identity.digest,
 				static_cast<std::uint64_t>(config::ResearchMapleTraceMaxBytes.get()),
 				MapleTraceCurrentSchemaVersion);

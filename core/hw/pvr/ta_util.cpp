@@ -37,7 +37,8 @@ static bool is_vertex_inf(const Vertex& vtx)
 struct IndexTrig
 {
 	IndexTrig() = default;
-	IndexTrig(u32 pid, u32 v0, u32 v1, u32 v2) : pid(pid), z(0) {
+	IndexTrig(u32 pid, u32 v0, u32 v1, u32 v2)
+			: pid(pid), originalPid(pid), z(0) {
 		vid[0] = v0;
 		vid[1] = v1;
 		vid[2] = v2;
@@ -45,6 +46,7 @@ struct IndexTrig
 
 	u32 vid[3];
 	u32 pid;
+	u32 originalPid;
 	f32 z;
 };
 
@@ -161,6 +163,10 @@ void sortTriangles(rend_context& ctx, RenderPass& pass, const RenderPass& previo
 		if (idx != pid)
 		{
 			SortedTriangle cur = { (u32)(&pp_base[pid] - &ctx.global_param_tr[0]), (u32)(idxSize + i * 3), 0 };
+			const auto primitiveGeneration =
+					pp_base[triangleList[i].originalPid].researchPrimitiveGeneration;
+			if (primitiveGeneration != 0)
+				cur.researchPrimitiveGenerations.push_back(primitiveGeneration);
 
 			if (idx != -1)
 			{
@@ -170,6 +176,16 @@ void sortTriangles(rend_context& ctx, RenderPass& pass, const RenderPass& previo
 
 			ctx.sortedTriangles.push_back(cur);
 			idx = pid;
+		}
+		else
+		{
+			const auto primitiveGeneration =
+					pp_base[triangleList[i].originalPid].researchPrimitiveGeneration;
+			auto& owners = ctx.sortedTriangles.back().researchPrimitiveGenerations;
+			if (primitiveGeneration != 0
+					&& std::find(owners.begin(), owners.end(), primitiveGeneration)
+							== owners.end())
+				owners.push_back(primitiveGeneration);
 		}
 	}
 

@@ -17,6 +17,16 @@
   "properties": {
     "schema": { "const": "flycast-research-identity" },
     "schema_version": { "const": 2 },
+    "initial_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "slot", "blob"],
+      "properties": {
+        "kind": { "const": "savestate" },
+        "slot": { "type": "integer", "minimum": 0, "maximum": 9 },
+        "blob": { "$ref": "#/$defs/blob" }
+      }
+    },
     "media": {
       "type": "object",
       "additionalProperties": true,
@@ -125,13 +135,19 @@
           "properties": {
             "cpu_backend": { "enum": ["interpreter", "dynarec"] },
             "dynarec_observation": { "type": "boolean" },
+            "dynarec_profile": { "type": "boolean" },
             "dreamcast_rtc_seed": {
               "type": "integer",
               "minimum": 0,
               "maximum": 4294967295
             },
             "threaded_rendering": { "const": false },
-            "autoload_state": { "const": false },
+            "autoload_state": { "type": "boolean" },
+            "savestate_slot": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9
+            },
             "autosave_state": { "const": false },
             "ggpo": { "const": false },
             "maple_dma_checkpoint": {
@@ -144,11 +160,49 @@
               "minimum": 1,
               "maximum": 10000000
             },
-            "pvr_ta_start_dma": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 10000000
-            },
+              "pvr_ta_start_dma": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 10000000
+              },
+              "pvr_draw_configuration": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "renderer",
+                  "per_strip_sorting",
+                  "translucent_polygon_depth_mask",
+                  "modifier_volumes",
+                  "render_resolution",
+                  "emulate_framebuffer",
+                  "fix_upscale_bleeding_edge"
+                ],
+                "properties": {
+                  "renderer": { "const": "directx11" },
+                  "per_strip_sorting": { "type": "boolean" },
+                  "translucent_polygon_depth_mask": { "type": "boolean" },
+                  "modifier_volumes": { "type": "boolean" },
+                  "render_resolution": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 16384
+                  },
+                  "emulate_framebuffer": { "type": "boolean" },
+                  "fix_upscale_bleeding_edge": { "type": "boolean" }
+                }
+              },
+              "aica_configuration": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["dsp_enabled", "vmu_sound", "sample_rate", "sample_format", "output_stage"],
+                "properties": {
+                  "dsp_enabled": { "type": "boolean" },
+                  "vmu_sound": { "const": false },
+                  "sample_rate": { "const": 44100 },
+                  "sample_format": { "const": "signed-pcm16-le-stereo" },
+                  "output_stage": { "const": "pre-backend-pre-user-volume" }
+                }
+              },
             "flycast_transient": {
               "type": "array",
               "items": { "type": "string", "minLength": 1 },
@@ -204,12 +258,30 @@
           }
         }
       },
-      "else": {
+      "else": {}
+    },
+    {
+      "if": {
         "properties": {
           "configuration": {
             "properties": {
               "values": {
-                "properties": { "dynarec_observation": { "const": true } }
+                "properties": { "dynarec_profile": { "const": true } },
+                "required": ["dynarec_profile"]
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "configuration": {
+            "properties": {
+              "values": {
+                "properties": {
+                  "cpu_backend": { "const": "dynarec" },
+                  "dynarec_observation": { "const": false }
+                }
               }
             }
           }

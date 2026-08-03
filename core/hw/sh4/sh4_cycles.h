@@ -22,6 +22,13 @@
 #include "sh4_if.h"
 #include "sh4_sched.h"
 
+inline u64 sh4_cycles_now()
+{
+	const s64 tick = static_cast<s64>(sh4_sched_now64()) + SH4_TIMESLICE
+			- Sh4cntx.cycle_counter;
+	return tick < 0 ? 0 : static_cast<u64>(tick);
+}
+
 class Sh4Cycles
 {
 public:
@@ -60,7 +67,7 @@ public:
 	}
 
 	u64 now() {
-		return sh4_sched_now64() + SH4_TIMESLICE - ctx->cycle_counter;
+		return sh4_cycles_now();
 	}
 
 	int readAccessCycles(u32 addr, u32 size) const {

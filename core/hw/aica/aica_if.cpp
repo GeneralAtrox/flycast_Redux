@@ -151,9 +151,12 @@ static void ArmSetRST()
 }
 
 template<typename T>
-void writeAicaReg(u32 addr, T data)
+void writeAicaReg(u32 addr, T data, research::AicaWriter writer)
 {
 	addr &= 0x7FFF;
+	research::AicaWriterScope writerScope(writer);
+	research::observeAicaRegisterWrite(writer, addr, sizeof(T),
+			static_cast<u32>(data), sh4_sched_now64());
 
 	if (sizeof(T) == 1)
 	{
@@ -185,9 +188,9 @@ void writeAicaReg(u32 addr, T data)
 	else
 		writeRegInternal(addr, data);
 }
-template void writeAicaReg<>(u32 addr, u8 data);
-template void writeAicaReg<>(u32 addr, u16 data);
-template void writeAicaReg<>(u32 addr, u32 data);
+template void writeAicaReg<>(u32 addr, u8 data, research::AicaWriter writer);
+template void writeAicaReg<>(u32 addr, u16 data, research::AicaWriter writer);
+template void writeAicaReg<>(u32 addr, u32 data, research::AicaWriter writer);
 
 static int DreamcastSecond(int tag, int cycles, int jitter, void *arg)
 {
@@ -245,6 +248,7 @@ static int dma_end_sched(int tag, int cycles, int jitter, void *arg)
 	SB_ADSUSP |= 0x10;
 
 	asic_RaiseInterrupt(holly_SPU_DMA);
+	research::observeAicaG2DmaComplete(sh4_sched_now64());
 
 	return 0;
 }
@@ -403,7 +407,21 @@ static void Write_SB_ADST(u32 addr, u32 data)
 			else
 				DEBUG_LOG(AICA, "AICA-DMA : SB_ADDIR==0:DMA Write to 0x%X from 0x%X %x bytes", dst, src, SB_ADLEN);
 
+			const bool aicaRamIsDestination = SB_ADDIR == 0;
+			const std::uint64_t observationGeneration =
+					research::observeAicaG2DmaBegin(src, dst, len,
+							aicaRamIsDestination, sh4_sched_now64());
 			WriteMemBlock_nommu_dma(dst, src, len);
+			if (observationGeneration != 0)
+			{
+				std::vector<u8> bytes(len);
+				const u32 aicaAddress = aicaRamIsDestination ? dst : src;
+				const u32 offset = aicaAddress & ARAM_MASK;
+				for (u32 index = 0; index < len; ++index)
+					bytes[index] = aica_ram[(offset + index) & ARAM_MASK];
+				research::observeAicaG2DmaTransfer(observationGeneration,
+						bytes.data(), bytes.size(), sh4_sched_now64());
+			}
 
 			// indicate that dma is in progress
 			SB_ADST = 1;

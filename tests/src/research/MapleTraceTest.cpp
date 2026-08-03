@@ -7,7 +7,9 @@
 #include "research/sha256.h"
 #ifndef RESEARCH_FORMAT_ONLY
 #include "cfg/option.h"
+#include "hw/flashrom/nvmem.h"
 #include "research/maple_runtime.h"
+#include "ResearchRuntimeStubs.h"
 #endif
 
 #include <algorithm>
@@ -251,6 +253,163 @@ TEST(ResearchIdentity, ValidatesSchemaAndConfigurationDigest)
 			research::sha256(changedValues.data(), changedValues.size()));
 	writeText(invalidPath, root.dump());
 	EXPECT_THROW(research::loadIdentityManifest(invalidPath), std::runtime_error);
+}
+
+TEST(ResearchIdentity, AuthenticatesRealDreamcastFirmwareAndLoadedBytes)
+{
+	TemporaryDirectory directory;
+	const research::IdentityManifest hle = research::loadIdentityManifest(
+			writeIdentity(directory));
+	json root = json::parse(std::string(hle.bytes.begin(), hle.bytes.end()));
+	std::vector<std::uint8_t> bios(research::DreamcastBiosBytes);
+	for (std::size_t index = 0; index < bios.size(); ++index)
+		bios[index] = static_cast<std::uint8_t>((index * 29u + 7u) & 0xffu);
+	std::vector<std::uint8_t> flash(research::DreamcastFlashBytes);
+	for (std::size_t index = 0; index < flash.size(); ++index)
+		flash[index] = static_cast<std::uint8_t>((index * 11u + 3u) & 0xffu);
+	const auto biosPath = directory.file("dc_boot.bin");
+	const auto flashPath = directory.file("dc_nvmem.bin");
+	writeBytes(biosPath, bios);
+	writeBytes(flashPath, flash);
+	root["firmware"] = {
+		{"mode", "real"},
+		{"bios", {
+			{"path", biosPath.u8string()},
+			{"size", bios.size()},
+			{"sha256", research::sha256ToHex(research::sha256(
+					bios.data(), bios.size()))},
+		}},
+		{"flash_initial", {
+			{"path", flashPath.u8string()},
+			{"size", flash.size()},
+			{"sha256", research::sha256ToHex(research::sha256(
+					flash.data(), flash.size()))},
+		}},
+	};
+	const auto realIdentityPath = directory.file("identity-real.json");
+	writeText(realIdentityPath, root.dump(2));
+	const auto real = research::loadIdentityManifest(realIdentityPath);
+	EXPECT_EQ(research::FirmwareMode::Real, real.firmware.mode);
+	EXPECT_EQ(research::DreamcastBiosBytes, real.firmware.bios.size);
+	EXPECT_NO_THROW(research::authenticateFirmwareFiles(real));
+	EXPECT_NO_THROW(research::authenticateLoadedDreamcastFirmware(real, false,
+			bios.data(), bios.size()));
+	EXPECT_NO_THROW(research::authenticateLoadedDreamcastFlash(real,
+			flash.data(), flash.size()));
+	EXPECT_THROW(research::authenticateLoadedDreamcastFirmware(real, true,
+			bios.data(), bios.size()), std::runtime_error);
+
+	bios[12345] ^= 0x80;
+	EXPECT_THROW(research::authenticateLoadedDreamcastFirmware(real, false,
+			bios.data(), bios.size()), std::runtime_error);
+	writeBytes(biosPath, bios);
+	EXPECT_THROW(research::authenticateFirmwareFiles(real), std::runtime_error);
+	flash[91] ^= 1;
+	EXPECT_THROW(research::authenticateLoadedDreamcastFlash(real,
+			flash.data(), flash.size()), std::runtime_error);
+	EXPECT_NO_THROW(research::authenticateLoadedDreamcastFirmware(hle, true,
+			nullptr, 0));
+	EXPECT_THROW(research::authenticateLoadedDreamcastFirmware(hle, false,
+			nullptr, 0), std::runtime_error);
+}
+
+TEST(ResearchIdentity, RejectsUnboundOrWrongSizedRealBios)
+{
+	TemporaryDirectory directory;
+	const research::IdentityManifest hle = research::loadIdentityManifest(
+			writeIdentity(directory));
+	json root = json::parse(std::string(hle.bytes.begin(), hle.bytes.end()));
+	root["firmware"]["mode"] = "real";
+	root["firmware"].erase("hle_identity");
+	root["firmware"]["bios"] = {
+		{"path", ""}, {"size", research::DreamcastBiosBytes},
+		{"sha256", zeroDigest()},
+	};
+	const auto path = directory.file("identity-real-invalid.json");
+	writeText(path, root.dump());
+	EXPECT_THROW(research::loadIdentityManifest(path), std::runtime_error);
+	root["firmware"]["bios"]["path"] = "dc_boot.bin";
+	root["firmware"]["bios"]["size"] = research::DreamcastBiosBytes - 1;
+	writeText(path, root.dump());
+	const auto wrongSize = research::loadIdentityManifest(path);
+	std::vector<std::uint8_t> bytes(research::DreamcastBiosBytes - 1, 0);
+	EXPECT_THROW(research::authenticateLoadedDreamcastFirmware(wrongSize, false,
+			bytes.data(), bytes.size()), std::runtime_error);
+}
+
+TEST(ResearchIdentity, AuthenticatesBoundInitialSavestate)
+{
+	TemporaryDirectory directory;
+	const std::filesystem::path basePath = writeIdentity(directory);
+	const research::IdentityManifest base = research::loadIdentityManifest(basePath);
+	json root = json::parse(std::string(base.bytes.begin(), base.bytes.end()));
+	root["initial_state"] = json::object();
+	const std::filesystem::path invalidV1 = directory.file("state-v1-invalid.json");
+	writeText(invalidV1, root.dump(2));
+	EXPECT_THROW(research::loadIdentityManifest(invalidV1), std::runtime_error);
+	root = json::parse(std::string(base.bytes.begin(), base.bytes.end()));
+	const std::filesystem::path statePath = directory.file("game.state");
+	const std::vector<std::uint8_t> stateBytes {0x46, 0x4c, 0x59, 0x53, 1, 2, 3};
+	writeBytes(statePath, stateBytes);
+	root["initial_state"] = {
+		{"kind", "savestate"},
+		{"slot", 1},
+		{"blob", {
+			{"path", statePath.u8string()},
+			{"size", stateBytes.size()},
+			{"sha256", research::sha256ToHex(research::sha256(
+					stateBytes.data(), stateBytes.size()))},
+		}},
+	};
+	root["schema_version"] = 3;
+	root["configuration"]["values"]["dynarec_observation"] = false;
+	root["configuration"]["values"]["dreamcast_rtc_seed"] = 123456789u;
+	root["configuration"]["values"]["autoload_state"] = true;
+	root["configuration"]["values"]["savestate_slot"] = 1;
+	root["configuration"]["values"]["maple_dma_checkpoint"] = 120;
+	const std::string canonical = root["configuration"]["values"].dump();
+	root["configuration"]["sha256"] = research::sha256ToHex(
+			research::sha256(canonical.data(), canonical.size()));
+	const std::filesystem::path stateIdentity = directory.file("state-identity.json");
+	writeText(stateIdentity, root.dump(2));
+
+	const research::IdentityManifest identity =
+			research::loadIdentityManifest(stateIdentity);
+	ASSERT_TRUE(identity.initialState.available);
+	EXPECT_TRUE(identity.runtimeConfiguration.autoLoadState);
+	EXPECT_EQ(1u, identity.initialState.slot);
+	EXPECT_EQ(1u, identity.runtimeConfiguration.savestateSlot);
+	EXPECT_EQ(120u, identity.runtimeConfiguration.mapleDmaCheckpoint);
+	EXPECT_NO_THROW(research::requireMapleRecordIdentityV3(identity));
+	EXPECT_NO_THROW(research::authenticateInitialStateFile(identity, statePath));
+
+	json profileRoot = json::parse(std::string(identity.bytes.begin(),
+			identity.bytes.end()));
+	profileRoot["configuration"]["values"]["cpu_backend"] = "dynarec";
+	profileRoot["configuration"]["values"]["dynarec_observation"] = false;
+	profileRoot["configuration"]["values"]["dynarec_profile"] = true;
+	const std::string profileCanonical =
+			profileRoot["configuration"]["values"].dump();
+	profileRoot["configuration"]["sha256"] = research::sha256ToHex(
+			research::sha256(profileCanonical.data(), profileCanonical.size()));
+	const std::filesystem::path profileIdentityPath =
+			directory.file("state-profile-identity.json");
+	writeText(profileIdentityPath, profileRoot.dump(2));
+	const auto profileIdentity = research::loadIdentityManifest(profileIdentityPath);
+	EXPECT_NO_THROW(research::requireMapleRecordIdentityV3(profileIdentity));
+	EXPECT_NO_THROW(
+			research::requireSh4DynarecProfileRecordIdentityV3(profileIdentity));
+
+	writeBytes(statePath, {0x46, 0x4c, 0x59, 0x53, 1, 2, 4});
+	EXPECT_THROW(research::authenticateInitialStateFile(identity, statePath),
+			std::runtime_error);
+
+	root["configuration"]["values"]["autoload_state"] = false;
+	const std::string mismatch = root["configuration"]["values"].dump();
+	root["configuration"]["sha256"] = research::sha256ToHex(
+			research::sha256(mismatch.data(), mismatch.size()));
+	writeText(stateIdentity, root.dump(2));
+	EXPECT_THROW(research::loadIdentityManifest(stateIdentity), std::runtime_error);
 }
 
 TEST(ResearchIdentity, CaptureV1RequiresGdiWithTracks)
@@ -596,6 +755,63 @@ TEST(ResearchMapleReplay, RejectsFirstRequestDivergence)
 	events.transaction.dmaOrdinal = dma;
 	events.transaction.request.back() ^= 1;
 	EXPECT_THROW(research::mapleTransaction(events.transaction), FlycastException);
+	research::abortRuntime();
+}
+
+TEST(ResearchMapleReplay, RealFirmwareReplayAuthenticatesLoadedBiosAndFlash)
+{
+	TemporaryDirectory directory;
+	const auto hlePath = writeIdentity(directory);
+	const auto hle = research::loadIdentityManifest(hlePath);
+	json root = json::parse(std::string(hle.bytes.begin(), hle.bytes.end()));
+	std::vector<std::uint8_t> bios(research::DreamcastBiosBytes);
+	std::vector<std::uint8_t> flash(research::DreamcastFlashBytes);
+	for (std::size_t index = 0; index < bios.size(); ++index)
+		bios[index] = static_cast<std::uint8_t>(index * 7u + 1u);
+	for (std::size_t index = 0; index < flash.size(); ++index)
+		flash[index] = static_cast<std::uint8_t>(index * 19u + 3u);
+	const auto biosPath = directory.file("dc_boot.bin");
+	const auto flashPath = directory.file("dc_nvmem.bin");
+	writeBytes(biosPath, bios); writeBytes(flashPath, flash);
+	root["firmware"] = {
+		{"mode", "real"},
+		{"bios", {{"path", biosPath.u8string()}, {"size", bios.size()},
+			{"sha256", research::sha256ToHex(research::sha256(
+				bios.data(), bios.size()))}}},
+		{"flash_initial", {{"path", flashPath.u8string()},
+			{"size", flash.size()}, {"sha256", research::sha256ToHex(
+				research::sha256(flash.data(), flash.size()))}}},
+	};
+	const auto identityPath = directory.file("identity-real-replay.json");
+	writeText(identityPath, root.dump(2));
+	const auto identity = research::loadIdentityManifest(identityPath);
+	const auto tracePath = writeTrace(directory, identity.digest, "real-replay.fcmt");
+	config::ResearchIdentityManifestPath = identityPath.string();
+	config::ResearchMapleRecordPath = "";
+	config::ResearchMapleReplayPath = tracePath.string();
+	config::ResearchMapleDmaCheckpoint = 0;
+	config::ResearchMapleTraceMaxBytes = research::DefaultMaximumMapleTraceBytes;
+	config::setTransient("research", "IdentityManifest", identityPath.string());
+	config::setTransient("research", "MapleReplay", tracePath.string());
+
+	research::configureRuntime();
+	EXPECT_THROW(research::startRuntime(), std::runtime_error);
+	research::abortRuntime();
+	std::copy(bios.begin(), bios.end(), nvmem::getBiosData());
+	research_test::setInitialFlashData(flash);
+	research::configureRuntime();
+	EXPECT_NO_THROW(research::startRuntime());
+	research::abortRuntime();
+	// RTC, partition repair and other emulated writes affect the live chip after
+	// load. They must not change which initial file supplied the session.
+	nvmem::getFlashData()[123] ^= 1;
+	research::configureRuntime();
+	EXPECT_NO_THROW(research::startRuntime());
+	research::abortRuntime();
+	flash[123] ^= 1;
+	research_test::setInitialFlashData(flash);
+	research::configureRuntime();
+	EXPECT_THROW(research::startRuntime(), std::runtime_error);
 	research::abortRuntime();
 }
 

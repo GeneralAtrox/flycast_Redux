@@ -32,6 +32,10 @@ void deserialize(Deserializer& deser);
 u32 readFlash(u32 addr, u32 sz);
 void writeFlash(u32 addr, u32 data, u32 sz);
 u8 *getFlashData();
+// Exact bytes loaded from the Dreamcast flash file before Validate(), RTC,
+// region/language and network initialization mutate the live flash chip.
+const u8 *getInitialFlashData();
+size_t getInitialFlashSize();
 
 u32 readBios(u32 addr, u32 sz);
 void writeAWBios(u32 addr, u32 data, u32 sz);

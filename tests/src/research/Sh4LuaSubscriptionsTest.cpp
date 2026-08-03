@@ -467,4 +467,117 @@ TEST(ResearchSh4LuaSubscriptions, MapleOverflowDropsNewestAndReportsStablePrefix
 	EXPECT_EQ((std::vector<std::uint8_t> {8}), deliveredCodes);
 }
 
+TEST(ResearchSh4LuaSubscriptions, FiltersAndOrdersPvrGdromCddaAndAicaBuses)
+{
+	research::Sh4LuaSubscriptionQueue queue;
+	std::vector<std::string> delivered;
+	research::PvrTaObservationFilter ta;
+	ta.typeMask = research::pvrTaObservationTypeBit(
+			research::PvrTaObservationType::ListInit);
+	queue.subscribe(ta, [&](auto, const research::PvrTaObservation&) {
+		delivered.emplace_back("ta");
+	});
+	research::Sh4LuaSubscriptionQueue::PvrPresentationFilter presentation;
+	presentation.typeMask = 1;
+	presentation.hasAddressRange = true;
+	presentation.addressStart = 0x005f8000;
+	presentation.addressEndExclusive = 0x005f8100;
+	queue.subscribe(presentation,
+			[&](auto, const research::PvrPresentationObservation&) {
+				delivered.emplace_back("presentation");
+			});
+	research::Sh4LuaSubscriptionQueue::PvrDrawFilter draw;
+	draw.typeMask = std::uint32_t {1}
+			<< (static_cast<unsigned>(research::PvrDrawObservationType::RenderCompleted) - 1u);
+	draw.hasRenderGeneration = true;
+	draw.renderGeneration = 9;
+	queue.subscribe(draw, [&](auto, const research::PvrDrawObservation&) {
+		delivered.emplace_back("draw");
+	});
+	research::Sh4LuaSubscriptionQueue::GdromFilter gdrom;
+	gdrom.typeMask = 1;
+	queue.subscribe(gdrom, [&](auto, const research::GdromObservation&) {
+		delivered.emplace_back("gdrom");
+	});
+	research::Sh4LuaSubscriptionQueue::CddaFilter cdda;
+	cdda.typeMask = std::uint32_t {1}
+			<< (static_cast<unsigned>(research::CddaObservationType::ControlApplied) - 1u);
+	cdda.hasCommand = true;
+	cdda.command = 0x15;
+	queue.subscribe(cdda, [&](auto, const research::CddaObservation&) {
+		delivered.emplace_back("cdda");
+	});
+	research::Sh4LuaSubscriptionQueue::AicaFilter aica;
+	aica.typeMask = 1;
+	aica.hasWriter = true;
+	aica.writerMask = 1;
+	aica.hasAddressRange = true;
+	aica.addressStart = 0x100;
+	aica.addressEndExclusive = 0x110;
+	queue.subscribe(aica, [&](auto, const research::AicaObservation&) {
+		delivered.emplace_back("aica");
+	});
+
+	research::observePvrTaListBoundary(false, 0x1000, 0, 1);
+	research::observePvrRegisterWrite(0x005f8004, 4, 1, 0, 1,
+			research::PvrRegisterWriteDisposition::Stored, 0, 2);
+	research::observePvrDrawRenderCompleted(8, true, 3);
+	research::observePvrDrawRenderCompleted(9, true, 4);
+	const std::uint32_t parameters[4] {45150, 1, 0x0c100000, 0};
+	research::observeReiosGdromCommand(41, 0x11, parameters, 5);
+	research::observeReiosGdromAbort(41, 6);
+	research::resetCddaObservation(6);
+	const std::uint32_t playParameters[4] {600, 601, 0, 0};
+	research::observeReiosCddaControlAccepted(42, 0x15, playParameters, 7);
+	research::CddaDriveState before;
+	research::CddaDriveState after;
+	after.status = 1;
+	after.currentFad = after.startFad = 600;
+	after.endFad = 601;
+	research::observeReiosCddaControlApplied(42, 0x15, before, after, true, 8);
+	research::observeAicaRegisterWrite(research::AicaWriter::Arm7,
+			0x104, 2, 1, 9);
+	research::observeAicaRegisterWrite(research::AicaWriter::Sh4Direct,
+			0x104, 2, 2, 10);
+
+	ASSERT_EQ(6u, queue.pendingCount());
+	EXPECT_EQ(6u, queue.drain());
+	EXPECT_EQ((std::vector<std::string> {"ta", "presentation", "draw",
+			"gdrom", "cdda", "aica"}), delivered);
+}
+
+TEST(ResearchSh4LuaSubscriptions, FiltersSuccessfulCddaAndNonzeroMixerContributionNatively)
+{
+	research::Sh4LuaSubscriptionQueue queue;
+	std::vector<std::string> delivered;
+	research::Sh4LuaSubscriptionQueue::CddaFilter sector;
+	sector.typeMask = std::uint32_t {1}
+			<< (static_cast<unsigned>(research::CddaObservationType::Sector) - 1u);
+	sector.hasSuccessful = true;
+	sector.successful = true;
+	queue.subscribe(sector, [&](auto, const research::CddaObservation&) {
+		delivered.emplace_back("sector");
+	});
+	research::Sh4LuaSubscriptionQueue::AicaFilter sample;
+	sample.typeMask = std::uint32_t {1}
+			<< (static_cast<unsigned>(research::AicaObservationType::SampleFrame) - 1u);
+	sample.requireNonzeroCddaContribution = true;
+	queue.subscribe(sample, [&](auto, const research::AicaObservation&) {
+		delivered.emplace_back("sample");
+	});
+
+	const std::uint8_t bytes[4] {0, 0, 1, 0};
+	research::CddaDriveState drive;
+	research::observeCddaSector(1, 600, drive, drive, false, bytes, sizeof(bytes), 1);
+	research::observeCddaSector(2, 601, drive, drive, true, bytes, sizeof(bytes), 2);
+	research::observeAicaSampleFrame(0, 0, 0, 0, 0, 0, 0, false,
+			0, 0, 0, 0, 2, 0, 3);
+	research::observeAicaSampleFrame(0, 0, 0, 1, 0, 1, 0, false,
+			0, 0, 1, 0, 2, 1, 4);
+
+	ASSERT_EQ(2u, queue.pendingCount());
+	EXPECT_EQ(2u, queue.drain());
+	EXPECT_EQ((std::vector<std::string> {"sector", "sample"}), delivered);
+}
+
 } // namespace

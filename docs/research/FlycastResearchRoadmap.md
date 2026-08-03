@@ -152,6 +152,18 @@ differential fixture proves invalidation and end-to-end equivalence for the
 required synthetic cases. The accepted 2026-07-31 external Lodoss package
 completes the project-level dynarec admission gate.
 
+The bounded production dynarec profile and dynamic branch inventory now join
+independently to a complete Ghidra export. Exact guest block bytes are checked
+against the authenticated boot executable before functions, symbols and actual
+edge destinations are assigned. A focused SH-4/Ghidra package v1 stages a
+path-localized copy of every reconstruction input, authenticates the initial
+state and Flycast executable declared by the identity, independently
+reconstructs the join, locks every entry, issues a deterministic receipt and
+publishes by one sibling-directory rename. Forced aborts before semantic
+validation, after semantic validation and after receipt issuance remain
+fail-closed. The 2026-08-02 Lodoss admission contains 3,832 block generations,
+4,783 dynamic edges and 51,985,205 edge occurrences.
+
 ## Phase 4: PowerVR causal ownership
 
 Artifact and operator details are in [PvrTaArtifactV1.md](PvrTaArtifactV1.md).
@@ -194,8 +206,14 @@ joined accepted-block, selected-context, STARTRENDER, and render-done chain.
 The independently revalidated atomic package contains seven list
 initializations, four accepted blocks, one STARTRENDER, and one RenderDone.
 
-PVR register/VRAM-write ownership and framebuffer/present joins remain Phase 4
-work.
+Typed PVR register/VRAM-write ownership, framebuffer/presentation joins, raw
+framebuffer validation, and DirectX 11 semantic draw ownership are implemented.
+The semantic draw validator independently reconstructs material, vertices and
+strips from raw TA bytes before accepting the renderer-facing artifact. A
+save-state-backed Lodoss run authenticates Slot 1, proves 120-DMA interpreter/
+dynarec equivalence, completes 40 renders, reaches a consumed non-background
+primitive, and publishes the state-containing TA and draw packages atomically.
+Other renderer backends remain outside the semantic draw v1 admission contract.
 
 Deliverables:
 
@@ -210,6 +228,31 @@ Deliverables:
 
 ## Phase 5: GD-ROM and AICA
 
+The HLE DMAREAD and bounded AICA/CD-DA slices are implemented. The real-BIOS
+GD-ROM hardware path now has a separate typed artifact and independent
+validator. It authenticates the loaded 2 MiB Dreamcast BIOS, preserves the two
+SH-4 packet owners, records DMA/PIO byte delivery and interrupt boundaries,
+invalidates restored in-flight state, and atomically publishes firmware-bound
+packages. Synthetic tests cover Mode 1/Mode 2, 2340/2352 output, gaps,
+cache/scheduler boundaries, multiple DMA sessions, PIO ownership and negative
+mutations. Independent admission also validates the complete Maple replay
+against its retained real-firmware recording identity and joins its boot
+authorities to the GD-ROM identity.
+
+The real-BIOS Lodoss admission gate passed on 2026-08-03 using the retail PAL
+v1.01d BIOS, its authenticated initial 128 KiB PAL flash image, and the
+authenticated populated A1 VMU. The independently validated artifact contains
+1,107 hardware events across 21 complete read commands and 773 DMA chunks at
+the exact 755-DMA Maple replay boundary. Its v2 package retains the BIOS,
+pre-normalization flash, VMU, recording identity, replay, executable, artifact,
+validators and publication receipt. A one-byte retained-VMU mutation was
+rejected and both forced-abort boundaries remained quarantined.
+
+Lodoss CD-DA real-game qualification remains unclaimed. It is not a toolkit
+completion gate: the typed CD-DA slice, independent validator, negative tests
+and atomic publisher are implemented, while no synthetic or injected playback
+may be promoted as Lodoss behaviour.
+
 Deliverables:
 
 - ATA and SPI packet traces;
@@ -220,17 +263,35 @@ Deliverables:
 - sample-interval artifacts with exact format and digest; and
 - disc-to-audio and guest-to-slot ownership joins.
 
-## Phase 6: comparison and audit
+## Phase 6: evidence audit
+
+The repository-wide evidence auditor is implemented. It discovers every known
+accepted receipt outside staging/quarantine trees, rejects unknown or ambiguous
+accepted directories, rehashes receipt inventories, prohibits linked package
+entries and package-local trusted validators, dispatches current external
+validators for every package generation, rejects duplicate package UUIDs, and
+atomically emits a typed aggregate report. After the documented immutable
+provenance migration, the 2026-08-03 post-build Lodoss-wide run found 21
+packages; all 21 passed current independent revalidation with zero duplicate
+package identities, zero SH-4 job collisions and zero rejected packages. The
+report SHA-256 is
+`dc294de5af5eddfc455c80fbc1f2cd9863656e718f06ddcdb682ac6e95008a79`.
+See
+[RepositoryEvidenceAuditV1.md](RepositoryEvidenceAuditV1.md).
+
+External hardware and independent-emulator reference import is deliberately
+outside this project's scope. Flycast's authenticated typed framebuffer,
+presentation and pre-backend PCM artifacts are the authoritative Dreamcast
+observation boundary. No toolkit readiness claim depends on analogue capture,
+physical-console output or another emulator.
 
 Deliverables:
 
-- exact RGB/RGBA frame comparison without implicit masks or tolerances;
-- exact PCM comparison and bounded diagnostic metrics;
-- temporal-delta comparison;
-- hardware and independent-emulator import manifests;
-- reconstruction comparison reports that preserve provenance; and
 - a repository-wide audit command that rejects stale, unbound, or internally
   inconsistent accepted evidence.
+
+All roadmap phases within the declared project scope are implemented and have
+passed their current admission gates.
 
 ## Working rule
 

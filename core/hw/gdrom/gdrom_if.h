@@ -7,7 +7,17 @@ void gdrom_reg_Reset(bool hard);
 
 u32  ReadMem_gdrom(u32 Addr, u32 sz);
 void WriteMem_gdrom(u32 Addr, u32 data, u32 sz);
-void libCore_CDDA_Sector(s16* sector);
+struct CddaSectorProvenance
+{
+	bool available = false;
+	u32 fad = 0;
+	u32 status = 0;
+	u32 repeats = 0;
+	bool readSuccessful = false;
+	u64 controlGeneration = 0;
+};
+
+u64 libCore_CDDA_Sector(s16* sector, CddaSectorProvenance* provenance = nullptr);
 u32 gd_get_subcode(u32 format, u32 fad, u8 *subc_info);
 void gd_setdisc();
 

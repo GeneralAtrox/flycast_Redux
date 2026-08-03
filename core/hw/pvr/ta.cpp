@@ -516,6 +516,8 @@ void ta_vtx_ListInit(bool continuation)
 		taRenderPass++;
 	SetCurrentTARC(TA_OL_BASE);
 	ta_tad.ClearPartial();
+	if (ta_ctx != nullptr)
+		ta_ctx->clearResearchProvenancePartial();
 	markObjectListBlocks(taRenderPass);
 
 	ta_cur_state = TAS_NS;
@@ -571,10 +573,13 @@ static void DYNACALL ta_thd_data32_i(const simd256_t *data,
 	if (unlikely(must_handle))
 		ta_handle_cmd(trans);
 
-	research::observePvrTaAcceptedBlock(source, sourceAddress, taAddress,
+	const research::PvrTaBlockProvenance provenance =
+			research::observePvrTaAcceptedBlock(source, sourceAddress, taAddress,
 			reinterpret_cast<const u8 *>(data), contextAddress, taRenderPass,
 			listTypeBefore, ta_fsm_cl, parserStateBefore, ta_cur_state,
 			sh4_sched_now64());
+	if (provenance.available)
+		ta_ctx->researchBlockProvenance.push_back(provenance);
 }
 
 void DYNACALL ta_vtx_data32(const SQBuffer *data,

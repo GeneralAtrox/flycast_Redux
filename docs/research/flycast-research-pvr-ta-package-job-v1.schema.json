@@ -30,6 +30,7 @@
     "identity": { "$ref": "#/$defs/blob" },
     "maple_replay": { "$ref": "#/$defs/blob" },
     "pvr_manifest": { "$ref": "#/$defs/blob" },
+    "initial_state": { "$ref": "#/$defs/blob" },
     "artifact": {
       "type": "object", "additionalProperties": false,
       "required": ["candidate", "maximum_bytes", "maximum_events"],

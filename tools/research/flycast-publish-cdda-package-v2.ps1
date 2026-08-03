@@ -1,0 +1,229 @@
+#Requires -Version 7.0
+
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory = $true)][string]$Artifact,
+    [Parameter(Mandatory = $true)][string]$Identity,
+    [Parameter(Mandatory = $true)][string]$MapleReplay,
+    [Parameter(Mandatory = $true)][string]$FlycastExecutable,
+    [Parameter(Mandatory = $true)][string]$ArtifactValidator,
+    [Parameter(Mandatory = $true)][string]$OutputDirectory,
+    [ValidateRange(1, 3600)][int]$ValidatorTimeoutSeconds = 300,
+    [ValidateSet('', 'after-staging-v2', 'after-validation-v2')]
+    [string]$IntegrationTestAbortToken = ''
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$utf8NoBom = [Text.UTF8Encoding]::new($false)
+
+function Resolve-Regular([string]$Path, [string]$Field) {
+    if ([string]::IsNullOrWhiteSpace($Path) -or
+            -not [IO.Path]::IsPathFullyQualified($Path)) {
+        throw "$Field must be an absolute path."
+    }
+    $resolved = (Resolve-Path -LiteralPath ([IO.Path]::GetFullPath($Path))).Path
+    $item = Get-Item -LiteralPath $resolved -Force
+    if ($item.PSIsContainer -or
+            (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+        throw "$Field must be a non-linked regular file."
+    }
+    return $item.FullName
+}
+
+function Get-Blob([string]$Path) {
+    $item = Get-Item -LiteralPath $Path -Force
+    return [ordered]@{
+        size = [int64]$item.Length
+        sha256 = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
+}
+
+function Assert-Blob([object]$Expected, [string]$Path, [string]$Field) {
+    $actual = Get-Blob $Path
+    if ([int64]$actual.size -ne [int64]$Expected.size -or
+            [string]$actual.sha256 -cne [string]$Expected.sha256) {
+        throw "$Field bytes differ from their authority."
+    }
+}
+
+function Copy-Verified([string]$Source, [string]$Destination,
+        [object]$Expected, [string]$Field) {
+    [IO.File]::Copy($Source, $Destination, $false)
+    $copy = Resolve-Regular $Destination "$Field staged copy"
+    Assert-Blob $Expected $copy "$Field staged copy"
+}
+
+function Invoke-Validator([string]$Executable, [string[]]$Arguments,
+        [int]$TimeoutSeconds) {
+    $start = [Diagnostics.ProcessStartInfo]::new()
+    $start.FileName = $Executable
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    foreach ($argument in $Arguments) { $start.ArgumentList.Add($argument) }
+    $process = [Diagnostics.Process]::new()
+    $process.StartInfo = $start
+    try {
+        if (-not $process.Start()) { throw 'CD-DA validator did not start.' }
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+            try { $process.Kill($true) } catch { }
+            try { $process.WaitForExit() } catch { }
+            throw 'CD-DA validator timed out.'
+        }
+        $stdout = $stdoutTask.GetAwaiter().GetResult().Trim()
+        $stderr = $stderrTask.GetAwaiter().GetResult().Trim()
+        if ($process.ExitCode -ne 0) {
+            $message = ($stdout + "`n" + $stderr).Trim()
+            if ($message.Length -gt 4096) { $message = $message.Substring(0, 4096) }
+            throw "CD-DA validator rejected the candidate: $message"
+        }
+        return $stdout
+    }
+    finally { $process.Dispose() }
+}
+
+function Write-Json([string]$Path, [object]$Value) {
+    [IO.File]::WriteAllText($Path,
+        (($Value | ConvertTo-Json -Depth 32) + "`n"), $utf8NoBom)
+}
+
+$artifactPath = Resolve-Regular $Artifact 'Artifact'
+$identityPath = Resolve-Regular $Identity 'Identity'
+$replayPath = Resolve-Regular $MapleReplay 'MapleReplay'
+$flycastPath = Resolve-Regular $FlycastExecutable 'FlycastExecutable'
+$validatorPath = Resolve-Regular $ArtifactValidator 'ArtifactValidator'
+$publisherPath = Resolve-Regular $PSCommandPath 'Publisher'
+$identityObject = Get-Content -LiteralPath $identityPath -Raw -Encoding UTF8 |
+    ConvertFrom-Json -Depth 64
+if ([string]$identityObject.schema -cne 'flycast-research-identity' -or
+        [int]$identityObject.schema_version -ne 2) {
+    throw 'CD-DA publication requires a Flycast research identity v2.'
+}
+if ([string]$identityObject.media.kind -cne 'gdi') {
+    throw 'CD-DA v2 publication requires identity-bound GDI media.'
+}
+Assert-Blob $identityObject.emulator.executable $flycastPath `
+    'identity.emulator.executable'
+if ($null -eq $identityObject.initial_state -or
+        [string]$identityObject.initial_state.kind -cne 'savestate') {
+    throw 'CD-DA package v2 requires an authenticated initial savestate.'
+}
+$statePath = Resolve-Regular ([string]$identityObject.initial_state.blob.path) `
+    'identity.initial_state.blob'
+Assert-Blob $identityObject.initial_state.blob $statePath `
+    'identity.initial_state.blob'
+
+$accepted = [IO.Path]::GetFullPath($OutputDirectory)
+if (-not [IO.Path]::IsPathFullyQualified($accepted)) {
+    throw 'OutputDirectory must be an absolute path.'
+}
+$parent = Split-Path -Parent $accepted
+if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
+    throw 'OutputDirectory parent must already exist.'
+}
+$parent = (Resolve-Path -LiteralPath $parent).Path
+$accepted = Join-Path $parent (Split-Path -Leaf $accepted)
+if (Test-Path -LiteralPath $accepted) { throw 'OutputDirectory already exists.' }
+
+$packageId = [Guid]::NewGuid().ToString('D').ToLowerInvariant()
+$candidate = Join-Path $parent ".flycast-research-cdda-candidate-$packageId"
+$quarantineRoot = Join-Path $parent '.flycast-research-cdda-quarantine'
+$quarantine = Join-Path $quarantineRoot $packageId
+$sources = [ordered]@{
+    artifact = Get-Blob $artifactPath
+    identity = Get-Blob $identityPath
+    initial_state = Get-Blob $statePath
+    maple_replay = Get-Blob $replayPath
+    flycast = Get-Blob $flycastPath
+    artifact_validator = Get-Blob $validatorPath
+    publisher = Get-Blob $publisherPath
+}
+
+try {
+    [IO.Directory]::CreateDirectory($candidate) | Out-Null
+    Copy-Verified $artifactPath (Join-Path $candidate 'cdda.fccdda') `
+        $sources.artifact 'Artifact'
+    Copy-Verified $identityPath (Join-Path $candidate 'identity.json') `
+        $sources.identity 'Identity'
+    Copy-Verified $statePath (Join-Path $candidate 'initial-state.state') `
+        $sources.initial_state 'InitialState'
+    Copy-Verified $replayPath (Join-Path $candidate 'maple-replay.fcmt') `
+        $sources.maple_replay 'MapleReplay'
+    Copy-Verified $flycastPath (Join-Path $candidate 'flycast.exe') `
+        $sources.flycast 'FlycastExecutable'
+    Copy-Verified $validatorPath (Join-Path $candidate 'artifact-validator.exe') `
+        $sources.artifact_validator 'ArtifactValidator'
+    Copy-Verified $publisherPath (Join-Path $candidate 'publisher.ps1') `
+        $sources.publisher 'Publisher'
+    Write-Json (Join-Path $candidate 'package.json') ([ordered]@{
+        schema = 'flycast-research-cdda-package'
+        schema_version = 2
+        package_id = $packageId
+        accepted_directory = $accepted
+        entries = $sources
+    })
+    if ($IntegrationTestAbortToken -ceq 'after-staging-v2') {
+        throw 'Integration test forced abort after staging.'
+    }
+    $validatorOutput = Invoke-Validator `
+        (Join-Path $candidate 'artifact-validator.exe') @(
+            (Join-Path $candidate 'cdda.fccdda'),
+            (Join-Path $candidate 'identity.json'),
+            (Join-Path $candidate 'maple-replay.fcmt')) `
+        $ValidatorTimeoutSeconds
+    $validation = $validatorOutput | ConvertFrom-Json -Depth 16
+    if ([string]$validation.schema -cne 'flycast-cdda-validation-v2' -or
+            $validation.accepted -ne $true -or
+            [int64]$validation.successful_sectors -le 0 -or
+            [int64]$validation.contributing_sample_frames -le 0) {
+        throw 'CD-DA validator output is not an accepted typed v2 result.'
+    }
+    $receiptEntries = @()
+    foreach ($name in @('cdda.fccdda', 'identity.json', 'initial-state.state',
+            'maple-replay.fcmt', 'flycast.exe', 'artifact-validator.exe',
+            'publisher.ps1', 'package.json')) {
+        $blob = Get-Blob (Join-Path $candidate $name)
+        $receiptEntries += [ordered]@{
+            name = $name; size = $blob.size; sha256 = $blob.sha256
+        }
+    }
+    Write-Json (Join-Path $candidate 'package-validation.json') ([ordered]@{
+        schema = 'flycast-research-cdda-package-validation'
+        schema_version = 2
+        package_id = $packageId
+        status = 'accepted'
+        artifact_validation = $validation
+        entries = $receiptEntries
+    })
+    if ($IntegrationTestAbortToken -ceq 'after-validation-v2') {
+        throw 'Integration test forced abort after validation.'
+    }
+    if (Test-Path -LiteralPath $accepted) {
+        throw 'Accepted output appeared before atomic publication.'
+    }
+    [IO.Directory]::Move($candidate, $accepted)
+    Write-Output "ACCEPTED flycast-research-cdda-package-v2 $accepted"
+}
+catch {
+    $failure = $_.Exception.Message
+    if (Test-Path -LiteralPath $candidate -PathType Container) {
+        [IO.Directory]::CreateDirectory($quarantineRoot) | Out-Null
+        if (Test-Path -LiteralPath $quarantine) {
+            throw 'Quarantine destination already exists.'
+        }
+        Write-Json (Join-Path $candidate 'rejection.json') ([ordered]@{
+            schema = 'flycast-research-cdda-package-quarantine'
+            schema_version = 2
+            package_id = $packageId
+            accepted_directory = $accepted
+            failure = $failure
+        })
+        [IO.Directory]::Move($candidate, $quarantine)
+    }
+    throw
+}

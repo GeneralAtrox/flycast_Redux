@@ -64,6 +64,8 @@ struct Job
 	BackendInput dynarec;
 	Blob emulator;
 	Blob replay;
+	Blob initialState;
+	bool hasInitialState = false;
 	Blob manifestSet;
 	Blob comparator;
 	std::vector<ManifestInput> manifests;
@@ -247,9 +249,21 @@ Job loadJob(const std::filesystem::path& path)
 	{
 		invalid(std::string("job JSON parse error: ") + exception.what());
 	}
-	requireKeys(root, {"comparator", "dynarec", "emulator", "interpreter",
-			"job_id", "limits", "manifest_set", "manifests", "metadata", "replay",
-			"schema", "schema_version"}, "job");
+	const std::set<std::string> requiredJobKeys {"comparator", "dynarec",
+			"emulator", "interpreter", "job_id", "limits", "manifest_set",
+			"manifests", "metadata", "replay", "schema", "schema_version"};
+	const std::set<std::string> allowedJobKeys {"comparator", "dynarec",
+			"emulator", "initial_state", "interpreter", "job_id", "limits",
+			"manifest_set", "manifests", "metadata", "replay", "schema",
+			"schema_version"};
+	if (!root.is_object())
+		invalid("job must be an object");
+	for (const auto& item : root.items())
+		if (allowedJobKeys.find(item.key()) == allowedJobKeys.end())
+			invalid("job has unknown field '" + item.key() + "'");
+	for (const std::string& key : requiredJobKeys)
+		if (!root.contains(key))
+			invalid("job." + key + " is missing");
 	if (root.at("schema") != "flycast-research-sh4-equivalence-job"
 			|| !root.at("schema_version").is_number_unsigned()
 			|| root.at("schema_version").get<std::uint64_t>() != 1)
@@ -262,6 +276,12 @@ Job loadJob(const std::filesystem::path& path)
 	job.dynarec = parseBackend(root.at("dynarec"), "job.dynarec", jobDirectory);
 	job.emulator = parseBlob(root.at("emulator"), "job.emulator", jobDirectory);
 	job.replay = parseBlob(root.at("replay"), "job.replay", jobDirectory);
+	if (root.contains("initial_state"))
+	{
+		job.initialState = parseBlob(root.at("initial_state"),
+				"job.initial_state", jobDirectory);
+		job.hasInitialState = true;
+	}
 	job.manifestSet = parseBlob(root.at("manifest_set"), "job.manifest_set",
 			jobDirectory);
 	const json& comparator = object(root, "comparator", "job");
@@ -435,7 +455,7 @@ Evaluation evaluate(const std::filesystem::path& jobPath,
 		const std::filesystem::path& runningComparator)
 {
 	Job job = loadJob(jobPath);
-	const std::vector<std::pair<const char *, const Blob *>> inputBlobs {
+	std::vector<std::pair<const char *, const Blob *>> inputBlobs {
 			{"interpreter identity", &job.interpreter.identity},
 			{"interpreter trace", &job.interpreter.trace},
 			{"dynarec identity", &job.dynarec.identity},
@@ -443,6 +463,8 @@ Evaluation evaluate(const std::filesystem::path& jobPath,
 			{"replay", &job.replay}, {"manifest set", &job.manifestSet},
 			{"comparator", &job.comparator},
 	};
+	if (job.hasInitialState)
+		inputBlobs.push_back({"initial state", &job.initialState});
 	requireAllDistinct(inputBlobs);
 	for (const auto& item : inputBlobs)
 		authenticate(*item.second, item.first);
@@ -475,6 +497,22 @@ Evaluation evaluate(const std::filesystem::path& jobPath,
 	if (!sha256Equal(interpreter.manifest.mapleReplayIdentityDigest,
 			dynarec.manifest.mapleReplayIdentityDigest))
 		invalid("backend identities bind different Maple replay identities");
+	if (interpreter.manifest.initialState.available
+			!= dynarec.manifest.initialState.available)
+		invalid("backend identities disagree on initial-state availability");
+	if (interpreter.manifest.initialState.available)
+	{
+		const InitialStateIdentity& left = interpreter.manifest.initialState;
+		const InitialStateIdentity& right = dynarec.manifest.initialState;
+		if (!job.hasInitialState || left.slot != right.slot
+				|| left.size != right.size
+				|| !sha256Equal(left.digest, right.digest)
+				|| job.initialState.size != left.size
+				|| !sha256Equal(job.initialState.digest, left.digest))
+			invalid("job and backend identities bind different initial states");
+	}
+	else if (job.hasInitialState)
+		invalid("job initial_state is not declared by backend identities");
 	validateProductionMapleTraceFile(job.replay.path,
 			interpreter.manifest.mapleReplayIdentityDigest, job.maximumReplayBytes);
 	const std::size_t manifestCount = validateManifestSet(job.manifestSet,
@@ -527,6 +565,12 @@ Evaluation evaluate(const std::filesystem::path& jobPath,
 		{"matched_event_count", comparison.matchedEventCount},
 		{"first_divergence", std::move(divergence)},
 	};
+	if (job.hasInitialState)
+	{
+		report["initial_state"] = {
+				{"file", blobJson(job.initialState)},
+				{"slot", interpreter.manifest.initialState.slot}};
+	}
 	Evaluation result;
 	result.summary.jobId = job.jobId;
 	result.summary.equivalent = comparison.equivalent;

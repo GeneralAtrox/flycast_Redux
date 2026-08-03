@@ -1,6 +1,7 @@
 #pragma once
 #include "types.h"
 #include "stdclass.h"
+#include "research/aica_observation.h"
 
 namespace aica
 {
@@ -10,7 +11,8 @@ u32 GetRTC_now();
 template<typename T> T readRtcReg(u32 addr);
 template<typename T> void writeRtcReg(u32 addr, T data);
 template<typename T> T readAicaReg(u32 addr);
-template<typename T> void writeAicaReg(u32 addr, T data);
+template<typename T> void writeAicaReg(u32 addr, T data,
+		research::AicaWriter writer = research::AicaWriter::Sh4Direct);
 
 void init();
 void reset(bool hard);

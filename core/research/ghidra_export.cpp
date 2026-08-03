@@ -157,22 +157,14 @@ json parseRejectingDuplicateKeys(const std::vector<std::uint8_t>& bytes)
 	return json::parse(bytes.begin(), bytes.end(), callback);
 }
 
-struct MemoryBlock
-{
-	std::uint64_t start = 0;
-	std::uint64_t end = 0;
-	std::string name;
-	bool initialized = false;
-	bool executable = false;
-};
-
-bool intervalContained(const std::vector<MemoryBlock>& blocks, std::uint64_t start,
+bool intervalContained(const std::vector<GhidraMemoryBlock>& blocks, std::uint64_t start,
 		std::uint64_t end, bool requireInitialized, bool requireExecutable)
 {
-	for (const MemoryBlock& block : blocks)
-		if (start >= block.start && end <= block.end
+	for (const GhidraMemoryBlock& block : blocks)
+		if (start >= block.startAddress
+				&& end <= std::uint64_t(block.startAddress) + block.length
 				&& (!requireInitialized || block.initialized)
-				&& (!requireExecutable || block.executable))
+				&& (!requireExecutable || block.execute))
 			return true;
 	return false;
 }
@@ -246,7 +238,7 @@ GhidraExport validateExport(const json& root)
 	const json& blocks = requiredArray(root, "memory_blocks", "root");
 	if (blocks.empty() || blocks.size() > MaxGhidraMemoryBlocks)
 		invalid("root.memory_blocks count is outside [1, 4096]");
-	std::vector<MemoryBlock> parsedBlocks;
+	std::vector<GhidraMemoryBlock> parsedBlocks;
 	parsedBlocks.reserve(blocks.size());
 	for (std::size_t index = 0; index < blocks.size(); ++index)
 	{
@@ -254,38 +246,42 @@ GhidraExport validateExport(const json& root)
 		const std::string field = "root.memory_blocks[" + std::to_string(index) + "]";
 		requireAllowedKeys(block, {"name", "start_address", "length", "read", "write",
 				"execute", "initialized"}, field);
-		MemoryBlock parsed;
+		GhidraMemoryBlock parsed;
 		parsed.name = requiredString(block, "name", field);
-		parsed.start = parseAddress(requiredString(block, "start_address", field),
+		parsed.startAddress = parseAddress(requiredString(block, "start_address", field),
 				field + ".start_address");
 		const std::uint64_t length = requiredUnsigned(block, "length", field);
-		if (length == 0 || length > AddressSpaceSize - parsed.start)
+		if (length == 0 || length > AddressSpaceSize - parsed.startAddress)
 			invalid(field + " has an empty or wrapping range");
-		parsed.end = parsed.start + length;
-		requiredBool(block, "read", field);
-		requiredBool(block, "write", field);
-		parsed.executable = requiredBool(block, "execute", field);
+		parsed.length = length;
+		parsed.read = requiredBool(block, "read", field);
+		parsed.write = requiredBool(block, "write", field);
+		parsed.execute = requiredBool(block, "execute", field);
 		parsed.initialized = requiredBool(block, "initialized", field);
 		if (!parsedBlocks.empty())
 		{
-			const MemoryBlock& previous = parsedBlocks.back();
-			if (std::tie(parsed.start, parsed.name) <= std::tie(previous.start, previous.name))
+			const GhidraMemoryBlock& previous = parsedBlocks.back();
+			if (std::tie(parsed.startAddress, parsed.name)
+					<= std::tie(previous.startAddress, previous.name))
 				invalid("root.memory_blocks are not in canonical start/name order");
-			if (parsed.start < previous.end)
+			if (parsed.startAddress
+					< std::uint64_t(previous.startAddress) + previous.length)
 				invalid("root.memory_blocks overlap");
 		}
 		parsedBlocks.push_back(std::move(parsed));
 	}
-	if (parsedBlocks.front().start != minimumAddress
-			|| parsedBlocks.back().end - 1 != maximumAddress)
+	if (parsedBlocks.front().startAddress != minimumAddress
+			|| std::uint64_t(parsedBlocks.back().startAddress)
+					+ parsedBlocks.back().length - 1 != maximumAddress)
 		invalid("root.program min/max addresses do not match memory blocks");
 	if (!intervalContained(parsedBlocks, result.imageBase,
 			static_cast<std::uint64_t>(result.imageBase) + 1, true, true))
 		invalid("root.program.image_base is not inside initialized executable memory");
 	std::uint64_t firstInitializedExecutable = AddressSpaceSize;
-	for (const MemoryBlock& block : parsedBlocks)
-		if (block.initialized && block.executable)
-			firstInitializedExecutable = (std::min)(firstInitializedExecutable, block.start);
+	for (const GhidraMemoryBlock& block : parsedBlocks)
+		if (block.initialized && block.execute)
+			firstInitializedExecutable = (std::min)(firstInitializedExecutable,
+					std::uint64_t(block.startAddress));
 	if (imageBaseSource == "ghidra-program" && result.imageBase != ghidraImageBase)
 		invalid("ghidra-program image-base source does not match ghidra_image_base");
 	if (imageBaseSource == "minimum-initialized-executable-block"
@@ -295,6 +291,7 @@ GhidraExport validateExport(const json& root)
 			&& intervalContained(parsedBlocks, ghidraImageBase,
 					static_cast<std::uint64_t>(ghidraImageBase) + 1, true, true))
 		invalid("derived image-base source is invalid when ghidra_image_base is executable");
+	result.memoryBlocks = parsedBlocks;
 	result.memoryBlockCount = parsedBlocks.size();
 
 	const json& functions = requiredArray(root, "functions", "root");
@@ -311,25 +308,32 @@ GhidraExport validateExport(const json& root)
 		requireAllowedKeys(function, {"entry_address", "name", "namespace",
 				"calling_convention", "return_type", "parameter_types", "body_ranges", "thunk",
 				"no_return"}, field);
+		GhidraFunction parsedFunction;
 		const std::uint64_t entry = parseAddress(requiredString(function, "entry_address", field),
 				field + ".entry_address");
 		if ((entry & 1u) != 0 || (havePreviousFunction && entry <= previousFunctionEntry))
 			invalid("root.functions are not uniquely ordered by even entry address");
 		havePreviousFunction = true;
 		previousFunctionEntry = entry;
-		requiredString(function, "name", field);
-		requiredString(function, "namespace", field, MaxShortText, true);
-		requiredString(function, "calling_convention", field, 256);
-		requiredString(function, "return_type", field);
-		requiredBool(function, "thunk", field);
-		requiredBool(function, "no_return", field);
+		parsedFunction.entryAddress = static_cast<std::uint32_t>(entry);
+		parsedFunction.name = requiredString(function, "name", field);
+		parsedFunction.nameSpace = requiredString(function, "namespace", field,
+				MaxShortText, true);
+		parsedFunction.callingConvention = requiredString(function,
+				"calling_convention", field, 256);
+		parsedFunction.returnType = requiredString(function, "return_type", field);
+		parsedFunction.thunk = requiredBool(function, "thunk", field);
+		parsedFunction.noReturn = requiredBool(function, "no_return", field);
 		const json& parameters = requiredArray(function, "parameter_types", field);
 		if (parameters.size() > MaxGhidraFunctionParameters)
 			invalid(field + ".parameter_types has more than 64 entries");
 		for (const json& parameter : parameters)
+		{
 			if (!parameter.is_string() || parameter.get<std::string>().empty()
 					|| parameter.get<std::string>().size() > MaxShortText)
 				invalid(field + ".parameter_types contains an invalid type");
+			parsedFunction.parameterTypes.push_back(parameter.get<std::string>());
+		}
 		const json& ranges = requiredArray(function, "body_ranges", field);
 		if (ranges.empty())
 			invalid(field + ".body_ranges is empty");
@@ -358,9 +362,12 @@ GhidraExport validateExport(const json& root)
 			entryCovered = entryCovered || (entry >= start && entry < end);
 			previousEnd = end;
 			allFunctionRanges.emplace_back(start, end);
+			parsedFunction.bodyRanges.push_back(GhidraFunctionBodyRange {
+					static_cast<std::uint32_t>(start), length});
 		}
 		if (!entryCovered)
 			invalid(field + ".entry_address is outside its body");
+		result.functions.push_back(std::move(parsedFunction));
 	}
 	std::sort(allFunctionRanges.begin(), allFunctionRanges.end());
 	for (std::size_t index = 1; index < allFunctionRanges.size(); ++index)
@@ -379,6 +386,7 @@ GhidraExport validateExport(const json& root)
 		const std::string field = "root.symbols[" + std::to_string(index) + "]";
 		requireAllowedKeys(symbol, {"address", "name", "namespace", "kind", "source",
 				"primary"}, field);
+		GhidraSymbol parsedSymbol;
 		const std::uint64_t address = parseAddress(requiredString(symbol, "address", field),
 				field + ".address");
 		const std::string name = requiredString(symbol, "name", field);
@@ -388,7 +396,12 @@ GhidraExport validateExport(const json& root)
 		const std::string source = requiredString(symbol, "source", field, 128);
 		if (!validIdentifier(kind) || !validIdentifier(source))
 			invalid(field + " kind/source is not a valid identifier");
-		requiredBool(symbol, "primary", field);
+		parsedSymbol.address = static_cast<std::uint32_t>(address);
+		parsedSymbol.name = name;
+		parsedSymbol.nameSpace = nameSpace;
+		parsedSymbol.kind = kind;
+		parsedSymbol.source = source;
+		parsedSymbol.primary = requiredBool(symbol, "primary", field);
 		if (!intervalContained(parsedBlocks, address, address + 1, false, false))
 			invalid(field + ".address is outside exported memory");
 		const auto key = std::make_tuple(address, kind, nameSpace, name);
@@ -396,6 +409,7 @@ GhidraExport validateExport(const json& root)
 			invalid("root.symbols are not uniquely ordered by address/kind/namespace/name");
 		havePreviousSymbol = true;
 		previousSymbol = key;
+		result.symbols.push_back(std::move(parsedSymbol));
 	}
 	result.symbolCount = symbols.size();
 

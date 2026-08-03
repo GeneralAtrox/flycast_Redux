@@ -291,8 +291,11 @@ identity are explicit. A matching symbol name is not sufficient.
    VRAM writes, render/present generations, backend-independent frame artifacts.
 5. **GD-ROM and AICA**: command/sector/transfer traces, AICA slot and ARAM
    ownership, CD-DA linkage, bounded audio artifacts.
-6. **Comparison workflows**: exact frame/audio differences, temporal deltas,
-   independent-emulator and hardware evidence import, aggregate audit reports.
+6. **Evidence audit**: current independent revalidation, exact package
+   inventories, collision detection, stale-evidence rejection and aggregate
+   typed audit reports. External hardware and independent-emulator imports are
+   outside the project scope; Flycast's typed native artifacts are the
+   authoritative Dreamcast observation boundary.
 7. **Lua research API**: subscriptions and orchestration over the same native
    typed events, with explicit discovery-versus-evidence labeling.
 

@@ -51,7 +51,9 @@ void applyEquivalenceOverrides(const IdentityManifest& identity)
 	config::ResearchDreamcastRtcSeed.override(
 			identity.runtimeConfiguration.dreamcastRtcSeed);
 	config::ThreadedRendering.override(false);
-	config::AutoLoadState.override(false);
+	config::AutoLoadState.override(identity.runtimeConfiguration.autoLoadState);
+	if (identity.initialState.available)
+		config::SavestateSlot.override(static_cast<int>(identity.initialState.slot));
 	config::AutoSaveState.override(false);
 	config::GGPOEnable.override(false);
 }
@@ -67,6 +69,10 @@ void verifyRuntimeConfiguration(const IdentityManifest& identity)
 					!= identity.runtimeConfiguration.sh4ObservationStartDma
 			|| config::ThreadedRendering.get()
 			|| config::AutoLoadState.get()
+					!= identity.runtimeConfiguration.autoLoadState
+			|| (identity.initialState.available
+					&& static_cast<std::uint32_t>(config::SavestateSlot.get())
+							!= identity.initialState.slot)
 			|| config::AutoSaveState.get()
 			|| config::GGPOEnable.get())
 		throw FlycastException("SH-4 observation identity/runtime configuration mismatch");

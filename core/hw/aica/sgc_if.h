@@ -1,6 +1,8 @@
 #pragma once
 #include "types.h"
 
+namespace research { struct AicaCheckpoint; }
+
 namespace aica::sgc
 {
 
@@ -45,5 +47,6 @@ void ReadCommonReg(u32 reg, bool byte);
 void serialize(Serializer& ctx);
 void deserialize(Deserializer& ctx);
 void vmuBeep(int on, int period);
+research::AicaCheckpoint captureResearchCheckpoint();
 
 } // namespace aica::sgc

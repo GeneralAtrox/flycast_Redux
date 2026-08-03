@@ -11,12 +11,14 @@ param(
     [Parameter(Mandatory = $true)][string]$Manifest,
     [Parameter(Mandatory = $true)][string]$FlashSeed,
     [Parameter(Mandatory = $true)][string]$OutputDirectory,
+	[string]$DrawValidatorExecutable = '',
 	[ValidateRange(1, 600)][int]$MinimumRunSeconds = 10,
     [ValidateRange(10, 600)][int]$CaptureTimeoutSeconds = 120,
     [ValidateRange(5, 120)][int]$ExitTimeoutSeconds = 30,
     [ValidateRange(5, 300)][int]$ValidatorTimeoutSeconds = 60,
     [ValidateRange(160, 1073741824)][int64]$MaximumReplayBytes = 536870912,
-    [ValidateRange(256, 1073741824)][int64]$MaximumPresentationBytes = 536870912
+    [ValidateRange(256, 1073741824)][int64]$MaximumPresentationBytes = 536870912,
+    [ValidateRange(320, 1073741824)][int64]$MaximumDrawBytes = 536870912
 )
 
 Set-StrictMode -Version Latest
@@ -157,6 +159,31 @@ Assert-Condition ([string]$identityObject.schema -ceq 'flycast-research-identity
 Assert-Condition ([string]$manifestObject.schema -ceq
     'flycast-research-pvr-ta-capture-manifest' -and
     [int]$manifestObject.schema_version -eq 1) 'Manifest must be PVR TA manifest v1.'
+$hasInitialState = $identityObject.PSObject.Properties.Name -ccontains `
+    'initial_state'
+$initialState = if ($hasInitialState) {
+    Assert-Condition ([string]$identityObject.initial_state.kind -ceq 'savestate') `
+        'Identity initial_state kind must be savestate.'
+    $stateSlot = [int]$identityObject.initial_state.slot
+    Assert-Condition ($stateSlot -ge 0 -and $stateSlot -le 9) `
+        'Identity initial_state slot is outside v2 bounds.'
+    $statePath = Resolve-RegularFile `
+        ([string]$identityObject.initial_state.blob.path) 'identity initial state'
+    Assert-DeclaredBlob $identityObject.initial_state.blob $statePath `
+        'identity initial state'
+    [pscustomobject]@{ Path = $statePath; Slot = $stateSlot }
+}
+else { $null }
+if ($hasInitialState) { $sourceBlobs['initial_state'] = Get-Blob $initialState.Path }
+$hasDraw = $identityObject.configuration.values.PSObject.Properties.Name `
+    -ccontains 'pvr_draw_configuration'
+$drawValidator = if ($hasDraw) {
+    Assert-Condition (-not [string]::IsNullOrWhiteSpace($DrawValidatorExecutable)) `
+        'DrawValidatorExecutable is required by the identity-bound draw configuration.'
+    Resolve-RegularFile $DrawValidatorExecutable 'DrawValidatorExecutable'
+}
+else { $null }
+if ($hasDraw) { $sourceBlobs['draw_validator'] = Get-Blob $drawValidator }
 Assert-CaptureIdentitySources $identityObject $flycast $gamePath $flashPath
 $maximumBytes = [int64]$manifestObject.limits.maximum_bytes
 $maximumEvents = [int64]$manifestObject.limits.maximum_events
@@ -191,19 +218,28 @@ foreach ($directory in @($data, $inputs, $candidateDirectory, $validation)) {
 $stagedFlycast = Join-Path $runtime 'flycast.exe'
 $stagedValidator = Join-Path $validation 'artifact-validator.exe'
 $stagedPresentationValidator = Join-Path $validation 'presentation-validator.exe'
+$stagedDrawValidator = Join-Path $validation 'draw-validator.exe'
 $stagedIdentity = Join-Path $inputs 'identity.json'
 $stagedReplay = Join-Path $inputs 'maple-replay.fcmt'
 $stagedManifest = Join-Path $inputs 'pvr-ta-manifest.json'
 $candidate = Join-Path $candidateDirectory 'pvr-ta.candidate.fcpvr'
 $presentationCandidate = Join-Path $candidateDirectory `
     'pvr-presentation.candidate.fcpvrp'
+$drawCandidate = Join-Path $candidateDirectory 'pvr-draw.candidate.fcpvrd'
 [IO.File]::Copy($flycast, $stagedFlycast, $false)
 [IO.File]::Copy($validator, $stagedValidator, $false)
 [IO.File]::Copy($presentationValidator, $stagedPresentationValidator, $false)
+if ($hasDraw) { [IO.File]::Copy($drawValidator, $stagedDrawValidator, $false) }
 [IO.File]::Copy($identityPath, $stagedIdentity, $false)
 [IO.File]::Copy($replayPath, $stagedReplay, $false)
 [IO.File]::Copy($manifestPath, $stagedManifest, $false)
 [IO.File]::Copy($flashPath, (Join-Path $data 'dc_nvmem.bin'), $false)
+if ($hasInitialState) {
+    $stateSuffix = if ($initialState.Slot -eq 0) { '' } else { "_$($initialState.Slot)" }
+    $stagedInitialState = Join-Path $data `
+        "$([IO.Path]::GetFileNameWithoutExtension($gamePath))$stateSuffix.state"
+    [IO.File]::Copy($initialState.Path, $stagedInitialState, $false)
+}
 [IO.File]::WriteAllText((Join-Path $runtime 'emu.cfg'),
     "[log]`nLogToFile = yes`nVerbosity = 6`n", $utf8NoBom)
 foreach ($pair in @(
@@ -216,6 +252,14 @@ foreach ($pair in @(
     @($sourceBlobs.manifest, $stagedManifest, 'staged manifest'),
     @($sourceBlobs.flash, (Join-Path $data 'dc_nvmem.bin'), 'staged flash'))) {
     Assert-Blob $pair[0] $pair[1] $pair[2]
+}
+if ($hasDraw) {
+    Assert-Blob $sourceBlobs.draw_validator $stagedDrawValidator `
+        'staged draw validator'
+}
+if ($hasInitialState) {
+    Assert-Blob $sourceBlobs.initial_state $stagedInitialState `
+        'staged initial state'
 }
 
 $directives = [Collections.Generic.List[string]]::new()
@@ -243,6 +287,19 @@ foreach ($directive in @(
         }
     }
     $directives.Add($directive)
+}
+if ($hasDraw) {
+    foreach ($directive in @(
+        "research:PvrDrawRecord=$drawCandidate",
+        "research:PvrDrawMaxBytes=$MaximumDrawBytes")) {
+        $key = $directive.Substring(0, $directive.IndexOf('=') + 1)
+        for ($index = $directives.Count - 1; $index -ge 0; --$index) {
+            if ($directives[$index].StartsWith($key, [StringComparison]::Ordinal)) {
+                $directives.RemoveAt($index)
+            }
+        }
+        $directives.Add($directive)
+    }
 }
 foreach ($directive in $directives) {
     Assert-Condition ($directive -match '^[^=,\r\n''"]+=[^=,\r\n''"]+$') `
@@ -317,11 +374,20 @@ Assert-Blob $sourceBlobs.flycast $flycast 'Flycast source'
 Assert-Blob $sourceBlobs.validator $validator 'validator source'
 Assert-Blob $sourceBlobs.presentation_validator $presentationValidator `
     'presentation validator source'
+if ($hasDraw) {
+    Assert-Blob $sourceBlobs.draw_validator $drawValidator 'draw validator source'
+}
 Assert-Blob $sourceBlobs.game $gamePath 'game source'
 Assert-Blob $sourceBlobs.identity $identityPath 'identity source'
 Assert-Blob $sourceBlobs.replay $replayPath 'replay source'
 Assert-Blob $sourceBlobs.manifest $manifestPath 'manifest source'
 Assert-Blob $sourceBlobs.flash $flashPath 'flash source'
+if ($hasInitialState) {
+    Assert-Blob $sourceBlobs.initial_state $initialState.Path `
+        'initial state source'
+    Assert-Blob $sourceBlobs.initial_state $stagedInitialState `
+        'staged initial state'
+}
 Assert-CaptureIdentitySources $identityObject $flycast $gamePath $flashPath
 $firstCandidate = Get-Blob $candidate
 Start-Sleep -Milliseconds 250
@@ -337,6 +403,14 @@ Assert-Condition ($firstPresentationCandidate.size -eq
     $firstPresentationCandidate.sha256 -ceq
         $secondPresentationCandidate.sha256) `
     'Finalized presentation candidate is not stable.'
+if ($hasDraw) {
+    $firstDrawCandidate = Get-Blob $drawCandidate
+    Start-Sleep -Milliseconds 250
+    $secondDrawCandidate = Get-Blob $drawCandidate
+    Assert-Condition ($firstDrawCandidate.size -eq $secondDrawCandidate.size -and
+        $firstDrawCandidate.sha256 -ceq $secondDrawCandidate.sha256) `
+        'Finalized draw candidate is not stable.'
+}
 
 $validatorStdout = Join-Path $validation 'artifact-validator.stdout.txt'
 $validatorStderr = Join-Path $validation 'artifact-validator.stderr.txt'
@@ -361,6 +435,23 @@ Invoke-OwnedProcess $stagedPresentationValidator @(
 ) $ValidatorTimeoutSeconds $presentationValidatorStdout `
     $presentationValidatorStderr 'PowerVR presentation artifact validator'
 
+if ($hasDraw) {
+    $drawValidatorStdout = Join-Path $validation 'draw-validator.stdout.txt'
+    $drawValidatorStderr = Join-Path $validation 'draw-validator.stderr.txt'
+    Invoke-OwnedProcess $stagedDrawValidator @(
+        '--artifact', $drawCandidate,
+        '--ta-artifact', $candidate,
+        '--presentation-artifact', $presentationCandidate,
+        '--identity', $stagedIdentity,
+        '--replay', $stagedReplay,
+        '--manifest', $stagedManifest,
+        '--max-draw-bytes', [string]$MaximumDrawBytes,
+        '--max-draw-events', [string]$maximumEvents,
+        '--max-presentation-bytes', [string]$MaximumPresentationBytes
+    ) $ValidatorTimeoutSeconds $drawValidatorStdout $drawValidatorStderr `
+        'PowerVR draw artifact validator'
+}
+
 $result = [ordered]@{
     schema = 'flycast-research-pvr-ta-capture-result'
     schema_version = 1
@@ -373,5 +464,13 @@ $result = [ordered]@{
     manifest = Get-Blob $stagedManifest
     validator = Get-Blob $stagedValidator
     presentation_validator = Get-Blob $stagedPresentationValidator
+}
+if ($hasInitialState) {
+    $result['initial_state'] = Get-Blob $stagedInitialState
+    $result['initial_state_slot'] = $initialState.Slot
+}
+if ($hasDraw) {
+    $result['draw_candidate'] = Get-Blob $drawCandidate
+    $result['draw_validator'] = Get-Blob $stagedDrawValidator
 }
 $result | ConvertTo-Json -Depth 16

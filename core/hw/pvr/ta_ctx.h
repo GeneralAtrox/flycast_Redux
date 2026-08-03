@@ -3,6 +3,7 @@
 #include "ta_structs.h"
 #include "ta_selection.h"
 #include "pvr_regs.h"
+#include "research/pvr_draw_observation.h"
 #include "oslib/oslib.h"
 #include <glm/glm.hpp>
 
@@ -57,6 +58,12 @@ struct PolyParam
 	bool envMapping[2];
 	bool constantColor[2];
 
+	std::uint64_t researchPrimitiveGeneration = 0;
+	research::PvrPrimitiveKind researchPrimitiveKind =
+			research::PvrPrimitiveKind::PolygonStrip;
+	std::vector<research::PvrTaBlockProvenance> researchParameterBlocks;
+	std::vector<research::PvrTaBlockProvenance> researchVertexBlocks;
+
 	void init()
 	{
 		first = 0;
@@ -82,6 +89,10 @@ struct PolyParam
 		envMapping[1] = false;
 		constantColor[0] = false;
 		constantColor[1] = false;
+		researchPrimitiveGeneration = 0;
+		researchPrimitiveKind = research::PvrPrimitiveKind::PolygonStrip;
+		researchParameterBlocks.clear();
+		researchVertexBlocks.clear();
 	}
 
 	bool equivalentIgnoreCullingDirection(const PolyParam& other) const
@@ -117,6 +128,9 @@ struct ModifierVolumeParam
 
 	int mvMatrix;
 	int projMatrix;
+	std::uint64_t researchPrimitiveGeneration = 0;
+	std::vector<research::PvrTaBlockProvenance> researchParameterBlocks;
+	std::vector<research::PvrTaBlockProvenance> researchVertexBlocks;
 
 	void init()
 	{
@@ -126,6 +140,9 @@ struct ModifierVolumeParam
 		tileclip = 0;
 		mvMatrix = -1;
 		projMatrix = -1;
+		researchPrimitiveGeneration = 0;
+		researchParameterBlocks.clear();
+		researchVertexBlocks.clear();
 	}
 
 	bool isNaomi2() const { return projMatrix != -1; }
@@ -226,6 +243,7 @@ struct SortedTriangle
 	u32 polyIndex;
 	u32 first;
 	u32 count;
+	std::vector<std::uint64_t> researchPrimitiveGenerations;
 };
 
 struct Rect
@@ -316,6 +334,8 @@ struct TA_context
 
 	tad_context tad;
 	rend_context rend;
+	std::vector<research::PvrTaBlockProvenance> researchBlockProvenance;
+	std::vector<research::PvrTaBlockProvenance> researchOldBlockProvenance;
 
 	TA_context *nextContext = nullptr;
 	/*
@@ -340,6 +360,17 @@ struct TA_context
 
 	u8 *getTADataEnd() {
 		return tad.End();
+	}
+
+	const std::vector<research::PvrTaBlockProvenance>& getTAProvenance() const {
+		return researchBlockProvenance.empty()
+				? researchOldBlockProvenance : researchBlockProvenance;
+	}
+
+	void clearResearchProvenancePartial()
+	{
+		researchOldBlockProvenance = std::move(researchBlockProvenance);
+		researchBlockProvenance.clear();
 	}
 
 	void Alloc()
@@ -369,6 +400,8 @@ struct TA_context
 		tad.Clear();
 		nextContext = nullptr;
 		rend.Clear();
+		researchBlockProvenance.clear();
+		researchOldBlockProvenance.clear();
 	}
 
 	~TA_context()
