@@ -740,6 +740,8 @@ MapleTrace loadProductionMapleTrace(const std::filesystem::path& path,
 	require(bytes.size() >= MapleTraceHeaderSize, "file is smaller than the header");
 	MapleTrace trace;
 	trace.summary = parseTraceHeader(bytes.data(), expectedIdentity);
+	trace.summary.fileBytes = bytes.size();
+	trace.summary.fileDigest = sha256(bytes.data(), bytes.size());
 	require(trace.summary.payloadBytes == bytes.size() - MapleTraceHeaderSize,
 			"payload byte count mismatch");
 	const Sha256Digest computedPayload = sha256(bytes.data() + MapleTraceHeaderSize,
@@ -781,6 +783,9 @@ MapleTraceSummary validateProductionMapleTraceFile(const std::filesystem::path& 
 	std::array<std::uint8_t, MapleTraceHeaderSize> headerBytes {};
 	readTraceExact(input, headerBytes.data(), headerBytes.size(), "truncated trace header");
 	MapleTraceSummary summary = parseTraceHeader(headerBytes.data(), expectedIdentity);
+	summary.fileBytes = sizeBefore;
+	Sha256 fileHasher;
+	fileHasher.update(headerBytes.data(), headerBytes.size());
 	require(summary.payloadBytes == sizeBefore - MapleTraceHeaderSize,
 			"payload byte count mismatch");
 
@@ -794,6 +799,7 @@ MapleTraceSummary validateProductionMapleTraceFile(const std::filesystem::path& 
 		require(remaining >= EventHeaderSize, "truncated event header");
 		readTraceExact(input, eventHeaderBytes.data(), eventHeaderBytes.size(),
 				"truncated event header");
+		fileHasher.update(eventHeaderBytes.data(), eventHeaderBytes.size());
 		payloadHasher.update(eventHeaderBytes.data(), eventHeaderBytes.size());
 		ByteReader eventHeader(eventHeaderBytes.data(), eventHeaderBytes.size());
 		const auto type = static_cast<MapleTraceEventType>(eventHeader.u32());
@@ -804,6 +810,7 @@ MapleTraceSummary validateProductionMapleTraceFile(const std::filesystem::path& 
 		require(eventSize <= remaining, "event extends beyond payload");
 		const std::size_t payloadSize = eventSize - EventHeaderSize;
 		readTraceExact(input, eventPayload.data(), payloadSize, "truncated event payload");
+		fileHasher.update(eventPayload.data(), payloadSize);
 		payloadHasher.update(eventPayload.data(), payloadSize);
 		validator.consume(parseEvent(summary.schemaVersion, type, ordinal,
 				eventPayload.data(), payloadSize));
@@ -817,6 +824,7 @@ MapleTraceSummary validateProductionMapleTraceFile(const std::filesystem::path& 
 	require(sizeBefore == sizeAfter, "file size changed while reading");
 	require(sha256Equal(summary.payloadDigest, payloadHasher.finalize()),
 			"payload SHA-256 mismatch");
+	summary.fileDigest = fileHasher.finalize();
 	validator.finish(summary);
 	return summary;
 }

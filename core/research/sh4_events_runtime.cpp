@@ -37,10 +37,13 @@ std::recursive_mutex sessionMutex;
 thread_local std::uint32_t instructionLockDepth = 0;
 bool deferredStopRequested = false;
 bool deferredStopClean = false;
+bool awaitingInitialStateLoad = false;
 std::atomic<std::uint64_t> stopRequestGeneration {0};
 std::atomic<std::uint64_t> dirtyStopGeneration {0};
 std::uint64_t sessionStopRequestGeneration = 0;
 std::uint64_t sessionDirtyStopGeneration = 0;
+Sh4ObservationBackend sessionBackend = Sh4ObservationBackend::Interpreter;
+std::function<void()> sessionCompletion;
 
 void consumeSh4Observation(const Sh4Observation& observation);
 
@@ -55,14 +58,36 @@ std::filesystem::path researchPath(const std::string& value)
 #endif
 }
 
-void applyDeterministicOverrides(const IdentityManifest *identity = nullptr)
+Sh4ObservationBackend backendFor(const IdentityManifest& identity)
 {
-	config::DynarecEnabled.override(false);
+	return identity.runtimeConfiguration.cpuBackend == "dynarec"
+			? Sh4ObservationBackend::Dynarec
+			: Sh4ObservationBackend::Interpreter;
+}
+
+void applyDeterministicOverrides(const IdentityManifest& identity)
+{
+	const bool dynarec = backendFor(identity) == Sh4ObservationBackend::Dynarec;
+	config::DynarecEnabled.override(dynarec);
+	config::ResearchDynarecObservation.override(dynarec);
+	config::ResearchDreamcastRtcSeed.override(
+			identity.runtimeConfiguration.dreamcastRtcSeed);
+	config::UseReios.override(identity.firmware.mode == FirmwareMode::Hle);
 	config::ThreadedRendering.override(false);
-	config::AutoLoadState.override(identity != nullptr
-			&& identity->runtimeConfiguration.autoLoadState);
-	if (identity != nullptr && identity->initialState.available)
-		config::SavestateSlot.override(static_cast<int>(identity->initialState.slot));
+	config::AutoLoadState.override(identity.runtimeConfiguration.autoLoadState);
+	if (identity.initialState.available)
+		config::SavestateSlot.override(static_cast<int>(identity.initialState.slot));
+	config::AutoSaveState.override(false);
+	config::GGPOEnable.override(false);
+}
+
+void applyPreResetOverrides(const IdentityManifest& identity)
+{
+	const bool dynarec = backendFor(identity) == Sh4ObservationBackend::Dynarec;
+	config::DynarecEnabled.override(dynarec);
+	config::ResearchDynarecObservation.override(dynarec);
+	config::ThreadedRendering.override(false);
+	config::AutoLoadState.override(false);
 	config::AutoSaveState.override(false);
 	config::GGPOEnable.override(false);
 }
@@ -70,8 +95,16 @@ void applyDeterministicOverrides(const IdentityManifest *identity = nullptr)
 void verifyRuntimeConfiguration(const IdentityManifest& identity)
 {
 	const IdentityRuntimeConfiguration& expected = identity.runtimeConfiguration;
-	if (expected.cpuBackend != "interpreter" || config::DynarecEnabled.get())
+	const bool expectedDynarec = expected.cpuBackend == "dynarec";
+	if ((expected.cpuBackend != "interpreter" && !expectedDynarec)
+			|| config::DynarecEnabled.get() != expectedDynarec)
 		throw FlycastException("SH-4 events identity/runtime CPU backend mismatch");
+	if (expected.dynarecObservation
+			!= config::ResearchDynarecObservation.get())
+		throw FlycastException("SH-4 events identity/runtime dynarec observation mismatch");
+	if (expected.dreamcastRtcSeed
+			!= static_cast<std::uint32_t>(config::ResearchDreamcastRtcSeed.get()))
+		throw FlycastException("SH-4 events identity/runtime Dreamcast RTC seed mismatch");
 	if (expected.threadedRendering != config::ThreadedRendering.get())
 		throw FlycastException("SH-4 events identity/runtime threaded-rendering mismatch");
 	if (expected.autoLoadState != config::AutoLoadState.get())
@@ -84,6 +117,19 @@ void verifyRuntimeConfiguration(const IdentityManifest& identity)
 		throw FlycastException("SH-4 events identity/runtime auto-save-state mismatch");
 	if (expected.ggpo != config::GGPOEnable.get())
 		throw FlycastException("SH-4 events identity/runtime GGPO mismatch");
+	if (expected.mapleDmaCheckpoint
+			!= static_cast<std::uint64_t>(config::ResearchMapleDmaCheckpoint.get()))
+		throw FlycastException("SH-4 events identity/runtime Maple DMA checkpoint mismatch");
+	if (expected.sh4PcCheckpoint
+			!= static_cast<std::uint64_t>(config::ResearchSh4PcCheckpoint.get()))
+		throw FlycastException("SH-4 events identity/runtime SH-4 PC checkpoint mismatch");
+	if (expected.sh4PcCheckpointU32Address
+			!= static_cast<std::uint64_t>(
+					config::ResearchSh4PcCheckpointU32Address.get())
+			|| expected.sh4PcCheckpointU32Value
+					!= static_cast<std::uint64_t>(
+							config::ResearchSh4PcCheckpointU32Value.get()))
+		throw FlycastException("SH-4 events identity/runtime SH-4 PC checkpoint U32 gate mismatch");
 }
 
 void requireDistinctPaths(const std::vector<std::pair<const char *, std::filesystem::path>>& paths)
@@ -118,9 +164,11 @@ DetachedSession detachSession(bool clean)
 			&& dirtyStopGeneration.load(std::memory_order_acquire)
 					== sessionDirtyStopGeneration;
 	sessionActive.store(false, std::memory_order_release);
+	awaitingInitialStateLoad = false;
 	detached.subscription = sessionSubscription;
 	sessionSubscription = 0;
 	detached.capture = std::move(session);
+	sessionCompletion = {};
 	return detached;
 }
 
@@ -235,11 +283,17 @@ void configureSh4EventsRuntime()
 	for (const char *key : {"IdentityManifest", "Sh4EventsManifest", "Sh4EventsRecord"})
 		if (!config::isTransient("research", key))
 			throw FlycastException("SH-4 events research paths must be supplied as transient options");
-	applyDeterministicOverrides();
+	const IdentityManifest identity = loadIdentityManifest(researchPath(
+			config::ResearchIdentityManifestPath.get()));
+#if FEAT_SHREC == DYNAREC_NONE
+	if (identity.runtimeConfiguration.cpuBackend == "dynarec")
+		throw FlycastException("SH-4 events identity requires an unavailable dynarec backend");
+#endif
+	applyPreResetOverrides(identity);
 	configured = true;
 }
 
-void startSh4EventsRuntime()
+void startSh4EventsRuntime(std::function<void()> completion)
 {
 	const std::lock_guard<std::recursive_mutex> lock(sessionMutex);
 	if (!configured)
@@ -270,7 +324,7 @@ void startSh4EventsRuntime()
 	requireDistinctPaths(paths);
 
 	const IdentityManifest identity = loadIdentityManifest(identityPath);
-	applyDeterministicOverrides(&identity);
+	applyDeterministicOverrides(identity);
 	if (identity.initialState.available)
 		authenticateInitialStateFile(identity, researchPath(
 				hostfs::getSavestatePath(static_cast<int>(identity.initialState.slot),
@@ -285,22 +339,47 @@ void startSh4EventsRuntime()
 			static_cast<std::uint64_t>(config::ResearchSh4EventsMaxBytes.get()));
 	try
 	{
-		Sh4ObservationFilter recorderFilter;
-		recorderFilter.backendMask = sh4ObservationBackendBit(
-				Sh4ObservationBackend::Interpreter);
-		sessionSubscription = subscribeSh4Observations(recorderFilter,
-				consumeSh4Observation);
+		sessionCompletion = std::move(completion);
+		sessionBackend = backendFor(identity);
+		awaitingInitialStateLoad = manifest.startAfterInitialStateLoad;
+		if (!awaitingInitialStateLoad)
+		{
+			Sh4ObservationFilter recorderFilter;
+			recorderFilter.backendMask = sh4ObservationBackendBit(sessionBackend);
+			sessionSubscription = subscribeSh4Observations(recorderFilter,
+					consumeSh4Observation);
+		}
 	}
 	catch (...)
 	{
 		session->abandon();
 		session.reset();
+		sessionCompletion = {};
 		throw;
 	}
-	sessionActive.store(true, std::memory_order_release);
-	NOTICE_LOG(SH4, "Armed SH-4 events manifest %s (%zu hooks, %zu watch ranges) to %s",
+	sessionActive.store(!awaitingInitialStateLoad, std::memory_order_release);
+	NOTICE_LOG(SH4, "%s %s SH-4 events manifest %s (%zu hooks, %zu watch ranges) to %s",
+			awaitingInitialStateLoad ? "Awaiting initial-state load for" : "Armed",
+			sessionBackend == Sh4ObservationBackend::Dynarec ? "dynarec" : "interpreter",
 			manifest.id.c_str(), manifest.hooks.size(), manifest.watchRanges.size(),
 			outputPath.string().c_str());
+}
+
+void sh4EventsInitialStateLoaded()
+{
+	const std::lock_guard<std::recursive_mutex> lock(sessionMutex);
+	if (!awaitingInitialStateLoad)
+		return;
+	if (session == nullptr || sessionSubscription != 0
+			|| sessionActive.load(std::memory_order_acquire))
+		throw FlycastException("SH-4 events initial-state activation is inconsistent");
+	Sh4ObservationFilter recorderFilter;
+	recorderFilter.backendMask = sh4ObservationBackendBit(sessionBackend);
+	sessionSubscription = subscribeSh4Observations(recorderFilter,
+			consumeSh4Observation);
+	awaitingInitialStateLoad = false;
+	sessionActive.store(true, std::memory_order_release);
+	NOTICE_LOG(SH4, "Armed SH-4 events capture after authenticated initial-state load");
 }
 
 void stopSh4EventsRuntime(bool clean)
@@ -339,6 +418,7 @@ void abortSh4EventsRuntime() noexcept
 			configured = false;
 			deferredStopRequested = false;
 			deferredStopClean = false;
+			awaitingInitialStateLoad = false;
 			detached = detachSession(false);
 			while (instructionLockDepth != 0)
 			{
@@ -377,11 +457,16 @@ void consumeInstructionEnd(const Sh4InstructionState& state)
 {
 	if (instructionLockDepth == 0)
 		return;
+	bool completed = false;
+	std::function<void()> completion;
 	try
 	{
 		if (session != nullptr)
 		{
 			session->endInstruction(state, guestMemoryReader());
+			completed = session->completionRequested();
+			if (completed)
+				completion = sessionCompletion;
 		}
 	}
 	catch (...)
@@ -390,6 +475,12 @@ void consumeInstructionEnd(const Sh4InstructionState& state)
 		throw;
 	}
 	releaseInstructionLock();
+	if (completed)
+	{
+		stopSh4EventsRuntime(true);
+		if (completion)
+			completion();
+	}
 }
 
 void consumeInstructionAbort() noexcept
@@ -462,8 +553,8 @@ Sh4InstructionState observationInstructionState(const Sh4Observation& observatio
 
 void consumeSh4Observation(const Sh4Observation& observation)
 {
-	if (observation.backend != Sh4ObservationBackend::Interpreter)
-		throw std::logic_error("SH-4 events v1 received a non-interpreter observation");
+	if (observation.backend != sessionBackend)
+		throw std::logic_error("SH-4 events received an observation from the wrong backend");
 	switch (observation.type)
 	{
 	case Sh4ObservationType::InstructionBegin:

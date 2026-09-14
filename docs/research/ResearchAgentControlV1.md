@@ -24,6 +24,37 @@ subscriber/drop state. A clean-exit request drives their ordinary finalization
 path. Runtime commands that would change an experiment after its authenticated
 configuration was selected are intentionally absent.
 
+For an instruction-bounded typed capture, the transient launch option
+`research.Sh4PcCheckpoint=0x8c012344` requests the same ordinary clean
+stop/unload path immediately after that aligned, top-level guest instruction
+completes. At least one typed recorder output must be configured. Interpreter
+captures work directly; dynarec captures are accepted only when an existing
+typed runtime has already enabled `research.DynarecObservation`, so the
+checkpoint does not silently change CPU timing or invalidate compiled blocks.
+The runtime also requires the non-threaded rendering mode already imposed by
+typed captures, keeping the synchronous stop on the emulator/UI thread.
+The checkpoint is internal observation, not a GDB breakpoint, and adds no
+control or GDB protocol command.
+
+When `research.Sh4ObservationRecord` is also configured with a deferred
+`research.Sh4ObservationStartDma`, matching begins only after that authenticated
+SH-4 observation subscription becomes active. This prevents a common guest PC
+encountered during boot from terminating the capture before its declared start.
+PC terminals backed only by another typed recorder continue matching from the
+start of guest execution.
+
+When an authenticated Maple replay is active, a PC hit is also deferred until
+the replay cursor has consumed its terminal event. This preserves the existing
+zero-unconsumed-event clean-finalization requirement when the requested PC is
+encountered during the final asynchronous DMA interval.
+
+This terminal is identity-bound. An identity-v2 replay declares the aligned,
+nonzero numeric guest PC as `configuration.values.sh4_pc_checkpoint` and
+declares `configuration.values.maple_dma_checkpoint` as zero. Those two values
+must match the effective transient options. A positive Maple DMA checkpoint and
+an SH-4 PC checkpoint are mutually exclusive; identity v1/v3 and legacy v2
+identities retain their existing behavior when `sh4_pc_checkpoint` is absent.
+
 `request-clean-exit` means controlled emulator termination. It does not turn an
 unfinished capture into evidence. Every recorder, independent validator and
 package publisher retains its existing terminal-boundary and fail-closed

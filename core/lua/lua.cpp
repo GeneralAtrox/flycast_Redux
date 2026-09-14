@@ -31,7 +31,10 @@
 #include "input/mouse.h"
 #include "hw/maple/maple_devs.h"
 #include "hw/maple/maple_if.h"
+#include "hw/sh4/sh4_if.h"
+#include "hw/sh4/sh4_sched.h"
 #include "research/maple_observation.h"
+#include "research/sha256.h"
 #include "research/sh4_lua_subscriptions.h"
 #include "stdclass.h"
 #include "imgui.h"
@@ -586,7 +589,9 @@ static void pushSh4Owner(lua_State *state,
 	setNumberField(state, "tick", owner.tick);
 	setStringField(state, "tick_decimal", std::to_string(owner.tick));
 	setNumberField(state, "pc", owner.pc);
+	setNumberField(state, "pr", owner.pr);
 	setNumberField(state, "opcode", owner.opcode);
+	setNumberField(state, "delay_slot_depth", owner.delaySlotDepth);
 }
 
 static void pushRegisterSnapshot(lua_State *state,
@@ -745,10 +750,25 @@ static const char *pvrTaEventName(research::PvrTaObservationType type)
 }
 
 static void pushPvrTaResearchEvent(lua_State *state,
-		const research::PvrTaObservation& observation)
+		const research::Sh4LuaSubscriptionQueue::PvrTaLuaObservation& queued)
 {
+	const research::PvrTaObservation& observation = queued.observation;
 	pushDiscoveryBase(state, pvrTaEventName(observation.type),
 			observation.schemaVersion, observation.emissionOrdinal, observation.tick);
+	setStringField(state, "guest_snapshot_tick_decimal",
+			std::to_string(queued.guestSnapshotTick));
+	lua_newtable(state);
+	for (std::size_t index = 0; index < queued.guestU32Snapshot.size(); ++index)
+	{
+		const auto& value = queued.guestU32Snapshot[index];
+		lua_newtable(state);
+		setNumberField(state, "address", value.address);
+		setBooleanField(state, "available", value.available);
+		if (value.available)
+			setNumberField(state, "value", value.value);
+		lua_rawseti(state, -2, static_cast<int>(index + 1));
+	}
+	lua_setfield(state, -2, "guest_u32_snapshot");
 	pushSh4Owner(state, observation.initiator);
 	lua_setfield(state, -2, "initiator");
 	setNumberField(state, "context_address", observation.contextAddress);
@@ -806,15 +826,47 @@ static const char *pvrPresentationEventName(
 	case research::PvrPresentationObservationType::FramebufferCaptured: return "pvr-framebuffer";
 	case research::PvrPresentationObservationType::Presentation: return "pvr-presentation";
 	case research::PvrPresentationObservationType::Reset: return "pvr-presentation-reset";
+	case research::PvrPresentationObservationType::InitialRegisterState:
+		return "pvr-initial-register-state";
 	}
 	return "pvr-presentation-unknown";
 }
 
 static void pushPvrPresentationResearchEvent(lua_State *state,
-		const research::PvrPresentationObservation& observation)
+		const research::Sh4LuaSubscriptionQueue::PvrPresentationLuaObservation& queued)
 {
+	const research::PvrPresentationObservation& observation = queued.observation;
 	pushDiscoveryBase(state, pvrPresentationEventName(observation.type),
 			observation.schemaVersion, observation.emissionOrdinal, observation.tick);
+	setStringField(state, "guest_snapshot_tick_decimal",
+			std::to_string(queued.guestSnapshotTick));
+	lua_newtable(state);
+	for (std::size_t index = 0; index < queued.guestU32Snapshot.size(); ++index)
+	{
+		const auto& value = queued.guestU32Snapshot[index];
+		lua_newtable(state);
+		setNumberField(state, "address", value.address);
+		setBooleanField(state, "available", value.available);
+		if (value.available)
+			setNumberField(state, "value", value.value);
+		lua_rawseti(state, -2, static_cast<int>(index + 1));
+	}
+	lua_setfield(state, -2, "guest_u32_snapshot");
+	setBooleanField(state, "guest_r15_available", queued.guestR15Available);
+	if (queued.guestR15Available)
+		setNumberField(state, "guest_r15", queued.guestR15);
+	lua_newtable(state);
+	for (std::size_t index = 0; index < queued.guestR15U32Snapshot.size(); ++index)
+	{
+		const auto& value = queued.guestR15U32Snapshot[index];
+		lua_newtable(state);
+		setNumberField(state, "address", value.address);
+		setBooleanField(state, "available", value.available);
+		if (value.available)
+			setNumberField(state, "value", value.value);
+		lua_rawseti(state, -2, static_cast<int>(index + 1));
+	}
+	lua_setfield(state, -2, "guest_r15_u32_snapshot");
 	pushSh4Owner(state, observation.initiator);
 	lua_setfield(state, -2, "initiator");
 	setNumberField(state, "render_generation", observation.renderGeneration);
@@ -830,6 +882,15 @@ static void pushPvrPresentationResearchEvent(lua_State *state,
 		setNumberField(state, "previous_value", observation.previousValue);
 		setNumberField(state, "effective_value", observation.effectiveValue);
 		setNumberField(state, "disposition", static_cast<unsigned>(observation.registerDisposition));
+	}
+	else if (observation.type == research::PvrPresentationObservationType::RenderQueued
+			|| observation.type
+					== research::PvrPresentationObservationType::RenderCompleted)
+	{
+		setNumberField(state, "render_kind",
+				static_cast<unsigned>(observation.renderKind));
+		setNumberField(state, "framebuffer_write_address",
+				observation.framebufferWriteAddress);
 	}
 	else if (observation.type == research::PvrPresentationObservationType::VramWrite)
 	{
@@ -849,8 +910,28 @@ static void pushPvrPresentationResearchEvent(lua_State *state,
 		setNumberField(state, "width", observation.framebufferWidth);
 		setNumberField(state, "height", observation.framebufferHeight);
 		setNumberField(state, "row_bytes", observation.framebufferRowBytes);
-		setBytesFields(state, "bytes", "bytes_hex", observation.bytes.data(),
-				observation.bytes.size());
+		setNumberField(state, "fb_read_size",
+				observation.framebufferConfig.fbReadSize);
+		setNumberField(state, "fb_read_control",
+				observation.framebufferConfig.fbReadControl);
+		setNumberField(state, "spg_control",
+				observation.framebufferConfig.spgControl);
+		setNumberField(state, "spg_status",
+				observation.framebufferConfig.spgStatus);
+		setNumberField(state, "fb_read_sof1",
+				observation.framebufferConfig.fbReadSof1);
+		setNumberField(state, "fb_read_sof2",
+				observation.framebufferConfig.fbReadSof2);
+		setNumberField(state, "video_control",
+				observation.framebufferConfig.videoControl);
+		setNumberField(state, "border_color",
+				observation.framebufferConfig.borderColor);
+		if (observation.framebufferDigestAvailable)
+			setStringField(state, "bytes_sha256",
+					research::sha256ToHex(observation.framebufferDigest));
+		else
+			setBytesFields(state, "bytes", "bytes_hex", observation.bytes.data(),
+					observation.bytes.size());
 	}
 	else if (observation.type == research::PvrPresentationObservationType::Presentation)
 		setNumberField(state, "presentation_source",
@@ -867,6 +948,28 @@ static const char *pvrDrawEventName(research::PvrDrawObservationType type)
 	case research::PvrDrawObservationType::Reset: return "pvr-draw-reset";
 	}
 	return "pvr-draw-unknown";
+}
+
+static void pushPvrTaBlockProvenance(lua_State *state,
+		const std::vector<research::PvrTaBlockProvenance>& blocks)
+{
+	lua_newtable(state);
+	for (std::size_t index = 0; index < blocks.size(); ++index)
+	{
+		const auto& block = blocks[index];
+		lua_newtable(state);
+		setBooleanField(state, "available", block.available);
+		pushSh4Owner(state, block.initiator);
+		lua_setfield(state, -2, "initiator");
+		setNumberField(state, "context_address", block.contextAddress);
+		setNumberField(state, "context_generation", block.contextGeneration);
+		setNumberField(state, "context_block_ordinal", block.contextBlockOrdinal);
+		setNumberField(state, "render_pass", block.renderPass);
+		setNumberField(state, "source", static_cast<unsigned>(block.source));
+		setNumberField(state, "source_address", block.sourceAddress);
+		setNumberField(state, "ta_address", block.taAddress);
+		lua_rawseti(state, -2, static_cast<int>(index + 1));
+	}
 }
 
 static void pushPvrDrawResearchEvent(lua_State *state,
@@ -906,6 +1009,69 @@ static void pushPvrDrawResearchEvent(lua_State *state,
 		setFloatField(state, "maximum_y", observation.bounds.maximumY);
 		setFloatField(state, "maximum_z", observation.bounds.maximumZ);
 		lua_setfield(state, -2, "bounds");
+	}
+	if (observation.type == research::PvrDrawObservationType::PrimitiveDecoded)
+	{
+		pushPvrTaBlockProvenance(state, observation.parameterBlocks);
+		lua_setfield(state, -2, "parameter_blocks");
+		pushPvrTaBlockProvenance(state, observation.vertexBlocks);
+		lua_setfield(state, -2, "vertex_blocks");
+		lua_newtable(state);
+		for (std::size_t index = 0; index < observation.vertices.size(); ++index)
+		{
+			const auto& vertex = observation.vertices[index];
+			lua_newtable(state);
+			setNumberField(state, "x_bits", vertex.xBits);
+			setNumberField(state, "y_bits", vertex.yBits);
+			setNumberField(state, "z_bits", vertex.zBits);
+			setNumberField(state, "u_bits", vertex.uBits);
+			setNumberField(state, "v_bits", vertex.vBits);
+			setNumberField(state, "u1_bits", vertex.u1Bits);
+			setNumberField(state, "v1_bits", vertex.v1Bits);
+			setNumberField(state, "nx_bits", vertex.nxBits);
+			setNumberField(state, "ny_bits", vertex.nyBits);
+			setNumberField(state, "nz_bits", vertex.nzBits);
+			setBytesFields(state, "base_color", "base_color_hex",
+					vertex.baseColor.data(), vertex.baseColor.size());
+			setBytesFields(state, "offset_color", "offset_color_hex",
+					vertex.offsetColor.data(), vertex.offsetColor.size());
+			setBytesFields(state, "base_color1", "base_color1_hex",
+					vertex.baseColor1.data(), vertex.baseColor1.size());
+			setBytesFields(state, "offset_color1", "offset_color1_hex",
+					vertex.offsetColor1.data(), vertex.offsetColor1.size());
+			lua_rawseti(state, -2, static_cast<int>(index + 1));
+		}
+		lua_setfield(state, -2, "vertices");
+		if (observation.sampledTexture.available)
+		{
+			const auto& texture = observation.sampledTexture;
+			lua_newtable(state);
+			setNumberField(state, "source_address", texture.sourceAddress);
+			setNumberField(state, "source_size", texture.sourceSize);
+			setNumberField(state, "maximum_level_address",
+					texture.maximumLevelAddress);
+			setNumberField(state, "maximum_level_size", texture.maximumLevelSize);
+			setNumberField(state, "width", texture.width);
+			setNumberField(state, "height", texture.height);
+			setNumberField(state, "pixel_format", texture.pixelFormat);
+			setNumberField(state, "palette_first_entry", texture.paletteFirstEntry);
+			setNumberField(state, "palette_entry_count", texture.paletteEntryCount);
+			setNumberField(state, "cache_updates", texture.cacheUpdates);
+			setBooleanField(state, "gpu_palette", texture.gpuPalette);
+			setBooleanField(state, "custom_replacement", texture.customReplacement);
+			setStringField(state, "source_sha256",
+					research::sha256ToHex(texture.sourceDigest));
+			setStringField(state, "palette_sha256",
+					research::sha256ToHex(texture.paletteDigest));
+			if (!texture.sourceBytes.empty())
+			{
+				lua_pushlstring(state,
+						reinterpret_cast<const char*>(texture.sourceBytes.data()),
+						texture.sourceBytes.size());
+				lua_setfield(state, -2, "source_bytes");
+			}
+			lua_setfield(state, -2, "sampled_texture");
+		}
 	}
 }
 
@@ -1034,6 +1200,7 @@ static const char *aicaEventName(research::AicaObservationType type)
 	case research::AicaObservationType::KeyBatchComplete: return "aica-key-batch";
 	case research::AicaObservationType::CddaSector: return "aica-cdda-sector";
 	case research::AicaObservationType::SampleSuppressed: return "aica-sample-suppressed";
+	case research::AicaObservationType::KeyBatchBegin: return "aica-key-batch-begin";
 	}
 	return "aica-unknown";
 }
@@ -1064,6 +1231,7 @@ static void pushAicaResearchEvent(lua_State *state,
 				observation.channelRegisters.data(), observation.channelRegisters.size());
 	setStringField(state, "key_on_mask_hex", hexadecimal64(observation.keyOnMask));
 	setStringField(state, "key_off_mask_hex", hexadecimal64(observation.keyOffMask));
+	setNumberField(state, "sample_cut_ordinal", observation.sampleCutOrdinal);
 	setNumberField(state, "cdda_generation", observation.cddaGeneration);
 	setNumberField(state, "cdda_fad", observation.cddaFad);
 	setNumberField(state, "cdda_status", observation.cddaStatus);
@@ -1152,6 +1320,53 @@ static std::optional<std::string> optionalStringTableField(lua_State *state,
 	std::string value(text, length);
 	lua_pop(state, 1);
 	return value;
+}
+
+static std::vector<std::uint32_t> optionalU32ArrayTableField(lua_State *state,
+		int tableIndex, const char *name, std::size_t maximumCount)
+{
+	tableIndex = lua_absindex(state, tableIndex);
+	lua_getfield(state, tableIndex, name);
+	if (lua_isnil(state, -1))
+	{
+		lua_pop(state, 1);
+		return {};
+	}
+	if (!lua_istable(state, -1))
+	{
+		lua_pop(state, 1);
+		throw std::invalid_argument(std::string(name) + " must be an array");
+	}
+	const std::size_t count = lua_rawlen(state, -1);
+	if (count > maximumCount)
+	{
+		lua_pop(state, 1);
+		throw std::invalid_argument(std::string(name) + " has too many entries");
+	}
+	std::vector<std::uint32_t> result;
+	result.reserve(count);
+	for (std::size_t index = 1; index <= count; ++index)
+	{
+		lua_rawgeti(state, -1, static_cast<lua_Integer>(index));
+		if (!lua_isnumber(state, -1))
+		{
+			lua_pop(state, 2);
+			throw std::invalid_argument(
+					std::string(name) + " entries must be unsigned U32 integers");
+		}
+		const lua_Number number = lua_tonumber(state, -1);
+		lua_pop(state, 1);
+		if (!std::isfinite(number) || number < 0
+				|| std::floor(number) != number || number > 4294967295.0)
+		{
+			lua_pop(state, 1);
+			throw std::invalid_argument(
+					std::string(name) + " entries must be unsigned U32 integers");
+		}
+		result.push_back(static_cast<std::uint32_t>(number));
+	}
+	lua_pop(state, 1);
+	return result;
 }
 
 static bool tableFieldPresent(lua_State *state, int tableIndex, const char *name)
@@ -1305,27 +1520,28 @@ static std::size_t researchQueueCapacity(lua_State *state)
 			: research::Sh4LuaSubscriptionQueue::DefaultCapacity;
 }
 
-static research::PvrTaObservationFilter pvrTaResearchFilterFromLua(
+static research::Sh4LuaSubscriptionQueue::PvrTaFilter pvrTaResearchFilterFromLua(
 		lua_State *state, const std::string& event, std::size_t& capacity)
 {
-	research::PvrTaObservationFilter filter;
+	research::Sh4LuaSubscriptionQueue::PvrTaFilter filter;
+	auto& observation = filter.observation;
 	if (event == "pvr-ta-list-init")
-		filter.typeMask = research::pvrTaObservationTypeBit(
+		observation.typeMask = research::pvrTaObservationTypeBit(
 				research::PvrTaObservationType::ListInit);
 	else if (event == "pvr-ta-list-continue")
-		filter.typeMask = research::pvrTaObservationTypeBit(
+		observation.typeMask = research::pvrTaObservationTypeBit(
 				research::PvrTaObservationType::ListContinue);
 	else if (event == "pvr-ta-block")
-		filter.typeMask = research::pvrTaObservationTypeBit(
+		observation.typeMask = research::pvrTaObservationTypeBit(
 				research::PvrTaObservationType::AcceptedBlock);
 	else if (event == "pvr-start-render")
-		filter.typeMask = research::pvrTaObservationTypeBit(
+		observation.typeMask = research::pvrTaObservationTypeBit(
 				research::PvrTaObservationType::StartRender);
 	else if (event == "pvr-render-done")
-		filter.typeMask = research::pvrTaObservationTypeBit(
+		observation.typeMask = research::pvrTaObservationTypeBit(
 				research::PvrTaObservationType::RenderDone);
 	else if (event == "pvr-ta-reset")
-		filter.typeMask = research::pvrTaObservationTypeBit(
+		observation.typeMask = research::pvrTaObservationTypeBit(
 				research::PvrTaObservationType::Reset);
 	else
 		throw std::invalid_argument("unsupported PowerVR TA event");
@@ -1335,17 +1551,23 @@ static research::PvrTaObservationFilter pvrTaResearchFilterFromLua(
 		if (event != "pvr-ta-block")
 			throw std::invalid_argument("source is only valid for pvr-ta-block");
 		if (*source == "store-queue")
-			filter.sourceMask = research::pvrTaInputSourceBit(
+			observation.sourceMask = research::pvrTaInputSourceBit(
 					research::PvrTaInputSource::StoreQueue);
 		else if (*source == "channel2-dma")
-			filter.sourceMask = research::pvrTaInputSourceBit(
+			observation.sourceMask = research::pvrTaInputSourceBit(
 					research::PvrTaInputSource::Channel2Dma);
 		else if (*source == "sort-dma")
-			filter.sourceMask = research::pvrTaInputSourceBit(
+			observation.sourceMask = research::pvrTaInputSourceBit(
 					research::PvrTaInputSource::SortDma);
 		else
 			throw std::invalid_argument("unsupported PowerVR TA source");
 	}
+	filter.guestU32Addresses = optionalU32ArrayTableField(state, 1,
+			"guest_u32_addresses",
+			research::Sh4LuaSubscriptionQueue::MaximumGuestU32Snapshot);
+	if (!filter.guestU32Addresses.empty() && event != "pvr-ta-block")
+		throw std::invalid_argument(
+				"guest_u32_addresses is only valid for pvr-ta-block");
 	capacity = researchQueueCapacity(state);
 	return filter;
 }
@@ -1379,6 +1601,32 @@ pvrPresentationResearchFilterFromLua(lua_State *state, const std::string& event,
 		filter.addressStart = static_cast<std::uint32_t>(*start);
 		filter.addressEndExclusive = *end + 1;
 	}
+	const auto payload = optionalStringTableField(state, 1, "payload");
+	if (payload.has_value())
+	{
+		if (type != Type::FramebufferCaptured)
+			throw std::invalid_argument("payload is only valid for pvr-framebuffer");
+		if (*payload == "full")
+			filter.framebufferDigestOnly = false;
+		else if (*payload == "sha256")
+			filter.framebufferDigestOnly = true;
+		else
+			throw std::invalid_argument("unsupported PowerVR framebuffer payload");
+	}
+	filter.guestU32Addresses = optionalU32ArrayTableField(state, 1,
+			"guest_u32_addresses",
+			research::Sh4LuaSubscriptionQueue::MaximumGuestU32Snapshot);
+	if (!filter.guestU32Addresses.empty() && type != Type::RegisterWrite
+			&& type != Type::VramWrite)
+		throw std::invalid_argument(
+				"guest_u32_addresses is only valid for synchronous PVR writes");
+	filter.guestR15U32Offsets = optionalU32ArrayTableField(state, 1,
+			"guest_r15_u32_offsets",
+			research::Sh4LuaSubscriptionQueue::MaximumGuestR15U32Snapshot);
+	if (!filter.guestR15U32Offsets.empty() && type != Type::RegisterWrite
+			&& type != Type::VramWrite)
+		throw std::invalid_argument(
+				"guest_r15_u32_offsets is only valid for synchronous PVR writes");
 	capacity = researchQueueCapacity(state);
 	return filter;
 }
@@ -1401,6 +1649,18 @@ pvrDrawResearchFilterFromLua(lua_State *state, const std::string& event,
 	{
 		filter.hasRenderGeneration = true;
 		filter.renderGeneration = *generation;
+	}
+	const auto payload = optionalStringTableField(state, 1, "payload");
+	if (payload.has_value())
+	{
+		if (type != Type::PrimitiveDecoded)
+			throw std::invalid_argument("payload is only valid for pvr-primitive");
+		if (*payload == "full")
+			filter.sampledTextureDigestOnly = false;
+		else if (*payload == "sha256")
+			filter.sampledTextureDigestOnly = true;
+		else
+			throw std::invalid_argument("unsupported PowerVR primitive payload");
 	}
 	capacity = researchQueueCapacity(state);
 	return filter;
@@ -1453,6 +1713,7 @@ static research::Sh4LuaSubscriptionQueue::AicaFilter aicaResearchFilterFromLua(
 	else if (event == "aica-key-batch") type = Type::KeyBatchComplete;
 	else if (event == "aica-cdda-sector") type = Type::CddaSector;
 	else if (event == "aica-sample-suppressed") type = Type::SampleSuppressed;
+	else if (event == "aica-key-batch-begin") type = Type::KeyBatchBegin;
 	else throw std::invalid_argument("unsupported AICA event");
 	research::Sh4LuaSubscriptionQueue::AicaFilter filter;
 	filter.typeMask = std::uint32_t {1} << (static_cast<unsigned>(type) - 1u);
@@ -1611,14 +1872,14 @@ static void deliverTypedResearchObservation(
 
 static void deliverPvrTaResearchObservation(
 		research::Sh4LuaSubscriptionQueue::Token token,
-		const research::PvrTaObservation& observation)
+		const research::Sh4LuaSubscriptionQueue::PvrTaLuaObservation& observation)
 {
 	deliverTypedResearchObservation(token, observation, pushPvrTaResearchEvent);
 }
 
 static void deliverPvrPresentationResearchObservation(
 		research::Sh4LuaSubscriptionQueue::Token token,
-		const research::PvrPresentationObservation& observation)
+		const research::Sh4LuaSubscriptionQueue::PvrPresentationLuaObservation& observation)
 {
 	deliverTypedResearchObservation(token, observation,
 			pushPvrPresentationResearchEvent);
@@ -1856,6 +2117,31 @@ static int researchSubscriptionStats(lua_State *state)
 	}
 }
 
+static int researchCurrentSh4TickDecimal(lua_State *state)
+{
+	if (lua_gettop(state) != 0)
+		return luaL_error(state, "current_sh4_tick_decimal expects no arguments");
+	if (p_sh4rcb == nullptr)
+		return luaL_error(state, "SH-4 scheduler is not initialized");
+	const std::string value = std::to_string(sh4_sched_now64());
+	lua_pushlstring(state, value.data(), value.size());
+	return 1;
+}
+
+static int researchRuntimeConfiguration(lua_State *state)
+{
+	if (lua_gettop(state) != 0)
+		return luaL_error(state, "runtime_configuration expects no arguments");
+	lua_newtable(state);
+	setBooleanField(state, "dynarec_enabled", config::DynarecEnabled.get());
+	setBooleanField(state, "dynarec_observation",
+			config::ResearchDynarecObservation.get());
+	setBooleanField(state, "threaded_rendering", config::ThreadedRendering.get());
+	setStringField(state, "dreamcast_rtc_seed_decimal",
+			std::to_string(config::ResearchDreamcastRtcSeed.get()));
+	return 1;
+}
+
 static void luaRegister(lua_State *L)
 {
 	getGlobalNamespace(L)
@@ -1864,6 +2150,8 @@ static void luaRegister(lua_State *L)
 				.addCFunction("subscribe", researchSubscribe)
 				.addCFunction("unsubscribe", researchUnsubscribe)
 				.addCFunction("subscription_stats", researchSubscriptionStats)
+				.addCFunction("current_sh4_tick_decimal", researchCurrentSh4TickDecimal)
+				.addCFunction("runtime_configuration", researchRuntimeConfiguration)
 			.endNamespace()
 	  		.beginNamespace("emulator")
 				.addFunction("startGame", gui_start_game)	// FIXME threading!

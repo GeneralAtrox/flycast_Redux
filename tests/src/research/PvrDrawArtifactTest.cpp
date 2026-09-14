@@ -90,12 +90,26 @@ research::PvrDrawObservation primitive(std::uint64_t emission,
 			: research::PvrPrimitiveOwnerClass::Exact;
 	result.first = generation == 1 ? 0 : 4;
 	result.count = kind == research::PvrPrimitiveKind::Background ? 4 : 3;
+	result.vertices.resize(result.count);
 	result.bounds.available = true;
 	result.bounds.maximumX = 10;
 	result.bounds.maximumY = 10;
 	result.bounds.maximumZ = 1;
 	if (kind != research::PvrPrimitiveKind::Background)
 	{
+		result.pcw = 0x8;
+		result.sampledTexture.available = true;
+		result.sampledTexture.sourceAddress = 0x00100000;
+		result.sampledTexture.sourceSize = 8;
+		result.sampledTexture.maximumLevelAddress = 0x00100000;
+		result.sampledTexture.maximumLevelSize = 8;
+		result.sampledTexture.width = 2;
+		result.sampledTexture.height = 2;
+		result.sampledTexture.pixelFormat = 3;
+		result.sampledTexture.sourceBytes = {0, 1, 2, 3, 4, 5, 6, 7};
+		result.sampledTexture.sourceDigest = research::sha256(
+				result.sampledTexture.sourceBytes.data(),
+				result.sampledTexture.sourceBytes.size());
 		result.parameterBlocks = {block(0, 11, 0x8c010100)};
 		result.vertexBlocks = {block(1, 11, 0x8c010100)};
 	}

@@ -23,6 +23,9 @@ constexpr std::array<std::uint8_t, 8> ArtifactMagic {
 constexpr std::uint32_t HeaderComplete = 1u;
 constexpr std::uint32_t EventHeaderSize = 32;
 constexpr std::uint32_t PrimitiveBodySize = 120;
+constexpr std::uint32_t PrimitiveV2ExtensionSize = 120;
+constexpr std::uint32_t PrimitiveV3ExtensionSize = 4;
+constexpr std::uint32_t DecodedVertexSize = 56;
 constexpr std::uint32_t DrawBodySize = 44;
 constexpr std::uint32_t RenderCompletedBodySize = 16;
 constexpr std::uint32_t BlockProvenanceSize = 72;
@@ -148,13 +151,15 @@ PvrDrawArtifactSummary parseHeader(const std::uint8_t* data,
 	std::array<std::uint8_t, 8> magic {};
 	reader.bytes(magic.data(), magic.size());
 	require(magic == ArtifactMagic, "magic mismatch");
-	require(reader.u32() == PvrDrawArtifactSchemaVersion,
+	const std::uint32_t schemaVersion = reader.u32();
+	require(schemaVersion >= 1 && schemaVersion <= PvrDrawArtifactSchemaVersion,
 			"unsupported schema version");
 	require(reader.u32() == PvrDrawArtifactHeaderSize, "header size mismatch");
 	require(reader.u32() == PvrDrawArtifactEndianSentinel,
 			"endian sentinel mismatch");
 	require(reader.u32() == HeaderComplete, "artifact is incomplete");
 	PvrDrawArtifactSummary summary;
+	summary.schemaVersion = schemaVersion;
 	summary.binding.backend = static_cast<Sh4ObservationBackend>(reader.u32());
 	require(validBackend(summary.binding.backend), "CPU backend is invalid");
 	require(reader.u32() == 0, "header reserved field is nonzero");
@@ -451,6 +456,29 @@ PvrDrawArtifactSummary validateFile(const std::filesystem::path& path,
 			const std::uint32_t parameterCount = event.u32();
 			const std::uint32_t vertexCount = event.u32();
 			require(event.u32() == 0, "primitive reserved field is nonzero");
+			std::uint32_t decodedVertexCount = 0;
+			std::uint32_t textureAvailable = 0;
+			std::array<std::uint32_t, 10> textureFields {};
+			std::uint32_t gpuPalette = 0;
+			std::uint32_t customReplacement = 0;
+			Sha256Digest sourceDigest {};
+			Sha256Digest paletteDigest {};
+			std::uint32_t texturePayloadSize = 0;
+			if (summary.schemaVersion >= 2)
+			{
+				require(body.size() >= PrimitiveBodySize + PrimitiveV2ExtensionSize,
+						"version-2 primitive extension is truncated");
+				decodedVertexCount = event.u32();
+				textureAvailable = event.u32();
+				for (auto& field : textureFields)
+					field = event.u32();
+				gpuPalette = event.u32();
+				customReplacement = event.u32();
+				sourceDigest = digest(event);
+				paletteDigest = digest(event);
+			}
+			if (summary.schemaVersion >= 3)
+				texturePayloadSize = event.u32();
 			require(renderGeneration != 0 && primitiveGeneration != 0,
 					"primitive generation is zero");
 			require(kind >= PvrPrimitiveKind::Background
@@ -468,10 +496,79 @@ PvrDrawArtifactSummary validateFile(const std::filesystem::path& path,
 			require(parameterCount <= MaximumPvrDrawBlocksPerPrimitive
 					&& vertexCount <= MaximumPvrDrawBlocksPerPrimitive,
 					"primitive block count exceeds the limit");
+			require(decodedVertexCount <= MaximumPvrDrawVerticesPerPrimitive,
+					"decoded vertex count exceeds the limit");
 			const std::uint64_t expectedBody = PrimitiveBodySize
+					+ (summary.schemaVersion >= 2 ? PrimitiveV2ExtensionSize : 0)
+					+ (summary.schemaVersion >= 3 ? PrimitiveV3ExtensionSize : 0)
+					+ static_cast<std::uint64_t>(decodedVertexCount)
+							* DecodedVertexSize
+					+ texturePayloadSize
 					+ static_cast<std::uint64_t>(parameterCount + vertexCount)
 							* BlockProvenanceSize;
 			require(body.size() == expectedBody, "primitive body size mismatch");
+			if (summary.schemaVersion >= 2)
+			{
+				require(textureAvailable <= 1 && gpuPalette <= 1
+						&& customReplacement <= 1,
+						"texture provenance boolean is invalid");
+				const bool polygon = kind == PvrPrimitiveKind::Background
+						|| kind == PvrPrimitiveKind::PolygonStrip
+						|| kind == PvrPrimitiveKind::Sprite;
+				require(!polygon || decodedVertexCount == fields[8],
+						"polygon decoded vertex count differs from draw count");
+				require(polygon || decodedVertexCount == 0,
+						"modifier primitive contains polygon vertices");
+				const bool textured = (fields[0] & 0x8u) != 0;
+				require(!polygon || textureAvailable == static_cast<std::uint32_t>(textured),
+						"sampled texture availability differs from PCW");
+				if (textureAvailable != 0)
+				{
+					require(textureFields[0] != UINT32_MAX && textureFields[1] != 0
+							&& textureFields[2] != UINT32_MAX
+							&& textureFields[3] != 0 && textureFields[4] != 0
+							&& textureFields[5] != 0,
+							"sampled texture range or dimensions are invalid");
+					const Sha256Digest zero {};
+					require(!sha256Equal(sourceDigest, zero),
+							"sampled texture source digest is zero");
+					if (textureFields[8] == 0)
+						require(sha256Equal(paletteDigest, zero),
+								"non-paletted texture has a palette digest");
+					else
+						require((textureFields[8] == 16 || textureFields[8] == 256)
+								&& !sha256Equal(paletteDigest, zero),
+								"paletted texture provenance is invalid");
+					if (summary.schemaVersion >= 3)
+						require(texturePayloadSize == textureFields[1]
+								&& texturePayloadSize <= MaximumPvrDrawTextureBytes,
+								"sampled texture payload size differs from source range");
+				}
+				else
+				{
+					const Sha256Digest zero {};
+					require(sha256Equal(sourceDigest, zero)
+							&& sha256Equal(paletteDigest, zero),
+							"untextured primitive has texture digests");
+					require(texturePayloadSize == 0,
+							"untextured primitive has texture payload bytes");
+				}
+				for (std::uint32_t index = 0; index < decodedVertexCount; ++index)
+				{
+					for (unsigned field = 0; field < 10; ++field)
+						event.u32();
+					std::array<std::uint8_t, 16> colors {};
+					event.bytes(colors.data(), colors.size());
+				}
+				if (summary.schemaVersion >= 3 && texturePayloadSize != 0)
+				{
+					std::vector<std::uint8_t> texturePayload(texturePayloadSize);
+					event.bytes(texturePayload.data(), texturePayload.size());
+					require(sha256Equal(sha256(texturePayload.data(),
+							texturePayload.size()), sourceDigest),
+							"sampled texture payload digest differs");
+				}
+			}
 			std::vector<PvrTaBlockProvenance> parameterBlocks;
 			std::vector<PvrTaBlockProvenance> vertexBlocks;
 			parameterBlocks.reserve(parameterCount);

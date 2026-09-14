@@ -152,8 +152,10 @@ struct MapleTraceEvent
 struct MapleTraceSummary
 {
 	std::uint32_t schemaVersion = MapleTraceSchemaVersionV1;
+	Sha256Digest fileDigest {};
 	Sha256Digest identityDigest {};
 	Sha256Digest payloadDigest {};
+	std::uint64_t fileBytes = 0;
 	std::uint64_t eventCount = 0;
 	std::uint64_t transactionCount = 0;
 	std::uint64_t dmaCount = 0;

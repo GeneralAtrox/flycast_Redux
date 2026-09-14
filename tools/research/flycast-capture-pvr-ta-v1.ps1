@@ -18,7 +18,7 @@ param(
     [ValidateRange(5, 300)][int]$ValidatorTimeoutSeconds = 60,
     [ValidateRange(160, 1073741824)][int64]$MaximumReplayBytes = 536870912,
     [ValidateRange(256, 1073741824)][int64]$MaximumPresentationBytes = 536870912,
-    [ValidateRange(320, 1073741824)][int64]$MaximumDrawBytes = 536870912
+	[ValidateRange(320, 2147483648)][int64]$MaximumDrawBytes = 536870912
 )
 
 Set-StrictMode -Version Latest
@@ -90,6 +90,18 @@ function Assert-CaptureIdentitySources([object]$IdentityObject,
         @($IdentityObject.media.boot_executable, 'identity boot executable'))) {
         $entryPath = Resolve-RegularFile ([string]$entry[0].path) $entry[1]
         Assert-DeclaredBlob $entry[0] $entryPath $entry[1]
+    }
+    foreach ($device in @($IdentityObject.persistent_devices)) {
+        Assert-Condition ([string]$device.kind -ceq 'vmu') `
+            'Only VMU persistent devices are supported by PVR TA capture v1.'
+        $bus = [int]$device.bus
+        $port = [int]$device.port
+        Assert-Condition ($bus -ge 0 -and $bus -le 3 -and
+            $port -ge 0 -and $port -le 1) `
+            'Identity VMU bus or port is outside supported bounds.'
+        $devicePath = Resolve-RegularFile ([string]$device.path) `
+            'identity persistent VMU'
+        Assert-DeclaredBlob $device $devicePath 'identity persistent VMU'
     }
 }
 
@@ -175,6 +187,33 @@ $initialState = if ($hasInitialState) {
 }
 else { $null }
 if ($hasInitialState) { $sourceBlobs['initial_state'] = Get-Blob $initialState.Path }
+$configurationNames = @($identityObject.configuration.values.PSObject.Properties.Name)
+$hasLuaInputDriver = $configurationNames -ccontains 'lua_input_driver'
+$luaInputDriver = if ($hasLuaInputDriver) {
+    $blob = $identityObject.configuration.values.lua_input_driver
+    $path = Resolve-RegularFile ([string]$blob.path) 'identity Lua input driver'
+    Assert-DeclaredBlob $blob $path 'identity Lua input driver'
+    $luaDirectives = @($identityObject.configuration.values.flycast_transient |
+        Where-Object { [string]$_ -cmatch '^config:LuaFileName=([^=,\\/]+)$' })
+    Assert-Condition ($luaDirectives.Count -eq 1) `
+        'Identity with a Lua input driver must bind one leaf LuaFileName directive.'
+    [pscustomobject]@{
+        Path = $path
+        FileName = ([string]$luaDirectives[0]).Substring('config:LuaFileName='.Length)
+    }
+}
+else { $null }
+if ($hasLuaInputDriver) {
+    $sourceBlobs['lua_input_driver'] = Get-Blob $luaInputDriver.Path
+}
+$persistentDevices = @($identityObject.persistent_devices | ForEach-Object {
+    $devicePath = Resolve-RegularFile ([string]$_.path) 'identity persistent VMU'
+    [pscustomobject]@{
+        Blob = Get-Blob $devicePath
+        Bus = [int]$_.bus
+        Port = [int]$_.port
+    }
+})
 $hasDraw = $identityObject.configuration.values.PSObject.Properties.Name `
     -ccontains 'pvr_draw_configuration'
 $drawValidator = if ($hasDraw) {
@@ -234,11 +273,21 @@ if ($hasDraw) { [IO.File]::Copy($drawValidator, $stagedDrawValidator, $false) }
 [IO.File]::Copy($replayPath, $stagedReplay, $false)
 [IO.File]::Copy($manifestPath, $stagedManifest, $false)
 [IO.File]::Copy($flashPath, (Join-Path $data 'dc_nvmem.bin'), $false)
+foreach ($device in $persistentDevices) {
+    $portName = $device.Port + 1
+    $vmuName = "vmu_save_$([char]([int][char]'A' + $device.Bus))$portName.bin"
+    $stagedVmu = Join-Path $data $vmuName
+    [IO.File]::Copy($device.Blob.path, $stagedVmu, $false)
+}
 if ($hasInitialState) {
     $stateSuffix = if ($initialState.Slot -eq 0) { '' } else { "_$($initialState.Slot)" }
     $stagedInitialState = Join-Path $data `
         "$([IO.Path]::GetFileNameWithoutExtension($gamePath))$stateSuffix.state"
     [IO.File]::Copy($initialState.Path, $stagedInitialState, $false)
+}
+if ($hasLuaInputDriver) {
+    $stagedLuaInputDriver = Join-Path $runtime $luaInputDriver.FileName
+    [IO.File]::Copy($luaInputDriver.Path, $stagedLuaInputDriver, $false)
 }
 [IO.File]::WriteAllText((Join-Path $runtime 'emu.cfg'),
     "[log]`nLogToFile = yes`nVerbosity = 6`n", $utf8NoBom)
@@ -260,6 +309,15 @@ if ($hasDraw) {
 if ($hasInitialState) {
     Assert-Blob $sourceBlobs.initial_state $stagedInitialState `
         'staged initial state'
+}
+if ($hasLuaInputDriver) {
+    Assert-Blob $sourceBlobs.lua_input_driver $stagedLuaInputDriver `
+        'staged Lua input driver'
+}
+foreach ($device in $persistentDevices) {
+    $portName = $device.Port + 1
+    $vmuName = "vmu_save_$([char]([int][char]'A' + $device.Bus))$portName.bin"
+    Assert-Blob $device.Blob (Join-Path $data $vmuName) 'staged persistent VMU'
 }
 
 $directives = [Collections.Generic.List[string]]::new()
@@ -388,6 +446,12 @@ if ($hasInitialState) {
     Assert-Blob $sourceBlobs.initial_state $stagedInitialState `
         'staged initial state'
 }
+if ($hasLuaInputDriver) {
+    Assert-Blob $sourceBlobs.lua_input_driver $luaInputDriver.Path `
+        'Lua input driver source'
+    Assert-Blob $sourceBlobs.lua_input_driver $stagedLuaInputDriver `
+        'staged Lua input driver'
+}
 Assert-CaptureIdentitySources $identityObject $flycast $gamePath $flashPath
 $firstCandidate = Get-Blob $candidate
 Start-Sleep -Milliseconds 250
@@ -468,6 +532,9 @@ $result = [ordered]@{
 if ($hasInitialState) {
     $result['initial_state'] = Get-Blob $stagedInitialState
     $result['initial_state_slot'] = $initialState.Slot
+}
+if ($hasLuaInputDriver) {
+    $result['lua_input_driver'] = Get-Blob $stagedLuaInputDriver
 }
 if ($hasDraw) {
     $result['draw_candidate'] = Get-Blob $drawCandidate

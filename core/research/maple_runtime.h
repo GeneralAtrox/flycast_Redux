@@ -22,6 +22,7 @@ inline void abortRuntime() noexcept {}
 inline bool runtimeActive() { return false; }
 inline bool mapleRecording() { return false; }
 inline bool mapleReplaying() { return false; }
+inline bool mapleReplayConsumed() { return false; }
 inline void setMapleCheckpointHandler(MapleCheckpointHandler) {}
 inline void setMapleDmaBeginHandler(MapleDmaBeginHandler) {}
 
@@ -45,6 +46,10 @@ void abortRuntime() noexcept;
 bool runtimeActive();
 bool mapleRecording();
 bool mapleReplaying();
+// True only while a replay session is active and every authenticated event has
+// been consumed. Instruction-bounded terminals use this to preserve clean
+// replay finalization without imposing a second DMA checkpoint.
+bool mapleReplayConsumed();
 // The frontend installs this before guest execution. A configured DMA
 // checkpoint invokes it after the terminal commit has been recorded or
 // replayed, so the frontend can pause at an exact emulated-time boundary.

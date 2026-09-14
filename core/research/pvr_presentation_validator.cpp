@@ -123,7 +123,7 @@ bool validType(std::uint32_t type)
 	return type >= static_cast<std::uint32_t>(
 			PvrPresentationObservationType::RegisterWrite)
 			&& type <= static_cast<std::uint32_t>(
-					PvrPresentationObservationType::Reset);
+					PvrPresentationObservationType::InitialRegisterState);
 }
 
 bool sourceRequiresOwner(PvrVramWriteSource source)
@@ -239,7 +239,7 @@ PvrPresentationArtifactSummary validatePvrPresentationArtifactFile(
 
 	Reader payload(bytes.data() + PvrPresentationArtifactHeaderSize,
 			static_cast<std::size_t>(summary.payloadBytes));
-	std::array<std::uint64_t, 7> observedCounts {};
+	std::array<std::uint64_t, 8> observedCounts {};
 	std::unordered_set<std::uint64_t> queuedRenders;
 	std::unordered_set<std::uint64_t> completedScreenRenders;
 	std::unordered_set<std::uint64_t> framebufferGenerations;
@@ -249,8 +249,10 @@ PvrPresentationArtifactSummary validatePvrPresentationArtifactFile(
 	std::unordered_set<std::uint64_t> presentations;
 	std::unordered_set<std::uint64_t> referencedRendererWrites;
 	std::unordered_set<std::uint64_t> registerRenderReferences;
+	std::uint64_t successfulPresentations = 0;
 	std::uint64_t previousEmission = 0;
 	bool hasPreviousEmission = false;
+	std::uint64_t initialRegisterStateCount = 0;
 
 	for (std::uint64_t ordinal = 0; ordinal < summary.eventCount; ++ordinal)
 	{
@@ -437,11 +439,24 @@ PvrPresentationArtifactSummary validatePvrPresentationArtifactFile(
 							"presentation references incomplete framebuffer");
 				else
 					invalid("presentation source is invalid");
-				require(successful, "presentation was unsuccessful");
+				if (successful)
+					++successfulPresentations;
 			}
 			break;
 		case PvrPresentationObservationType::Reset:
 			require(!owner && event.remaining() == 0, "reset payload is invalid");
+			break;
+		case PvrPresentationObservationType::InitialRegisterState:
+			require(!owner, "initial register state has an SH-4 owner");
+			require(ordinal == 0 && initialRegisterStateCount == 0,
+					"initial register state is not the unique first event");
+			require(event.u32() == 0x8000,
+					"initial register state size differs");
+			require(event.u32() == 0,
+					"initial register state reserved field is nonzero");
+			event.u64();
+			event.skip(0x8000);
+			++initialRegisterStateCount;
 			break;
 		}
 		require(event.remaining() == 0, "event has trailing bytes");
@@ -449,6 +464,8 @@ PvrPresentationArtifactSummary validatePvrPresentationArtifactFile(
 
 	require(payload.remaining() == 0, "payload has trailing bytes");
 	require(observedCounts == summary.typeCounts, "type counts differ from header");
+	require(initialRegisterStateCount == 1,
+			"artifact lacks one initial register state");
 	require(summary.firstEmissionOrdinal <= summary.lastEmissionOrdinal,
 			"emission ordinal range is invalid");
 	require(summary.startTick <= summary.endTick, "tick range is invalid");
@@ -461,7 +478,7 @@ PvrPresentationArtifactSummary validatePvrPresentationArtifactFile(
 	summary.completeVerticalSlice = summary.typeCounts[0] != 0
 			&& summary.typeCounts[1] != 0 && summary.typeCounts[2] != 0
 			&& summary.typeCounts[3] != 0 && summary.typeCounts[4] != 0
-			&& summary.typeCounts[5] != 0 && summary.decodedFramebufferCount != 0;
+			&& successfulPresentations != 0 && summary.decodedFramebufferCount != 0;
 	return summary;
 }
 

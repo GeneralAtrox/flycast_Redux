@@ -176,6 +176,8 @@ ResearchControlStatus currentStatus(const ControlConfiguration& configuration)
 	addTool("memory-ranges", config::ResearchMemoryRangesRecordPath.get());
 	addTool("sh4-events", config::ResearchSh4EventsRecordPath.get());
 	addTool("sh4-observation", config::ResearchSh4ObservationRecordPath.get());
+	if (config::ResearchSh4PcCheckpoint.get() != 0)
+		status.configuredTools.emplace_back("sh4-pc-checkpoint");
 	addTool("sh4-profile", config::ResearchSh4ProfileRecordPath.get());
 	addTool("pvr-ta", config::ResearchPvrTaRecordPath.get());
 	addTool("pvr-presentation", config::ResearchPvrPresentationRecordPath.get());

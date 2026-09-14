@@ -8,10 +8,13 @@
 #include "ta_ctx.h"
 #include "pvr_mem.h"
 #include "Renderer_if.h"
+#include "rend/TexCache.h"
 #include "cfg/option.h"
 #include "hw/sh4/sh4_sched.h"
+#include "research/sha256.h"
 
 #include <algorithm>
+#include <cstring>
 #include <utility>
 
 #define TACALL DYNACALL
@@ -1361,6 +1364,76 @@ static void observePolygonPrimitives(TA_context& ctx,
 		observation.count = parameter.count;
 		observation.bounds = polygonBounds(ctx.rend, parameter.first,
 				parameter.count);
+		if (parameter.first <= ctx.rend.verts.size()
+				&& parameter.count <= ctx.rend.verts.size() - parameter.first)
+		{
+			observation.vertices.reserve(parameter.count);
+			const auto floatBits = [](float value) {
+				std::uint32_t bits = 0;
+				static_assert(sizeof(bits) == sizeof(value));
+				std::memcpy(&bits, &value, sizeof(bits));
+				return bits;
+			};
+			for (u32 vertexIndex = 0; vertexIndex < parameter.count; ++vertexIndex)
+			{
+				const Vertex& source = ctx.rend.verts[parameter.first + vertexIndex];
+				research::PvrDecodedVertex vertex;
+				vertex.xBits = floatBits(source.x);
+				vertex.yBits = floatBits(source.y);
+				vertex.zBits = floatBits(source.z);
+				vertex.uBits = floatBits(source.u);
+				vertex.vBits = floatBits(source.v);
+				vertex.u1Bits = floatBits(source.u1);
+				vertex.v1Bits = floatBits(source.v1);
+				vertex.nxBits = floatBits(source.nx);
+				vertex.nyBits = floatBits(source.ny);
+				vertex.nzBits = floatBits(source.nz);
+				std::copy_n(source.col, 4, vertex.baseColor.begin());
+				std::copy_n(source.spc, 4, vertex.offsetColor.begin());
+				std::copy_n(source.col1, 4, vertex.baseColor1.begin());
+				std::copy_n(source.spc1, 4, vertex.offsetColor1.begin());
+				observation.vertices.push_back(vertex);
+			}
+		}
+		if (parameter.pcw.Texture && parameter.texture != nullptr)
+		{
+			const BaseTextureCacheData& texture = *parameter.texture;
+			auto& sampled = observation.sampledTexture;
+			const std::uint64_t sourceEnd =
+					static_cast<std::uint64_t>(texture.mmStartAddress) + texture.size;
+			if (sourceEnd >= texture.startAddress
+					&& sourceEnd <= static_cast<std::uint64_t>(VRAM_MASK) + 1u)
+			{
+				sampled.available = true;
+				sampled.sourceAddress = texture.startAddress;
+				sampled.sourceSize = static_cast<std::uint32_t>(
+						sourceEnd - texture.startAddress);
+				sampled.maximumLevelAddress = texture.mmStartAddress;
+				sampled.maximumLevelSize = texture.size;
+				sampled.width = texture.width;
+				sampled.height = texture.height;
+				sampled.pixelFormat = texture.tcw.PixelFmt;
+				sampled.cacheUpdates = texture.Updates;
+				sampled.gpuPalette = texture.gpuPalette;
+				sampled.customReplacement = texture.is_custom_replaced;
+				sampled.sourceDigest = research::sha256(
+						&vram[sampled.sourceAddress], sampled.sourceSize);
+				sampled.sourceBytes.assign(&vram[sampled.sourceAddress],
+						&vram[sampled.sourceAddress] + sampled.sourceSize);
+				if (texture.tcw.PixelFmt == PixelPal4
+						|| texture.tcw.PixelFmt == PixelPal8)
+				{
+					sampled.paletteEntryCount = texture.tcw.PixelFmt == PixelPal4
+							? 16u : 256u;
+					sampled.paletteFirstEntry = texture.tcw.PixelFmt == PixelPal4
+							? static_cast<std::uint32_t>(texture.tcw.PalSelect) * 16u
+							: static_cast<std::uint32_t>(texture.tcw.PalSelect >> 4) * 256u;
+					sampled.paletteDigest = research::sha256(
+							&PALETTE_RAM[sampled.paletteFirstEntry],
+							sampled.paletteEntryCount * sizeof(PALETTE_RAM[0]));
+				}
+			}
+		}
 		observation.parameterBlocks = parameter.researchParameterBlocks;
 		observation.vertexBlocks = parameter.researchVertexBlocks;
 		setPrimitiveIdentity(observation, ctx, renderPass);

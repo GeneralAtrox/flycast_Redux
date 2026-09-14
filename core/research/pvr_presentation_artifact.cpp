@@ -95,7 +95,7 @@ bool validBackend(Sh4ObservationBackend backend)
 bool validType(PvrPresentationObservationType type)
 {
 	return type >= PvrPresentationObservationType::RegisterWrite
-			&& type <= PvrPresentationObservationType::Reset;
+			&& type <= PvrPresentationObservationType::InitialRegisterState;
 }
 
 std::size_t typeIndex(PvrPresentationObservationType type)
@@ -221,6 +221,16 @@ std::vector<std::uint8_t> serializeObservation(
 		break;
 	case PvrPresentationObservationType::Reset:
 		require(!observation.initiator.valid, "reset has an SH-4 owner");
+		break;
+	case PvrPresentationObservationType::InitialRegisterState:
+		require(!observation.initiator.valid,
+				"initial register state has an SH-4 owner");
+		require(observation.bytes.size() == 0x8000,
+				"initial register state size differs");
+		appendU32(body, static_cast<std::uint32_t>(observation.bytes.size()));
+		appendU32(body, 0);
+		appendU64(body, observation.renderGeneration);
+		body.insert(body.end(), observation.bytes.begin(), observation.bytes.end());
 		break;
 	}
 

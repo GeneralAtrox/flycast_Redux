@@ -2,7 +2,9 @@
 
 #include "research/sh4_observation.h"
 
+#include <cstddef>
 #include <cstdint>
+#include <vector>
 
 struct Sh4Context;
 
@@ -19,6 +21,46 @@ struct Sh4InstructionOwnerToken
 	std::uint32_t pr = 0;
 	std::uint16_t opcode = 0;
 	std::uint16_t delaySlotDepth = 0;
+};
+
+constexpr std::size_t Sh4DynarecTimingDiagnosticHistoryCapacity = 256;
+
+enum class Sh4DynarecTimingDiagnosticState : std::uint8_t
+{
+	Open = 0,
+	Completed = 1,
+	Exception = 2,
+	Interrupt = 3,
+};
+
+struct Sh4DynarecTimingDiagnosticRecord
+{
+	std::uint64_t sequence = 0;
+	Sh4DynarecTimingDiagnosticState state =
+			Sh4DynarecTimingDiagnosticState::Open;
+	std::uint32_t pc = 0;
+	std::uint32_t nextPc = 0;
+	std::uint32_t boundaryCode = 0;
+	std::uint16_t opcode = 0;
+	std::uint16_t depth = 0;
+	bool precise = false;
+	std::int32_t instructionCycles = 0;
+	std::int64_t cycleCounterBegin = 0;
+	std::int64_t cycleCounterEnd = 0;
+	std::uint64_t schedulerTickBegin = 0;
+	std::uint64_t schedulerTickEnd = 0;
+	std::uint64_t executionTickBegin = 0;
+	std::uint64_t executionTickEnd = 0;
+};
+
+struct Sh4DynarecTimingDiagnosticSnapshot
+{
+	bool active = false;
+	std::uint64_t zeroBasedDmaOrdinal = 0;
+	std::uint64_t observedTick = 0;
+	std::uint64_t expectedTick = 0;
+	std::uint64_t nextSequence = 0;
+	std::vector<Sh4DynarecTimingDiagnosticRecord> records;
 };
 
 #ifdef LIBRETRO
@@ -53,6 +95,11 @@ inline Sh4InstructionOwnerToken sh4ObservationCurrentInstructionOwner() noexcept
 {
 	return {};
 }
+inline std::uint64_t sh4ObservationSynchronousHardwareTick(
+		std::uint64_t fallbackTick) noexcept
+{
+	return fallbackTick;
+}
 using Sh4DynarecObservationMarker = void (*)(Sh4Context *, std::uint32_t,
 		std::uint32_t, std::uint32_t) noexcept;
 inline void sh4DynarecObservationMarkerUnavailable(Sh4Context *, std::uint32_t,
@@ -64,6 +111,9 @@ inline void sh4DynarecObservationMemoryBegin(std::uint32_t, std::uint32_t,
 inline void sh4DynarecObservationMemoryEnd(std::uint32_t, std::uint32_t,
 		std::uint64_t) noexcept {}
 inline void sh4DynarecExecutionTimingReset() noexcept {}
+inline void sh4DynarecTimingDiagnosticSetActive(bool) noexcept {}
+inline Sh4DynarecTimingDiagnosticSnapshot sh4DynarecTimingDiagnosticSnapshot(
+		std::uint64_t, std::uint64_t, std::uint64_t) { return {}; }
 inline bool sh4ObservationPreciseTimingActive(Sh4ObservationBackend) noexcept
 {
 	return false;
@@ -112,6 +162,8 @@ bool sh4InstructionOwnershipActive(Sh4ObservationBackend backend) noexcept;
 // Returns only the currently open instruction frame. Callers must not infer an
 // owner from Sh4Context::pc after the observed hardware boundary has passed.
 Sh4InstructionOwnerToken sh4ObservationCurrentInstructionOwner() noexcept;
+std::uint64_t sh4ObservationSynchronousHardwareTick(
+		std::uint64_t fallbackTick) noexcept;
 // Compile-time selection for the generated marker call. Generated code embeds
 // only POD immediates, never a pointer into RuntimeBlockInfo::oplist.
 using Sh4DynarecObservationMarker = void (*)(Sh4Context *, std::uint32_t pc,
@@ -129,6 +181,13 @@ void sh4DynarecObservationMemoryEnd(std::uint32_t unusedAddress,
 // deferred captures can authenticate the same replay checkpoint. Normal
 // dynarec execution never calls this state machine.
 void sh4DynarecExecutionTimingReset() noexcept;
+// Diagnostic replay keeps only the most recent instruction/scheduler boundary
+// records in fixed memory. A snapshot is diagnostic-only and is never an SH-4
+// equivalence artifact.
+void sh4DynarecTimingDiagnosticSetActive(bool active) noexcept;
+Sh4DynarecTimingDiagnosticSnapshot sh4DynarecTimingDiagnosticSnapshot(
+		std::uint64_t zeroBasedDmaOrdinal, std::uint64_t observedTick,
+		std::uint64_t expectedTick);
 // Native equivalence capture owns the timing transition. A generic observation
 // subscriber (including Lua discovery) must never change guest scheduling.
 bool sh4ObservationPreciseTimingActive(Sh4ObservationBackend backend) noexcept;

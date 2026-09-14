@@ -4,9 +4,11 @@
 #include "cfg/option.h"
 #include "hw/flashrom/nvmem.h"
 #include "research/identity_manifest.h"
+#include "research/sh4_observation_runtime.h"
 #include "oslib/oslib.h"
 #include "types.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <cstring>
 #include <memory>
@@ -27,6 +29,60 @@ enum class Mode
 
 MapleCheckpointHandler checkpointHandler = nullptr;
 MapleDmaBeginHandler dmaBeginHandler = nullptr;
+
+const char *timingDiagnosticStateName(
+		Sh4DynarecTimingDiagnosticState state) noexcept
+{
+	switch (state)
+	{
+	case Sh4DynarecTimingDiagnosticState::Open:
+		return "open";
+	case Sh4DynarecTimingDiagnosticState::Completed:
+		return "completed";
+	case Sh4DynarecTimingDiagnosticState::Exception:
+		return "exception";
+	case Sh4DynarecTimingDiagnosticState::Interrupt:
+		return "interrupt";
+	}
+	return "unknown";
+}
+
+void logTimingDiagnosticSnapshot(std::uint64_t zeroBasedOrdinal,
+		std::uint64_t observed, std::uint64_t expected)
+{
+	const Sh4DynarecTimingDiagnosticSnapshot snapshot =
+			sh4DynarecTimingDiagnosticSnapshot(zeroBasedOrdinal, observed, expected);
+	NOTICE_LOG(SH4,
+			"Research SH-4 dynarec timing history begin zero_based_ordinal=%llu observed=%llu expected=%llu active=%u capacity=%llu record_count=%llu next_sequence=%llu",
+			static_cast<unsigned long long>(zeroBasedOrdinal),
+			static_cast<unsigned long long>(observed),
+			static_cast<unsigned long long>(expected), snapshot.active ? 1u : 0u,
+			static_cast<unsigned long long>(
+					Sh4DynarecTimingDiagnosticHistoryCapacity),
+			static_cast<unsigned long long>(snapshot.records.size()),
+			static_cast<unsigned long long>(snapshot.nextSequence));
+	for (const Sh4DynarecTimingDiagnosticRecord& record : snapshot.records)
+	{
+		NOTICE_LOG(SH4,
+				"Research SH-4 dynarec timing history record zero_based_ordinal=%llu sequence=%llu state=%s pc=%08x opcode=%04x next_pc=%08x depth=%u precise=%u instruction_cycles=%d boundary_code=%08x begin_scheduler_tick=%llu end_scheduler_tick=%llu begin_execution_tick=%llu end_execution_tick=%llu begin_cycle_counter=%lld end_cycle_counter=%lld",
+				static_cast<unsigned long long>(zeroBasedOrdinal),
+				static_cast<unsigned long long>(record.sequence),
+				timingDiagnosticStateName(record.state), record.pc,
+				record.opcode, record.nextPc, record.depth,
+				record.precise ? 1u : 0u, record.instructionCycles,
+				record.boundaryCode,
+				static_cast<unsigned long long>(record.schedulerTickBegin),
+				static_cast<unsigned long long>(record.schedulerTickEnd),
+				static_cast<unsigned long long>(record.executionTickBegin),
+				static_cast<unsigned long long>(record.executionTickEnd),
+				static_cast<long long>(record.cycleCounterBegin),
+				static_cast<long long>(record.cycleCounterEnd));
+	}
+	NOTICE_LOG(SH4,
+			"Research SH-4 dynarec timing history end zero_based_ordinal=%llu record_count=%llu",
+			static_cast<unsigned long long>(zeroBasedOrdinal),
+			static_cast<unsigned long long>(snapshot.records.size()));
+}
 
 [[noreturn]] void divergence(const std::string& field)
 {
@@ -67,7 +123,8 @@ public:
 			return ordinal;
 		}
 		const MapleDmaBeginEvent& expected = next<MapleDmaBeginEvent>(MapleTraceEventType::DmaBegin);
-		exact(event.tick, expected.tick, "DMA begin tick");
+		exactReplayTick(event.tick, expected.tick, "dma_begin",
+				expected.dmaOrdinal);
 		exact(event.descriptorAddress, expected.descriptorAddress, "DMA descriptor address");
 		exact(event.mden, expected.mden, "SB_MDEN");
 		exact(event.mdst, expected.mdst, "SB_MDST");
@@ -88,7 +145,8 @@ public:
 		const MapleTransactionEvent& expected =
 				next<MapleTransactionEvent>(MapleTraceEventType::Transaction);
 		exact(event.dmaOrdinal, expected.dmaOrdinal, "transaction DMA ordinal");
-		exact(event.tick, expected.tick, "transaction tick");
+		exactReplayTick(event.tick, expected.tick, "transaction",
+				expected.dmaOrdinal);
 		exact(event.descriptorAddress, expected.descriptorAddress,
 				"transaction descriptor address");
 		exact(event.destinationAddress, expected.destinationAddress,
@@ -116,7 +174,8 @@ public:
 		const MapleControlDescriptorEvent& expected = next<MapleControlDescriptorEvent>(
 				MapleTraceEventType::ControlDescriptor);
 		exact(event.dmaOrdinal, expected.dmaOrdinal, "control descriptor DMA ordinal");
-		exact(event.tick, expected.tick, "control descriptor tick");
+		exactReplayTick(event.tick, expected.tick, "control_descriptor",
+				expected.dmaOrdinal);
 		exact(event.descriptorAddress, expected.descriptorAddress,
 				"control descriptor address");
 		exact(event.descriptorHeader, expected.descriptorHeader,
@@ -135,7 +194,8 @@ public:
 		const MapleDmaScheduleEvent& expected =
 				next<MapleDmaScheduleEvent>(MapleTraceEventType::DmaSchedule);
 		exact(event.dmaOrdinal, expected.dmaOrdinal, "DMA schedule ordinal");
-		exact(event.tick, expected.tick, "DMA schedule tick");
+		exactReplayTick(event.tick, expected.tick, "dma_schedule",
+				expected.dmaOrdinal);
 		exact(event.inputWireBytes, expected.inputWireBytes, "DMA input wire bytes");
 		exact(event.outputWireBytes, expected.outputWireBytes, "DMA output wire bytes");
 		exact(event.scheduledCycles, expected.scheduledCycles, "DMA scheduled cycles");
@@ -154,7 +214,8 @@ public:
 		const MapleDmaCommitEvent& expected =
 				next<MapleDmaCommitEvent>(MapleTraceEventType::DmaCommit);
 		exact(event.dmaOrdinal, expected.dmaOrdinal, "DMA commit ordinal");
-		exact(event.tick, expected.tick, "DMA commit tick");
+		exactReplayTick(event.tick, expected.tick, "dma_commit",
+				expected.dmaOrdinal);
 		exact(event.callbackCycles, expected.callbackCycles, "DMA callback cycles");
 		exact(event.jitter, expected.jitter, "DMA callback jitter");
 		exact(event.responseCount, expected.responseCount, "DMA committed response count");
@@ -189,6 +250,16 @@ public:
 		{
 			divergence("replay stopped before the terminal event");
 		}
+		if (mode == Mode::Replay
+				&& identity.runtimeConfiguration.dynarecReplayDiagnostic)
+		{
+			NOTICE_LOG(MAPLE,
+					"Research Maple diagnostic timing summary mismatch_count=%llu first_zero_based_ordinal=%llu last_zero_based_ordinal=%llu maximum_absolute_delta=%llu",
+					static_cast<unsigned long long>(timingMismatchCount),
+					static_cast<unsigned long long>(firstTimingMismatchOrdinal),
+					static_cast<unsigned long long>(lastTimingMismatchOrdinal),
+					static_cast<unsigned long long>(maximumAbsoluteTimingDelta));
+		}
 	}
 
 	void abandon() noexcept
@@ -198,8 +269,39 @@ public:
 	}
 
 	Mode getMode() const { return mode; }
+	bool replayConsumed() const
+	{
+		return mode == Mode::Replay && cursor == replay.events.size();
+	}
 
 private:
+	void exactReplayTick(std::uint64_t observed, std::uint64_t expected,
+			const char *event, std::uint64_t zeroBasedOrdinal)
+	{
+		if (observed == expected)
+			return;
+		if (!identity.runtimeConfiguration.dynarecReplayDiagnostic)
+			exact(observed, expected, event);
+		const bool firstMismatchForDma = timingMismatchCount == 0
+				|| lastTimingMismatchOrdinal != zeroBasedOrdinal;
+		const std::uint64_t absoluteDelta = observed >= expected
+				? observed - expected : expected - observed;
+		if (timingMismatchCount == 0)
+			firstTimingMismatchOrdinal = zeroBasedOrdinal;
+		lastTimingMismatchOrdinal = zeroBasedOrdinal;
+		maximumAbsoluteTimingDelta = std::max(maximumAbsoluteTimingDelta,
+				absoluteDelta);
+		++timingMismatchCount;
+		if (firstMismatchForDma)
+			logTimingDiagnosticSnapshot(zeroBasedOrdinal, observed, expected);
+		NOTICE_LOG(MAPLE,
+				"Research Maple diagnostic timing mismatch event=%s zero_based_ordinal=%llu observed=%llu expected=%llu delta=%lld",
+				event, static_cast<unsigned long long>(zeroBasedOrdinal),
+				static_cast<unsigned long long>(observed),
+				static_cast<unsigned long long>(expected),
+				static_cast<long long>(observed) - static_cast<long long>(expected));
+	}
+
 	void notifyDmaBegin(std::uint64_t zeroBasedOrdinal)
 	{
 		if (dmaBeginHandler != nullptr)
@@ -212,6 +314,9 @@ private:
 		if (dmaCheckpoint == 0 || committedDmaCount != dmaCheckpoint)
 			return;
 		checkpointReached = true;
+		NOTICE_LOG(MAPLE,
+				"Research Maple DMA checkpoint reached after %llu committed DMA",
+				static_cast<unsigned long long>(committedDmaCount));
 		if (checkpointHandler == nullptr)
 			divergence("DMA checkpoint handler is unavailable");
 		checkpointHandler();
@@ -235,6 +340,10 @@ private:
 	std::size_t cursor = 0;
 	std::uint64_t dmaCheckpoint = 0;
 	std::uint64_t committedDmaCount = 0;
+	std::uint64_t timingMismatchCount = 0;
+	std::uint64_t firstTimingMismatchOrdinal = 0;
+	std::uint64_t lastTimingMismatchOrdinal = 0;
+	std::uint64_t maximumAbsoluteTimingDelta = 0;
 	bool checkpointReached = false;
 };
 
@@ -257,7 +366,13 @@ void applyDeterministicOverrides(const IdentityManifest *identity = nullptr)
 	// Backend-equivalence capture owns this setting from its v2 identity before
 	// dc_reset selects the executor. Frozen Maple-only v1 sessions remain
 	// interpreter-only.
-	if (config::ResearchSh4ObservationRecordPath.get().empty()
+	const bool diagnosticDynarec = identity != nullptr
+			&& identity->runtimeConfiguration.dynarecReplayDiagnostic;
+	if (diagnosticDynarec)
+		config::DynarecEnabled.override(true);
+	if (!diagnosticDynarec
+			&& config::ResearchSh4ObservationRecordPath.get().empty()
+			&& config::ResearchSh4EventsRecordPath.get().empty()
 			&& config::ResearchSh4ProfileRecordPath.get().empty()
 			&& config::ResearchPvrTaRecordPath.get().empty()
 			&& config::ResearchGdromRecordPath.get().empty())
@@ -265,6 +380,9 @@ void applyDeterministicOverrides(const IdentityManifest *identity = nullptr)
 	config::ThreadedRendering.override(false);
 	if (identity != nullptr)
 	{
+		if (diagnosticDynarec)
+			config::ResearchDynarecObservation.override(
+					identity->runtimeConfiguration.dynarecObservation);
 		config::ResearchDreamcastRtcSeed.override(
 				identity->runtimeConfiguration.dreamcastRtcSeed);
 		config::UseReios.override(identity->firmware.mode == FirmwareMode::Hle);
@@ -305,6 +423,16 @@ void verifyRuntimeConfiguration(const IdentityManifest& identity)
 	if (expected.mapleDmaCheckpoint
 			!= static_cast<std::uint64_t>(config::ResearchMapleDmaCheckpoint.get()))
 		throw FlycastException("research identity/runtime Maple DMA checkpoint mismatch");
+	if (expected.sh4PcCheckpoint
+			!= static_cast<std::uint64_t>(config::ResearchSh4PcCheckpoint.get()))
+		throw FlycastException("research identity/runtime SH-4 PC checkpoint mismatch");
+	if (expected.sh4PcCheckpointU32Address
+			!= static_cast<std::uint64_t>(
+					config::ResearchSh4PcCheckpointU32Address.get())
+			|| expected.sh4PcCheckpointU32Value
+					!= static_cast<std::uint64_t>(
+							config::ResearchSh4PcCheckpointU32Value.get()))
+		throw FlycastException("research identity/runtime SH-4 PC checkpoint U32 gate mismatch");
 	if (expected.pvrTaStartDma
 			!= static_cast<std::uint64_t>(config::ResearchPvrTaStartDma.get()))
 		throw FlycastException("research identity/runtime PowerVR TA start DMA mismatch");
@@ -362,9 +490,16 @@ void startRuntime()
 	applyDeterministicOverrides(&identity);
 	authenticateLoadedDreamcastFirmware(identity, config::UseReios.get(),
 			nvmem::getBiosData(), DreamcastBiosBytes);
-	if (identity.firmware.mode == FirmwareMode::Real)
+	if (identity.firmware.initialFlash.available
+			&& (identity.firmware.mode == FirmwareMode::Real
+					|| identity.firmware.initialFlash.size != 0))
+	{
 		authenticateLoadedDreamcastFlash(identity, nvmem::getInitialFlashData(),
 				nvmem::getInitialFlashSize());
+		NOTICE_LOG(MAPLE,
+				"Authenticated loaded Dreamcast initial flash SHA-256 %s",
+				sha256ToHex(identity.firmware.initialFlash.digest).c_str());
+	}
 	if (identity.initialState.available)
 		authenticateInitialStateFile(identity, researchPath(
 				hostfs::getSavestatePath(static_cast<int>(identity.initialState.slot),
@@ -373,12 +508,16 @@ void startRuntime()
 			config::ResearchMapleDmaCheckpoint.get());
 	if (identity.schemaVersion == 2)
 	{
-		if (identity.runtimeConfiguration.dynarecProfile)
+		if (identity.runtimeConfiguration.dynarecReplayDiagnostic)
+			requireSh4DynarecReplayDiagnosticIdentityV2(identity);
+		else if (identity.runtimeConfiguration.dynarecProfile)
 			requireSh4DynarecProfileIdentityV2(identity);
 		else
 			requireSh4EquivalenceIdentityV2(identity);
 	}
 	verifyRuntimeConfiguration(identity);
+	sh4DynarecTimingDiagnosticSetActive(
+			identity.runtimeConfiguration.dynarecReplayDiagnostic);
 
 	if (configuredMode == Mode::Record)
 	{
@@ -410,6 +549,7 @@ void stopRuntime(bool clean)
 	if (session == nullptr)
 	{
 		configuredMode = Mode::None;
+		sh4DynarecTimingDiagnosticSetActive(false);
 		return;
 	}
 	std::unique_ptr<Session> finishing = std::move(session);
@@ -417,6 +557,7 @@ void stopRuntime(bool clean)
 	if (!clean)
 	{
 		finishing->abandon();
+		sh4DynarecTimingDiagnosticSetActive(false);
 		return;
 	}
 	try
@@ -426,13 +567,16 @@ void stopRuntime(bool clean)
 	catch (...)
 	{
 		finishing->abandon();
+		sh4DynarecTimingDiagnosticSetActive(false);
 		throw;
 	}
+	sh4DynarecTimingDiagnosticSetActive(false);
 }
 
 void abortRuntime() noexcept
 {
 	configuredMode = Mode::None;
+	sh4DynarecTimingDiagnosticSetActive(false);
 	if (session != nullptr)
 	{
 		session->abandon();
@@ -453,6 +597,11 @@ bool mapleRecording()
 bool mapleReplaying()
 {
 	return session != nullptr && session->getMode() == Mode::Replay;
+}
+
+bool mapleReplayConsumed()
+{
+	return session != nullptr && session->replayConsumed();
 }
 
 void setMapleCheckpointHandler(MapleCheckpointHandler handler)

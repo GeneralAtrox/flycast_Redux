@@ -77,6 +77,21 @@ TEST(ResearchPvrDrawObservation, PreservesPrimitiveAndCommittedDrawBoundary)
 	primitive.listType = 0;
 	primitive.primitiveKind = PvrPrimitiveKind::PolygonStrip;
 	primitive.count = 3;
+	primitive.vertices.resize(3);
+	primitive.vertices[0].xBits = 0x3f800000;
+	primitive.vertices[0].uBits = 0x3e800000;
+	primitive.vertices[0].baseColor = {1, 2, 3, 4};
+	primitive.sampledTexture.available = true;
+	primitive.sampledTexture.sourceAddress = 0x00100000;
+	primitive.sampledTexture.sourceSize = 0x96000;
+	primitive.sampledTexture.maximumLevelAddress = 0x00100000;
+	primitive.sampledTexture.maximumLevelSize = 0x96000;
+	primitive.sampledTexture.width = 640;
+	primitive.sampledTexture.height = 480;
+	primitive.sampledTexture.pixelFormat = 3;
+	primitive.sampledTexture.sourceDigest[0] = 0x5a;
+	primitive.sampledTexture.sourceBytes.resize(0x96000, 0x5a);
+	primitive.pcw = 0x8;
 	primitive.parameterBlocks = {block(0, 9, 0x8c010100)};
 	primitive.vertexBlocks = {block(1, 10, 0x8c010120)};
 	observePvrPrimitiveDecoded(primitive);
@@ -91,6 +106,14 @@ TEST(ResearchPvrDrawObservation, PreservesPrimitiveAndCommittedDrawBoundary)
 	EXPECT_EQ(PvrPrimitiveOwnerClass::Mixed, events[0].ownerClass);
 	EXPECT_EQ(2u, events[0].parameterBlocks.size()
 			+ events[0].vertexBlocks.size());
+	ASSERT_EQ(3u, events[0].vertices.size());
+	EXPECT_EQ(0x3f800000u, events[0].vertices[0].xBits);
+	EXPECT_EQ((std::array<std::uint8_t, 4> {1, 2, 3, 4}),
+			events[0].vertices[0].baseColor);
+	EXPECT_TRUE(events[0].sampledTexture.available);
+	EXPECT_EQ(0x96000u, events[0].sampledTexture.sourceSize);
+	EXPECT_EQ(0x5au, events[0].sampledTexture.sourceDigest[0]);
+	EXPECT_EQ(0x96000u, events[0].sampledTexture.sourceBytes.size());
 	EXPECT_EQ(PvrDrawObservationType::DrawConsumed, events[1].type);
 	EXPECT_EQ(rasterGeneration, events[1].rasterGeneration);
 	EXPECT_EQ((std::vector<std::uint64_t> {primitive.primitiveGeneration}),

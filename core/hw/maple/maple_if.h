@@ -11,3 +11,12 @@ void maple_ReconnectDevices();
 void maple_ReconnectDevice(int bus, int port);
 
 void maple_vblank();
+
+#ifdef FLYCAST_TEST_FILES
+namespace research_test
+{
+using MapleDmaTickObserver = void (*)(u64 rawTick, u64 executionTick,
+		u32 ownerPc, u16 ownerOpcode, bool ownerValid);
+void setMapleDmaTickObserver(MapleDmaTickObserver observer);
+}
+#endif

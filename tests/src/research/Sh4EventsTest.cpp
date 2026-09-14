@@ -9,6 +9,7 @@
 #include "research/sh4_events_manifest.h"
 #include "research/sh4_events_runtime.h"
 #include "research/sh4_observation.h"
+#include "research/sh4_observation_runtime.h"
 #include "research/sha256.h"
 #include "ResearchRuntimeStubs.h"
 
@@ -61,6 +62,11 @@ private:
 		config::ResearchMemoryRangesRecordPath = "";
 		config::ResearchSh4EventsManifestPath = "";
 		config::ResearchSh4EventsRecordPath = "";
+		config::ResearchMapleDmaCheckpoint.override(0);
+		config::ResearchSh4PcCheckpoint.override(0);
+		config::ResearchDreamcastRtcSeed.override(0);
+		config::ResearchDynarecObservation.override(false);
+		config::DynarecEnabled.override(true);
 		config::AutoLoadState.override(false);
 		config::SavestateSlot.override(0);
 	}
@@ -194,6 +200,22 @@ json stateIdentityJson(const Sh4FixtureData& fixture,
 	values["dreamcast_rtc_seed"] = 0;
 	values["autoload_state"] = true;
 	values["savestate_slot"] = slot;
+	root["configuration"]["sha256"] = digestOf(values.dump());
+	return root;
+}
+
+json equivalenceIdentityJson(const Sh4FixtureData& fixture,
+		const char *backend)
+{
+	json root = identityJson(fixture);
+	root["schema_version"] = 2;
+	root["equivalence"] = {
+		{"maple_replay_identity_sha256", std::string(64, '1')},
+	};
+	json& values = root["configuration"]["values"];
+	values["cpu_backend"] = backend;
+	values["dynarec_observation"] = std::string(backend) == "dynarec";
+	values["dreamcast_rtc_seed"] = 0;
 	root["configuration"]["sha256"] = digestOf(values.dump());
 	return root;
 }
@@ -442,6 +464,41 @@ TEST(ResearchSh4Events, ManifestValidatesSemanticsAndExactIdentityBindings)
 			std::runtime_error);
 }
 
+TEST(ResearchSh4Events, IdentityBackendPolicyRequiresEquivalenceIdentity)
+{
+	Sh4EventsTemporaryDirectory directory;
+	Sh4FixtureData fixture;
+	json identityManifest = manifestJson(fixture);
+	identityManifest["acceptance"]["backend"] = "identity";
+	const auto manifestPath = directory.file("identity-backend-manifest.json");
+	writeText(manifestPath, identityManifest.dump(2));
+	const research::Sh4EventsManifest manifest =
+			research::loadSh4EventsManifest(manifestPath);
+
+	const auto interpreterPath = directory.file("interpreter-v2.json");
+	writeText(interpreterPath,
+			equivalenceIdentityJson(fixture, "interpreter").dump(2));
+	const auto dynarecPath = directory.file("dynarec-v2.json");
+	writeText(dynarecPath, equivalenceIdentityJson(fixture, "dynarec").dump(2));
+	EXPECT_NO_THROW(research::requireSh4EventsIdentity(manifest,
+			research::loadIdentityManifest(interpreterPath)));
+	EXPECT_NO_THROW(research::requireSh4EventsIdentity(manifest,
+			research::loadIdentityManifest(dynarecPath)));
+
+	const research::IdentityManifest legacyIdentity =
+			research::loadIdentityManifest(writeIdentity(directory, fixture));
+	EXPECT_THROW(research::requireSh4EventsIdentity(manifest, legacyIdentity),
+			std::runtime_error);
+
+	json interpreterManifest = identityManifest;
+	interpreterManifest["acceptance"]["backend"] = "interpreter";
+	const auto interpreterManifestPath = directory.file("interpreter-manifest.json");
+	writeText(interpreterManifestPath, interpreterManifest.dump(2));
+	EXPECT_THROW(research::requireSh4EventsIdentity(
+			research::loadSh4EventsManifest(interpreterManifestPath),
+			research::loadIdentityManifest(dynarecPath)), std::runtime_error);
+}
+
 TEST(ResearchSh4Events, ManifestRejectsDuplicateUnknownOverlapAndImpossibleLimits)
 {
 	Sh4EventsTemporaryDirectory directory;
@@ -479,6 +536,11 @@ TEST(ResearchSh4Events, ManifestRejectsDuplicateUnknownOverlapAndImpossibleLimit
 
 	changed = valid;
 	changed["watch_ranges"][0]["access"] = json::array({"read", "read"});
+	writeText(invalidPath, changed.dump());
+	EXPECT_THROW(research::loadSh4EventsManifest(invalidPath), std::runtime_error);
+
+	changed = valid;
+	changed["watch_ranges"][0]["scope_hook_id"] = "HOOK-UNKNOWN";
 	writeText(invalidPath, changed.dump());
 	EXPECT_THROW(research::loadSh4EventsManifest(invalidPath), std::runtime_error);
 
@@ -523,6 +585,178 @@ TEST(ResearchSh4Events, CapturesDelaySlotWatchesCallsReturnsSnapshotsAndExceptio
 					artifactPath, identity, manifest);
 	EXPECT_TRUE(research::sha256Equal(written.payloadDigest, validated.payloadDigest));
 	EXPECT_EQ(written.eventCount, validated.eventCount);
+}
+
+TEST(ResearchSh4Events, CompletedCallBoundaryMustBeReachedExactly)
+{
+	Sh4EventsTemporaryDirectory directory;
+	Sh4FixtureData fixture;
+	const research::IdentityManifest identity = research::loadIdentityManifest(
+			writeIdentity(directory, fixture));
+	json values = manifestJson(fixture);
+	values["acceptance"]["stop_after_completed_calls"] = 2;
+	const auto manifestPath = directory.file("two-call-boundary.json");
+	writeText(manifestPath, values.dump(2));
+	const research::Sh4EventsManifest manifest =
+			research::loadSh4EventsManifest(manifestPath);
+
+	EXPECT_THROW(recordFixture(directory.file("one-call.fcsh4"), identity,
+			manifest, fixture), std::logic_error);
+}
+
+TEST(ResearchSh4Events, HookBoundaryStopsAfterTheNamedOuterInvocation)
+{
+	Sh4EventsTemporaryDirectory directory;
+	Sh4FixtureData fixture;
+	const research::IdentityManifest identity = research::loadIdentityManifest(
+			writeIdentity(directory, fixture));
+	json values = manifestJson(fixture);
+	values["hooks"].push_back({
+			{"hook_id", "HOOK-INNER"},
+			{"entry_pc", "0x8c010200"},
+			{"end_address_exclusive", "0x8c010220"},
+			{"snapshots", json::array()},
+	});
+	values["acceptance"]["minimum_watch_events"] = 0;
+	values["acceptance"]["stop_after_hook_id"] = "HOOK-MAIN";
+	const auto manifestPath = directory.file("outer-hook-boundary.json");
+	writeText(manifestPath, values.dump(2));
+	const research::Sh4EventsManifest manifest =
+			research::loadSh4EventsManifest(manifestPath);
+	ASSERT_TRUE(manifest.stopAfterHookIndex.has_value());
+	EXPECT_EQ(0u, *manifest.stopAfterHookIndex);
+
+	const FixtureMemory memory = fixtureMemory(fixture);
+	const auto artifactPath = directory.file("outer-hook-boundary.fcsh4");
+	{
+	research::Sh4EventsCapture capture(artifactPath, identity, manifest);
+	auto outerCall = instruction(0x8c020000, 0x410b, 100);
+	outerCall.registers.r[1] = 0x8c010100;
+	outerCall.registers.r[15] = 0;
+	capture.beginInstruction(outerCall, mapReader(memory));
+	outerCall.nextPc = 0x8c010100;
+	outerCall.tick = 101;
+	capture.endInstruction(outerCall, mapReader(memory));
+
+	auto innerCall = instruction(0x8c010104, 0x420b, 110);
+	innerCall.registers.r[2] = 0x8c010200;
+	capture.beginInstruction(innerCall, mapReader(memory));
+	innerCall.nextPc = 0x8c010200;
+	innerCall.tick = 111;
+	capture.endInstruction(innerCall, mapReader(memory));
+	auto innerReturn = instruction(0x8c010210, 0x000b, 120);
+	capture.beginInstruction(innerReturn, mapReader(memory));
+	innerReturn.nextPc = 0x8c010108;
+	innerReturn.tick = 121;
+	capture.endInstruction(innerReturn, mapReader(memory));
+	EXPECT_FALSE(capture.completionRequested());
+
+	auto outerReturn = instruction(0x8c010110, 0x000b, 130);
+	outerReturn.registers.r[4] = 0x8c0010fc;
+	capture.beginInstruction(outerReturn, mapReader(memory));
+	outerReturn.nextPc = 0x8c020004;
+	outerReturn.tick = 131;
+	capture.endInstruction(outerReturn, mapReader(memory));
+	EXPECT_TRUE(capture.completionRequested());
+	const research::Sh4EventsArtifactSummary summary = capture.finish();
+	EXPECT_EQ(2u, summary.callCount);
+	EXPECT_EQ(2u, summary.returnCount);
+	}
+	EXPECT_NO_THROW(research::validateProductionSh4EventsArtifactFile(
+			artifactPath, identity, manifest));
+}
+
+TEST(ResearchSh4Events, HookBoundaryManifestRejectsUnknownAndCompetingStops)
+{
+	Sh4EventsTemporaryDirectory directory;
+	Sh4FixtureData fixture;
+	json values = manifestJson(fixture);
+	values["acceptance"]["stop_after_hook_id"] = "HOOK-ABSENT";
+	const auto unknownPath = directory.file("unknown-stop-hook.json");
+	writeText(unknownPath, values.dump(2));
+	EXPECT_THROW(research::loadSh4EventsManifest(unknownPath), std::runtime_error);
+
+	values["acceptance"]["stop_after_hook_id"] = "HOOK-MAIN";
+	values["acceptance"]["stop_after_completed_calls"] = 1;
+	const auto competingPath = directory.file("competing-stop-boundaries.json");
+	writeText(competingPath, values.dump(2));
+	EXPECT_THROW(research::loadSh4EventsManifest(competingPath), std::runtime_error);
+}
+
+TEST(ResearchSh4Events, HookScopedWatchIgnoresCallerNestedAndClosedInvocationAccesses)
+{
+	Sh4EventsTemporaryDirectory directory;
+	Sh4FixtureData fixture;
+	const research::IdentityManifest identity = research::loadIdentityManifest(
+			writeIdentity(directory, fixture));
+	json values = manifestJson(fixture);
+	values["hooks"][0]["entry_transfer"] = "tail-jump";
+	values["watch_ranges"][0]["scope_hook_id"] = "HOOK-MAIN";
+	values["acceptance"]["minimum_watch_events"] = 1;
+	const auto manifestPath = directory.file("scoped-watch.json");
+	writeText(manifestPath, values.dump(2));
+	const research::Sh4EventsManifest manifest =
+			research::loadSh4EventsManifest(manifestPath);
+	ASSERT_TRUE(manifest.watchRanges[0].scopeHookIndex.has_value());
+	EXPECT_EQ(0u, *manifest.watchRanges[0].scopeHookIndex);
+
+	const FixtureMemory memory = fixtureMemory(fixture);
+	const auto artifactPath = directory.file("scoped-watch.fcsh4");
+	research::Sh4EventsArtifactSummary summary;
+	{
+	research::Sh4EventsCapture capture(artifactPath, identity, manifest);
+	auto call = instruction(0x8c020000, 0x432b, 100);
+	call.registers.r[3] = 0x8c010100;
+	call.registers.pr = 0x8c020100;
+	call.registers.r[15] = 0;
+	capture.beginInstruction(call, mapReader(memory));
+	auto delay = instruction(0x8c020002, 0x0009, 101);
+	capture.beginInstruction(delay, mapReader(memory));
+	capture.observeMemoryAccess(0x8c002000, 4,
+			research::Sh4MemoryAccessKind::Read, 1);
+	delay.tick = 102;
+	capture.endInstruction(delay, mapReader(memory));
+	call.nextPc = 0x8c010100;
+	call.tick = 103;
+	capture.endInstruction(call, mapReader(memory));
+
+	auto body = instruction(0x8c010100, 0x0009, 110);
+	capture.beginInstruction(body, mapReader(memory));
+	capture.observeMemoryAccess(0x8c002000, 4,
+			research::Sh4MemoryAccessKind::Read, 2);
+	body.tick = 111;
+	capture.endInstruction(body, mapReader(memory));
+	auto nested = instruction(0x8c030000, 0x0009, 112);
+	capture.beginInstruction(nested, mapReader(memory));
+	capture.observeMemoryAccess(0x8c002000, 4,
+			research::Sh4MemoryAccessKind::Read, 3);
+	nested.tick = 113;
+	capture.endInstruction(nested, mapReader(memory));
+
+	auto returned = instruction(0x8c010110, 0x000b, 120);
+	returned.registers.r[4] = 0x8c0010fc;
+	capture.beginInstruction(returned, mapReader(memory));
+	returned.nextPc = 0x8c020100;
+	returned.tick = 121;
+	capture.endInstruction(returned, mapReader(memory));
+	auto after = instruction(0x8c020004, 0x0009, 122);
+	capture.beginInstruction(after, mapReader(memory));
+	capture.observeMemoryAccess(0x8c002000, 4,
+			research::Sh4MemoryAccessKind::Read, 4);
+	after.tick = 123;
+	capture.endInstruction(after, mapReader(memory));
+
+	summary = capture.finish();
+	}
+	EXPECT_EQ(3u, summary.eventCount);
+	EXPECT_EQ(1u, summary.callCount);
+	EXPECT_EQ(1u, summary.returnCount);
+	EXPECT_EQ(1u, summary.watchReadCount);
+	EXPECT_EQ(0u, summary.watchWriteCount);
+	const research::Sh4EventsArtifactSummary validated =
+			research::validateProductionSh4EventsArtifactFile(
+					artifactPath, identity, manifest);
+	EXPECT_EQ(summary.eventCount, validated.eventCount);
 }
 
 TEST(ResearchSh4Events, BinaryContractRemainsByteExact)
@@ -778,7 +1012,10 @@ TEST(ResearchSh4Events, RuntimeUsesAuthenticatedIdentityBoundInitialState)
 	const auto identityPath = directory.file("state-identity.json");
 	writeText(identityPath,
 			stateIdentityJson(fixture, loadedStatePath, stateBytes, slot).dump(2));
-	const auto manifestPath = writeManifest(directory, fixture);
+	json delayedManifest = manifestJson(fixture);
+	delayedManifest["start_after_initial_state_load"] = true;
+	const auto manifestPath = directory.file("state-delayed-manifest.json");
+	writeText(manifestPath, delayedManifest.dump(2));
 	const auto outputPath = directory.file("state-runtime.fcsh4");
 	config::ResearchIdentityManifestPath = identityPath.string();
 	config::ResearchSh4EventsManifestPath = manifestPath.string();
@@ -789,6 +1026,9 @@ TEST(ResearchSh4Events, RuntimeUsesAuthenticatedIdentityBoundInitialState)
 	research::startSh4EventsRuntime();
 	EXPECT_TRUE(config::AutoLoadState.get());
 	EXPECT_EQ(static_cast<int>(slot), config::SavestateSlot.get());
+	EXPECT_FALSE(research::sh4EventsRuntimeActive());
+	research::sh4EventsInitialStateLoaded();
+	EXPECT_TRUE(research::sh4EventsRuntimeActive());
 	research::abortSh4EventsRuntime();
 
 	writeBytes(loadedStatePath, {0x46, 0x4c, 0x59, 0x53, 7, 8, 0});
@@ -803,7 +1043,10 @@ TEST(ResearchSh4Events, RuntimeArmsCapturesAndFinalizesOnlyOnCleanExit)
 	Sh4EventsTemporaryDirectory directory;
 	Sh4FixtureData fixture;
 	const auto identityPath = writeIdentity(directory, fixture);
-	const auto manifestPath = writeManifest(directory, fixture);
+	json stoppingManifest = manifestJson(fixture);
+	stoppingManifest["acceptance"]["stop_after_completed_calls"] = 1;
+	const auto manifestPath = directory.file("stopping-manifest.json");
+	writeText(manifestPath, stoppingManifest.dump(2));
 	const auto artifactPath = directory.file("runtime.fcsh4");
 	const research::IdentityManifest identity = research::loadIdentityManifest(identityPath);
 	const research::Sh4EventsManifest manifest =
@@ -818,16 +1061,74 @@ TEST(ResearchSh4Events, RuntimeArmsCapturesAndFinalizesOnlyOnCleanExit)
 	config::ResearchSh4EventsMaxBytes = research::DefaultMaximumSh4EventsArtifactBytes;
 
 	research::configureSh4EventsRuntime();
-	research::startSh4EventsRuntime();
+	bool completionCalled = false;
+	research::startSh4EventsRuntime([&completionCalled] {
+		completionCalled = true;
+	});
 	ASSERT_TRUE(research::sh4EventsRuntimeActive());
 	Sh4Context context {};
 	recordRuntimeFixture(context);
+	EXPECT_TRUE(completionCalled);
+	EXPECT_FALSE(research::sh4EventsRuntimeActive());
 	research::stopSh4EventsRuntime(true);
 	EXPECT_FALSE(research::sh4EventsRuntimeActive());
 
 	const auto summary = research::validateProductionSh4EventsArtifactFile(
 			artifactPath, identity, manifest);
 	EXPECT_EQ(6u, summary.eventCount);
+	EXPECT_EQ(0u, summary.droppedEvents);
+}
+
+TEST(ResearchSh4Events, RuntimeCapturesIdentitySelectedDynarecWatches)
+{
+	Sh4EventsTemporaryDirectory directory;
+	Sh4FixtureData fixture;
+	const auto identityPath = directory.file("dynarec-identity.json");
+	writeText(identityPath, equivalenceIdentityJson(fixture, "dynarec").dump(2));
+	json watchManifest = manifestJson(fixture);
+	watchManifest["hooks"] = json::array();
+	watchManifest["watch_ranges"][0]["access"] = json::array({"read"});
+	watchManifest["acceptance"]["backend"] = "identity";
+	watchManifest["acceptance"]["minimum_call_events"] = 0;
+	watchManifest["acceptance"]["minimum_watch_events"] = 1;
+	const auto manifestPath = directory.file("dynarec-manifest.json");
+	writeText(manifestPath, watchManifest.dump(2));
+	const auto artifactPath = directory.file("dynarec-runtime.fcsh4");
+	const research::IdentityManifest identity =
+			research::loadIdentityManifest(identityPath);
+	const research::Sh4EventsManifest manifest =
+			research::loadSh4EventsManifest(manifestPath);
+
+	config::ResearchIdentityManifestPath = identityPath.string();
+	config::ResearchSh4EventsManifestPath = manifestPath.string();
+	config::ResearchSh4EventsRecordPath = artifactPath.string();
+	config::ResearchSh4EventsMaxBytes = research::DefaultMaximumSh4EventsArtifactBytes;
+
+	research::configureSh4EventsRuntime();
+	EXPECT_TRUE(config::DynarecEnabled.get());
+	EXPECT_TRUE(config::ResearchDynarecObservation.get());
+	research::startSh4EventsRuntime();
+	ASSERT_TRUE(research::sh4EventsRuntimeActive());
+	Sh4Context context {};
+	context.pc = 0x8c010102;
+	research::sh4ObservationInstructionBegin(
+			research::Sh4ObservationBackend::Dynarec,
+			0x8c010100, 0x6012, 100, context);
+	research::sh4ObservationMemoryAccess(
+			research::Sh4ObservationBackend::Dynarec,
+			0x8c002000, 4, research::Sh4MemoryAccessKind::Read, 0x12345678);
+	context.pc = 0x8c010102;
+	research::sh4ObservationInstructionEnd(
+			research::Sh4ObservationBackend::Dynarec,
+			0x8c010100, 0x6012, 101, context);
+	research::stopSh4EventsRuntime(true);
+
+	const auto summary = research::validateProductionSh4EventsArtifactFile(
+			artifactPath, identity, manifest);
+	EXPECT_EQ(1u, summary.eventCount);
+	EXPECT_EQ(1u, summary.watchReadCount);
+	EXPECT_EQ(0u, summary.watchWriteCount);
+	EXPECT_EQ(0u, summary.exceptionCount);
 	EXPECT_EQ(0u, summary.droppedEvents);
 }
 

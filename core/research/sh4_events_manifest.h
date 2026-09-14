@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -40,6 +41,18 @@ enum Sh4WatchAccess : std::uint8_t
 	Sh4WatchWrite = 1u << 1,
 };
 
+enum class Sh4EventsBackendPolicy : std::uint8_t
+{
+	Interpreter = 1,
+	Identity = 2,
+};
+
+enum class Sh4HookEntryTransfer : std::uint8_t
+{
+	Call = 1,
+	TailJump = 2,
+};
+
 struct Sh4EventsBindings
 {
 	Sha256Digest executableDigest {};
@@ -66,6 +79,7 @@ struct Sh4HookDefinition
 	std::string id;
 	std::uint32_t entryPc = 0;
 	std::uint32_t endPcExclusive = 0;
+	Sh4HookEntryTransfer entryTransfer = Sh4HookEntryTransfer::Call;
 	std::vector<Sh4SnapshotDefinition> snapshots;
 };
 
@@ -75,6 +89,7 @@ struct Sh4WatchRangeDefinition
 	std::uint32_t address = 0;
 	std::uint32_t length = 0;
 	std::uint8_t access = 0;
+	std::optional<std::uint32_t> scopeHookIndex;
 };
 
 struct Sh4EventsManifest
@@ -86,12 +101,16 @@ struct Sh4EventsManifest
 	Sh4EventsBindings bindings;
 	std::vector<Sh4HookDefinition> hooks;
 	std::vector<Sh4WatchRangeDefinition> watchRanges;
+	bool startAfterInitialStateLoad = false;
 	std::uint64_t maximumEvents = 0;
 	std::uint64_t maximumSnapshotBytesPerEvent = 0;
 	std::uint64_t maximumTotalSnapshotBytes = 0;
 	std::uint32_t maximumOpenInvocations = 0;
+	Sh4EventsBackendPolicy backendPolicy = Sh4EventsBackendPolicy::Interpreter;
 	std::uint64_t minimumCallEvents = 0;
 	std::uint64_t minimumWatchEvents = 0;
+	std::uint64_t stopAfterCompletedCalls = 0;
+	std::optional<std::uint32_t> stopAfterHookIndex;
 };
 
 Sh4EventsManifest loadSh4EventsManifest(const std::filesystem::path& path);

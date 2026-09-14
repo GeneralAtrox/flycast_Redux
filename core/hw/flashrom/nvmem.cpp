@@ -361,6 +361,12 @@ size_t getInitialFlashSize()
 {
 	return initial_flash_data.size();
 }
+#ifdef FLYCAST_TEST_FILES
+void setInitialFlashDataForTesting(const u8 *data, size_t size)
+{
+	initial_flash_data.assign(data, data + size);
+}
+#endif
 
 u32 readBios(u32 addr, u32 sz)
 {

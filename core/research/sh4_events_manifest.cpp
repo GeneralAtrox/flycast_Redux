@@ -170,7 +170,8 @@ Sh4SnapshotPhase parsePhase(const std::string& value, const std::string& field)
 Sh4EventsManifest validateManifest(const json& root)
 {
 	requireAllowedKeys(root, {"schema", "schema_version", "manifest_id", "address_space",
-			"bindings", "hooks", "watch_ranges", "limits", "acceptance"}, "root");
+			"bindings", "hooks", "watch_ranges", "start_after_initial_state_load",
+			"limits", "acceptance"}, "root");
 	if (requiredString(root, "schema", "root") != "flycast-research-sh4-events-manifest")
 		invalid("unsupported schema");
 	if (requiredUnsigned(root, "schema_version", "root") != 1)
@@ -181,6 +182,9 @@ Sh4EventsManifest validateManifest(const json& root)
 	Sh4EventsManifest manifest;
 	manifest.id = requiredString(root, "manifest_id", "root");
 	validateId(manifest.id, "root.manifest_id");
+	if (root.contains("start_after_initial_state_load"))
+		manifest.startAfterInitialStateLoad = requiredBool(root,
+				"start_after_initial_state_load", "root");
 
 	const json& bindings = requiredObject(root, "bindings", "root");
 	requireAllowedKeys(bindings, {"executable_sha256", "static_analysis_id",
@@ -215,7 +219,7 @@ Sh4EventsManifest validateManifest(const json& root)
 		const json& hook = hooks.at(hookIndex);
 		const std::string field = "root.hooks[" + std::to_string(hookIndex) + "]";
 		requireAllowedKeys(hook, {"hook_id", "entry_pc", "end_address_exclusive",
-				"snapshots"}, field);
+				"entry_transfer", "snapshots"}, field);
 		Sh4HookDefinition definition;
 		definition.id = requiredString(hook, "hook_id", field);
 		validateId(definition.id, field + ".hook_id");
@@ -230,6 +234,16 @@ Sh4EventsManifest validateManifest(const json& root)
 				|| definition.entryPc >= definition.endPcExclusive)
 			invalid(field + " instruction interval must be even, non-empty, and non-wrapping");
 		hookIntervals.emplace_back(definition.entryPc, definition.endPcExclusive);
+		if (hook.contains("entry_transfer"))
+		{
+			const std::string transfer = requiredString(hook, "entry_transfer", field);
+			if (transfer == "call")
+				definition.entryTransfer = Sh4HookEntryTransfer::Call;
+			else if (transfer == "tail-jump")
+				definition.entryTransfer = Sh4HookEntryTransfer::TailJump;
+			else
+				invalid(field + ".entry_transfer must be call or tail-jump");
+		}
 
 		const json& snapshots = requiredArray(hook, "snapshots", field);
 		definition.snapshots.reserve(snapshots.size());
@@ -308,7 +322,8 @@ Sh4EventsManifest validateManifest(const json& root)
 	{
 		const json& range = watchRanges.at(index);
 		const std::string field = "root.watch_ranges[" + std::to_string(index) + "]";
-		requireAllowedKeys(range, {"watch_id", "address", "length", "access"}, field);
+		requireAllowedKeys(range, {"watch_id", "address", "length", "access",
+				"scope_hook_id"}, field);
 		Sh4WatchRangeDefinition definition;
 		definition.id = requiredString(range, "watch_id", field);
 		validateId(definition.id, field + ".watch_id");
@@ -337,6 +352,19 @@ Sh4EventsManifest validateManifest(const json& root)
 			if (flag == 0 || (definition.access & flag) != 0)
 				invalid(field + ".access contains an unsupported or duplicate value");
 			definition.access |= flag;
+		}
+		if (range.contains("scope_hook_id"))
+		{
+			const std::string scopeHookId = requiredString(range, "scope_hook_id", field);
+			validateId(scopeHookId, field + ".scope_hook_id");
+			const auto found = std::find_if(manifest.hooks.begin(), manifest.hooks.end(),
+					[&scopeHookId](const Sh4HookDefinition& hook) {
+						return hook.id == scopeHookId;
+					});
+			if (found == manifest.hooks.end())
+				invalid(field + ".scope_hook_id does not name a declared hook");
+			definition.scopeHookIndex = static_cast<std::uint32_t>(
+					std::distance(manifest.hooks.begin(), found));
 		}
 		manifest.watchRanges.push_back(std::move(definition));
 	}
@@ -379,13 +407,46 @@ Sh4EventsManifest validateManifest(const json& root)
 	const json& acceptance = requiredObject(root, "acceptance", "root");
 	requireAllowedKeys(acceptance, {"backend", "minimum_call_events",
 			"minimum_watch_events", "require_balanced_calls", "zero_dropped_events",
-			"natural_exit"}, "root.acceptance");
-	if (requiredString(acceptance, "backend", "root.acceptance") != "interpreter")
-		invalid("root.acceptance.backend must be interpreter");
+			"natural_exit", "stop_after_completed_calls", "stop_after_hook_id"},
+			"root.acceptance");
+	const std::string backend = requiredString(acceptance, "backend",
+			"root.acceptance");
+	if (backend == "interpreter")
+		manifest.backendPolicy = Sh4EventsBackendPolicy::Interpreter;
+	else if (backend == "identity")
+		manifest.backendPolicy = Sh4EventsBackendPolicy::Identity;
+	else
+		invalid("root.acceptance.backend must be interpreter or identity");
 	manifest.minimumCallEvents = requiredUnsigned(acceptance, "minimum_call_events",
 			"root.acceptance");
 	manifest.minimumWatchEvents = requiredUnsigned(acceptance, "minimum_watch_events",
 			"root.acceptance");
+	if (acceptance.contains("stop_after_completed_calls"))
+	{
+		manifest.stopAfterCompletedCalls = requiredUnsigned(acceptance,
+				"stop_after_completed_calls", "root.acceptance");
+		if (manifest.stopAfterCompletedCalls == 0
+				|| manifest.stopAfterCompletedCalls > manifest.maximumEvents)
+			invalid("root.acceptance.stop_after_completed_calls is outside the event limit");
+		if (manifest.minimumCallEvents > manifest.stopAfterCompletedCalls)
+			invalid("minimum_call_events exceeds stop_after_completed_calls");
+	}
+	if (acceptance.contains("stop_after_hook_id"))
+	{
+		if (manifest.stopAfterCompletedCalls != 0)
+			invalid("stop_after_hook_id and stop_after_completed_calls are mutually exclusive");
+		const std::string stopHookId = requiredString(acceptance,
+				"stop_after_hook_id", "root.acceptance");
+		validateId(stopHookId, "root.acceptance.stop_after_hook_id");
+		const auto found = std::find_if(manifest.hooks.begin(), manifest.hooks.end(),
+				[&stopHookId](const Sh4HookDefinition& hook) {
+					return hook.id == stopHookId;
+				});
+		if (found == manifest.hooks.end())
+			invalid("root.acceptance.stop_after_hook_id does not name a declared hook");
+		manifest.stopAfterHookIndex = static_cast<std::uint32_t>(
+				std::distance(manifest.hooks.begin(), found));
+	}
 	if (manifest.minimumCallEvents > manifest.maximumEvents
 			|| manifest.minimumWatchEvents > manifest.maximumEvents
 			|| manifest.minimumCallEvents + manifest.minimumWatchEvents == 0)
@@ -431,6 +492,20 @@ Sh4EventsManifest loadSh4EventsManifest(const std::filesystem::path& path)
 void requireSh4EventsIdentity(const Sh4EventsManifest& manifest,
 		const IdentityManifest& identity)
 {
+	if (manifest.startAfterInitialStateLoad
+			&& (!identity.initialState.available
+					|| !identity.runtimeConfiguration.autoLoadState))
+		invalid("start_after_initial_state_load requires an authenticated autoload state");
+	if (manifest.backendPolicy == Sh4EventsBackendPolicy::Interpreter)
+	{
+		if (identity.runtimeConfiguration.cpuBackend != "interpreter"
+				|| identity.runtimeConfiguration.dynarecObservation)
+			invalid("interpreter SH-4 events manifest requires an interpreter identity");
+	}
+	else
+	{
+		requireSh4EquivalenceIdentityV2(identity);
+	}
 	if (!sha256Equal(manifest.bindings.executableDigest, identity.bootExecutableDigest))
 		invalid("bindings.executable_sha256 does not match identity boot executable");
 	if (!identity.hasStaticAnalysis)

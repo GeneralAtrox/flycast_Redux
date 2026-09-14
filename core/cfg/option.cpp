@@ -182,6 +182,12 @@ Option<int64_t, false> ResearchSh4ObservationMaxBytes(
 		"Sh4ObservationMaxBytes", 512ll * 1024 * 1024, "research");
 Option<int64_t, false> ResearchSh4ObservationStartDma(
 		"Sh4ObservationStartDma", 0, "research");
+Option<int64_t, false> ResearchSh4PcCheckpoint(
+		"Sh4PcCheckpoint", 0, "research");
+Option<int64_t, false> ResearchSh4PcCheckpointU32Address(
+		"Sh4PcCheckpointU32Address", 0, "research");
+Option<int64_t, false> ResearchSh4PcCheckpointU32Value(
+		"Sh4PcCheckpointU32Value", 0, "research");
 Option<std::string, false> ResearchSh4ProfileRecordPath(
 		"Sh4ProfileRecord", "", "research");
 Option<int64_t, false> ResearchSh4ProfileMaxBytes(

@@ -27,7 +27,7 @@ namespace research
 namespace
 {
 
-constexpr std::array<std::uint8_t, 8> Magic {'F','C','A','I','C','A','0','1'};
+constexpr std::array<std::uint8_t, 8> Magic {'F','C','A','I','C','A','0','2'};
 constexpr std::uint32_t Complete = 1;
 constexpr std::uint32_t RecordHeaderSize = 32;
 constexpr std::uint32_t CheckpointRecordType = 0;
@@ -57,6 +57,10 @@ void digest(std::vector<std::uint8_t>& out, const Sha256Digest& value)
 void serializeOwner(std::vector<std::uint8_t>& out, const AicaOwnerToken& owner,
 		Sh4ObservationBackend backend)
 {
+	require(owner.writer != AicaWriter::Unknown
+			&& static_cast<unsigned>(owner.writer)
+					<= static_cast<unsigned>(AicaWriter::ReiosHle),
+			"owner writer is invalid");
 	u8(out, static_cast<std::uint8_t>(owner.writer));
 	u8(out, owner.arm7PcAvailable ? 1 : 0);
 	u8(out, static_cast<std::uint8_t>(owner.sh4.backend));
@@ -65,18 +69,29 @@ void serializeOwner(std::vector<std::uint8_t>& out, const AicaOwnerToken& owner,
 	u32(out, owner.sh4.pc); u32(out, owner.sh4.pr); u16(out, owner.sh4.opcode);
 	u16(out, owner.sh4.delaySlotDepth); u32(out, 0);
 	if (owner.writer == AicaWriter::Sh4Direct || owner.writer == AicaWriter::Sh4G2Dma)
-		require(owner.sh4.valid && owner.sh4.backend == backend
+		require(!owner.arm7PcAvailable && owner.arm7Pc == 0
+				&& owner.sh4.valid && owner.sh4.backend == backend
 				&& owner.sh4.generation != 0, "SH-4 writer has no authenticated owner");
-	if (owner.writer == AicaWriter::Arm7)
-		require(!owner.arm7PcAvailable, "unsupported ARM7 PC claim");
+	else
+		require(!owner.arm7PcAvailable && owner.arm7Pc == 0
+				&& !owner.sh4.valid
+				&& owner.sh4.backend == Sh4ObservationBackend::Interpreter
+				&& owner.sh4.generation == 0 && owner.sh4.tick == 0
+				&& owner.sh4.pc == 0 && owner.sh4.pr == 0
+				&& owner.sh4.opcode == 0 && owner.sh4.delaySlotDepth == 0,
+				"non-SH-4 writer has an unsupported instruction claim");
 }
 
 std::vector<std::uint8_t> checkpointPayload(const AicaCheckpoint& checkpoint)
 {
-	require(checkpoint.ram.size() != 0 && checkpoint.ram.size() <= 8u*1024u*1024u,
+	require(checkpoint.ram.size() >= 131072
+			&& checkpoint.ram.size() <= 8u*1024u*1024u
+			&& (checkpoint.ram.size() & (checkpoint.ram.size() - 1)) == 0,
 			"checkpoint RAM size is invalid");
 	std::vector<std::uint8_t> out;
-	u64(out, checkpoint.activeChannelMask); u32(out, checkpoint.registers.size());
+	u32(out, static_cast<std::uint32_t>(checkpoint.phase)); u32(out, 0);
+	u64(out, checkpoint.nextSampleOrdinal); u64(out, checkpoint.activeChannelMask);
+	u32(out, checkpoint.registers.size());
 	u32(out, static_cast<std::uint32_t>(checkpoint.ram.size()));
 	u32(out, checkpoint.cddaIndex); u32(out, 0); u64(out, checkpoint.cddaGeneration);
 	out.insert(out.end(), checkpoint.registers.begin(), checkpoint.registers.end());
@@ -98,6 +113,10 @@ std::vector<std::uint8_t> checkpointPayload(const AicaCheckpoint& checkpoint)
 	u32(out,checkpoint.dspRingBufferPointer);u32(out,checkpoint.dspRingBufferLength);
 	u32(out,checkpoint.dspMemoryDecodeCounter);
 	out.insert(out.end(),checkpoint.cddaSector.begin(),checkpoint.cddaSector.end());
+	u32(out, checkpoint.cddaSourceAvailable); u32(out, checkpoint.cddaFad);
+	u32(out, checkpoint.cddaStatus); u32(out, checkpoint.cddaRepeats);
+	u32(out, checkpoint.cddaReadSuccessful); u32(out, 0);
+	u64(out, checkpoint.cddaControlGeneration);
 	return out;
 }
 
@@ -123,22 +142,30 @@ std::vector<std::uint8_t> observationPayload(const AicaObservation& event,
 	case AicaObservationType::G2DmaComplete:u64(out,event.dmaGeneration);break;
 	case AicaObservationType::KeyOn: case AicaObservationType::KeyOff:
 		serializeOwner(out,event.owner,binding.backend);u8(out,event.channel);u8(out,0);u16(out,0);
-		out.insert(out.end(),event.channelRegisters.begin(),event.channelRegisters.end());break;
+		u64(out,event.sampleCutOrdinal);
+		out.insert(out.end(),event.channelRegisters.begin(),event.channelRegisters.end());
+		u32(out,static_cast<std::uint32_t>(event.bytes.size()));
+		out.insert(out.end(),event.bytes.begin(),event.bytes.end());break;
 	case AicaObservationType::SampleFrame:
 		u64(out,event.sampleOrdinal);u64(out,event.activeChannelMask);u64(out,event.cddaGeneration);
 		u16(out,event.cddaFrameIndex);u8(out,event.dspEnabled);u8(out,0);
 		u32(out,event.dryLeft);u32(out,event.dryRight);u32(out,event.cddaInputLeft);u32(out,event.cddaInputRight);
 		u32(out,event.cddaContributionLeft);u32(out,event.cddaContributionRight);
 		u32(out,event.dspContributionLeft);u32(out,event.dspContributionRight);
+		for (const auto input : event.dspInputs) u32(out, input);
+		for (const auto output : event.dspEffectOutputs) u16(out, output);
 		u16(out,static_cast<std::uint16_t>(event.finalLeft));u16(out,static_cast<std::uint16_t>(event.finalRight));break;
 	case AicaObservationType::Reset: u64(out,event.dmaGeneration);break;
 	case AicaObservationType::KeyBatchComplete:
-		serializeOwner(out,event.owner,binding.backend);u64(out,event.keyOnMask);u64(out,event.keyOffMask);break;
+		serializeOwner(out,event.owner,binding.backend);u64(out,event.sampleCutOrdinal);
+		u64(out,event.keyOnMask);u64(out,event.keyOffMask);break;
 	case AicaObservationType::CddaSector:
 		u64(out,event.cddaGeneration);u32(out,event.cddaFad);u32(out,event.cddaStatus);
 		u32(out,event.cddaRepeats);u32(out,event.cddaReadSuccessful);
 		u32(out,static_cast<std::uint32_t>(event.bytes.size()));out.insert(out.end(),event.bytes.begin(),event.bytes.end());break;
 	case AicaObservationType::SampleSuppressed:u32(out,static_cast<std::uint32_t>(event.suppression));break;
+	case AicaObservationType::KeyBatchBegin:
+		serializeOwner(out,event.owner,binding.backend);u64(out,event.sampleCutOrdinal);break;
 	default: invalid("observation type is invalid");
 	}
 	return out;
@@ -165,6 +192,8 @@ std::vector<std::uint8_t> header(const AicaArtifactSummary& s, bool complete)
 	u64(out,s.eventCount);u64(out,s.payloadBytes);u64(out,s.droppedEvents);u64(out,s.startTick);u64(out,s.endTick);
 	u64(out,s.targetSampleFrames);u64(out,s.sampleFrames);u64(out,s.keyOnCount);u64(out,s.keyedSourceCount);
 	u64(out,s.nonzeroSampleFrames);u64(out,s.checkpointRamBytes);
+	u64(out,s.checkpointNextSampleOrdinal);
+	u32(out,static_cast<std::uint32_t>(s.checkpointPhase));u32(out,0);
 	digest(out,s.binding.identityDigest);digest(out,s.binding.replayDigest);digest(out,s.binding.configurationDigest);
 	digest(out,s.payloadDigest);digest(out,s.pcmDigest);digest(out,s.keyedSourceDigest);
 	for(auto count:s.typeCounts)u64(out,count);
@@ -172,29 +201,24 @@ std::vector<std::uint8_t> header(const AicaArtifactSummary& s, bool complete)
 	put32(out,AicaArtifactHeaderSize-4,crc32(out.data(),AicaArtifactHeaderSize-4));return out;
 }
 
-void updateRam(std::vector<std::uint8_t>& ram, std::uint32_t address,
-		const std::vector<std::uint8_t>& bytes)
-{
-	require(!ram.empty(),"RAM mirror is empty");
-	for(std::size_t i=0;i<bytes.size();++i) ram[(std::uint64_t(address)+i)%ram.size()]=bytes[i];
-}
-
-bool hashKeySource(Sha256& hasher, const AicaObservation& event,
-		const std::vector<std::uint8_t>& ram)
+bool hashKeySource(Sha256& hasher, const AicaObservation& event)
 {
 	const auto& r=event.channelRegisters;
 	const std::uint16_t word0=std::uint16_t(r[0])|(std::uint16_t(r[1])<<8);
-	const bool noise=((word0>>10)&1)!=0; if(noise)return false;
+	const bool noise=((word0>>10)&1)!=0;
+	if(noise){require(event.bytes.empty(),"noise key-on has source bytes");return false;}
 	const std::uint32_t pcms=(word0>>7)&3;
 	std::uint32_t address=(std::uint32_t(word0&0x7f)<<16)|std::uint32_t(r[4])|(std::uint32_t(r[5])<<8);
 	if(pcms==0)address&=~1u;
+	const std::uint32_t lsa=std::uint32_t(r[8])|(std::uint32_t(r[9])<<8);
 	const std::uint32_t lea=std::uint32_t(r[12])|(std::uint32_t(r[13])<<8);
-	const std::uint64_t length=pcms==0?std::uint64_t(lea)*2:pcms==1?lea:(std::uint64_t(lea)+1)/2;
-	require(length!=0 && length<=ram.size(),"key-on sample range is invalid");
+	const std::uint32_t samples=std::max(lsa,lea);
+	const std::uint64_t length=pcms==0?std::uint64_t(samples)*2:pcms==1?samples:(std::uint64_t(samples)+1)/2;
+	require(length!=0&&length==event.bytes.size(),"key-on source snapshot size is invalid");
 	std::array<std::uint8_t,9> prefix{};prefix[0]=event.channel;
 	for(unsigned i=0;i<4;++i){prefix[1+i]=address>>(8*i);prefix[5+i]=length>>(8*i);}
 	hasher.update(prefix.data(),prefix.size());
-	for(std::uint64_t i=0;i<length;++i){const auto b=ram[(std::uint64_t(address)+i)%ram.size()];hasher.update(&b,1);}
+	hasher.update(event.bytes.data(),event.bytes.size());
 	return true;
 }
 
@@ -271,11 +295,15 @@ AicaArtifactWriter::~AicaArtifactWriter(){if(!finalized)abandon();}
 void AicaArtifactWriter::writeCheckpoint(const AicaCheckpoint& checkpoint)
 {
 	if(finalized||abandoned||checkpointWritten)throw std::logic_error("AICA checkpoint cannot be written");
+	if (checkpoint.phase != AicaCheckpointPhase::PreKeyBatch)
+		throw std::invalid_argument("AICA start checkpoint is not at the pre-key-batch cut");
 	const auto bytes=record(CheckpointRecordType,0,0,checkpoint.tick,checkpointPayload(checkpoint));
 	if(bytes.size()>maximumBytes-AicaArtifactHeaderSize)throw std::runtime_error("AICA checkpoint exceeds byte limit");
 	output->write(bytes);payloadHasher.update(bytes.data(),bytes.size());summary.payloadBytes=bytes.size();
 	summary.startTick=summary.endTick=checkpoint.tick;summary.checkpointRamBytes=checkpoint.ram.size();
-	ramMirror=checkpoint.ram;checkpointWritten=true;
+	summary.checkpointNextSampleOrdinal=checkpoint.nextSampleOrdinal;
+	summary.checkpointPhase=checkpoint.phase;
+	checkpointWritten=true;
 }
 
 void AicaArtifactWriter::write(const AicaObservation& event)
@@ -283,20 +311,25 @@ void AicaArtifactWriter::write(const AicaObservation& event)
 	if(finalized||abandoned||!checkpointWritten)throw std::logic_error("AICA writer is not writable");
 	if(event.schemaVersion!=AicaObservationSchemaVersion)throw std::runtime_error("AICA observation schema mismatch");
 	if(summary.eventCount>=maximumEvents)throw std::runtime_error("AICA event limit exceeded");
-	if(event.tick<summary.endTick)throw std::runtime_error("AICA tick moved backwards");
+	if(event.tick<summary.startTick)throw std::runtime_error("AICA event tick precedes its checkpoint");
+	if(haveEmissionOrdinal&&event.emissionOrdinal<=lastEmissionOrdinal)
+		throw std::runtime_error("AICA emission ordinal is not strictly increasing");
 	if(targetReached())throw std::logic_error("AICA sample target already reached");
 	if(event.type==AicaObservationType::Reset||event.type==AicaObservationType::SampleSuppressed)
 		throw std::runtime_error("AICA capture was reset or output was suppressed");
 	if(event.type==AicaObservationType::KeyBatchComplete)keyBatchSeen=true;
-	if(event.type==AicaObservationType::RamWrite)updateRam(ramMirror,event.address,event.bytes);
-	if(event.type==AicaObservationType::G2DmaTransfer&&event.aicaRamIsDestination)
-		updateRam(ramMirror,event.destinationAddress,event.bytes);
-	if(event.type==AicaObservationType::KeyOn){++summary.keyOnCount;if(hashKeySource(sourceHasher,event,ramMirror))++summary.keyedSourceCount;}
+	const auto currentSampleCut=summary.checkpointNextSampleOrdinal+summary.sampleFrames;
+	if((event.type==AicaObservationType::KeyOn||event.type==AicaObservationType::KeyOff
+			||event.type==AicaObservationType::KeyBatchBegin
+			||event.type==AicaObservationType::KeyBatchComplete)
+			&&event.sampleCutOrdinal!=currentSampleCut)
+		throw std::runtime_error("AICA key event sample cut is invalid");
+	if(event.type==AicaObservationType::KeyOn){++summary.keyOnCount;if(hashKeySource(sourceHasher,event))++summary.keyedSourceCount;}
 	if(event.type==AicaObservationType::CddaSector)require(event.bytes.size()==2352,"CD-DA sector is not 2352 bytes");
 	if(event.type==AicaObservationType::SampleFrame){
 		require(event.dspEnabled==summary.binding.dspEnabled,
 				"sample DSP mode differs from artifact binding");
-		if(summary.sampleFrames!=0&&event.sampleOrdinal==0)invalid("sample ordinal reset");
+		if(event.sampleOrdinal!=currentSampleCut)invalid("sample ordinal is not contiguous from its checkpoint");
 		std::array<std::uint8_t,4> pcm {static_cast<std::uint8_t>(event.finalLeft),static_cast<std::uint8_t>(event.finalLeft>>8),static_cast<std::uint8_t>(event.finalRight),static_cast<std::uint8_t>(event.finalRight>>8)};
 		pcmHasher.update(pcm.data(),pcm.size());++summary.sampleFrames;
 		if(event.finalLeft!=0||event.finalRight!=0)++summary.nonzeroSampleFrames;
@@ -306,7 +339,8 @@ void AicaArtifactWriter::write(const AicaObservation& event)
 	if(summary.payloadBytes>maximumBytes-AicaArtifactHeaderSize||bytes.size()>maximumBytes-AicaArtifactHeaderSize-summary.payloadBytes)
 		throw std::runtime_error("AICA byte limit exceeded");
 	output->write(bytes);payloadHasher.update(bytes.data(),bytes.size());summary.payloadBytes+=bytes.size();
-	summary.endTick=event.tick;++summary.typeCounts[static_cast<unsigned>(event.type)-1];++summary.eventCount;
+	summary.endTick=std::max(summary.endTick,event.tick);++summary.typeCounts[static_cast<unsigned>(event.type)-1];++summary.eventCount;
+	lastEmissionOrdinal=event.emissionOrdinal;haveEmissionOrdinal=true;
 }
 
 bool AicaArtifactWriter::targetReached() const noexcept{return summary.sampleFrames==summary.targetSampleFrames;}

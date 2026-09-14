@@ -12,7 +12,7 @@
 namespace research
 {
 
-constexpr std::uint32_t PvrPresentationArtifactSchemaVersion = 1;
+constexpr std::uint32_t PvrPresentationArtifactSchemaVersion = 2;
 constexpr std::uint32_t PvrPresentationArtifactHeaderSize = 256;
 constexpr std::uint32_t PvrPresentationArtifactEndianSentinel = 0x01020304;
 constexpr std::uint64_t DefaultMaximumPvrPresentationArtifactBytes =
@@ -31,7 +31,7 @@ struct PvrPresentationArtifactSummary
 	PvrPresentationArtifactBinding binding;
 	Sha256Digest payloadDigest {};
 	std::uint64_t eventCount = 0;
-	std::array<std::uint64_t, 7> typeCounts {};
+	std::array<std::uint64_t, 8> typeCounts {};
 	std::uint64_t payloadBytes = 0;
 	std::uint64_t droppedEvents = 0;
 	std::uint64_t startTick = 0;

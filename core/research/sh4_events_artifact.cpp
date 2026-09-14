@@ -347,6 +347,12 @@ bool decodeCall(std::uint32_t callPc, std::uint16_t opcode,
 		targetPc = registers.r[(opcode >> 8) & 0x0fu];
 		return true;
 	}
+	if ((opcode & 0xf0ffu) == 0x402bu)
+	{
+		kind = Sh4CallKind::Jmp;
+		targetPc = registers.r[(opcode >> 8) & 0x0fu];
+		return true;
+	}
 	return false;
 }
 
@@ -777,6 +783,7 @@ Sh4EventsArtifactSummary validateProductionSh4EventsArtifactFile(
 	std::uint64_t exceptionCount = 0;
 	std::uint64_t firstTick = 0;
 	std::uint64_t lastTick = 0;
+	std::optional<std::uint32_t> lastReturnHookIndex;
 	bool hasEvents = false;
 	Sha256 payloadHasher;
 	std::uint64_t remaining = summary.payloadBytes;
@@ -880,12 +887,18 @@ Sh4EventsArtifactSummary validateProductionSh4EventsArtifactFile(
 			Sh4CallKind decodedKind = Sh4CallKind::Bsr;
 			std::uint32_t decodedTarget = 0;
 			require(decodeCall(callPc, opcode, registers, decodedKind, decodedTarget),
-					"call opcode is not BSR, BSRF, or JSR");
+					"hook entry opcode is not BSR, BSRF, JSR, or JMP");
 			require(kind == decodedKind && targetPc == decodedTarget,
 					"call kind/target does not match opcode and registers");
+			require((hook.entryTransfer == Sh4HookEntryTransfer::Call
+					&& kind != Sh4CallKind::Jmp)
+					|| (hook.entryTransfer == Sh4HookEntryTransfer::TailJump
+							&& kind == Sh4CallKind::Jmp),
+					"hook entry kind differs from its manifest transfer");
 			require(targetPc == hook.entryPc, "call target does not match hook entry");
 			require((callPc & 1u) == 0, "call PC is not instruction-aligned");
-			require(returnPc == callPc + 4u && delaySlotPc == callPc + 2u,
+			require(returnPc == (kind == Sh4CallKind::Jmp
+					? registers.pr : callPc + 4u) && delaySlotPc == callPc + 2u,
 					"call return/delay-slot PC is invalid");
 			require(delaySlotDepth == 0, "call instruction cannot be in a delay slot");
 			require(invocationId == nextInvocationId++,
@@ -937,6 +950,7 @@ Sh4EventsArtifactSummary validateProductionSh4EventsArtifactFile(
 			validateSnapshots(payload, hook, Sh4SnapshotPhase::Return, registers,
 					recordedSnapshotCount);
 			invocations.pop_back();
+			lastReturnHookIndex = hookIndex;
 			++returnCount;
 		}
 		else if (type == WatchEventType)
@@ -969,6 +983,20 @@ Sh4EventsArtifactSummary validateProductionSh4EventsArtifactFile(
 					"watch access kind is not enabled by manifest");
 			require(overlaps(address, width, watch.address, watch.length),
 					"watch access does not overlap its manifest range");
+			if (watch.scopeHookIndex.has_value())
+			{
+				const std::uint32_t scopeHookIndex = *watch.scopeHookIndex;
+				const Sh4HookDefinition& scopeHook = manifest.hooks.at(scopeHookIndex);
+				require(instructionPc >= scopeHook.entryPc
+						&& instructionPc < scopeHook.endPcExclusive,
+						"scoped watch instruction is outside its hook interval");
+				const bool invocationOpen = std::any_of(invocations.begin(), invocations.end(),
+						[scopeHookIndex](const Invocation& invocation) {
+							return invocation.hookIndex == scopeHookIndex;
+						});
+				require(invocationOpen,
+						"scoped watch has no open invocation for its hook");
+			}
 			if (kind == Sh4MemoryAccessKind::Read)
 				++watchReadCount;
 			else
@@ -1051,6 +1079,13 @@ Sh4EventsArtifactSummary validateProductionSh4EventsArtifactFile(
 			"artifact has unbalanced invocations");
 	require(callCount >= manifest.minimumCallEvents,
 			"call-event minimum was not reached");
+	require(manifest.stopAfterCompletedCalls == 0
+			|| callCount == manifest.stopAfterCompletedCalls,
+			"completed-call boundary was not reached exactly");
+	require(!manifest.stopAfterHookIndex.has_value()
+			|| (lastReturnHookIndex.has_value()
+					&& *lastReturnHookIndex == *manifest.stopAfterHookIndex),
+			"stop hook is not the final completed invocation");
 	require(watchReadCount + watchWriteCount >= manifest.minimumWatchEvents,
 			"watch-event minimum was not reached");
 	require(snapshotBytes <= manifest.maximumTotalSnapshotBytes,

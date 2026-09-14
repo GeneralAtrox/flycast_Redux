@@ -2,6 +2,8 @@
 
 #include "cfg/cfg.h"
 #include "cfg/option.h"
+#include "hw/pvr/pvr_regs.h"
+#include "hw/sh4/sh4_sched.h"
 #include "log/Log.h"
 #include "oslib/oslib.h"
 #include "research/identity_manifest.h"
@@ -174,6 +176,7 @@ struct Session
 	std::uint64_t droppedBaseline = 0;
 	std::uint64_t presentationDroppedBaseline = 0;
 	std::uint64_t drawDroppedBaseline = 0;
+	bool taWindowComplete = false;
 	std::exception_ptr failure;
 };
 
@@ -208,11 +211,18 @@ void subscribeSession(Session& active)
 	Session *raw = &active;
 	active.subscription = subscribePvrTaEvidenceObservations(
 			[raw](const PvrTaObservation& observation) {
-				if (raw->failure != nullptr)
+				if (raw->failure != nullptr || raw->taWindowComplete)
 					return;
 				try
 				{
 					raw->writer->write(observation);
+					if (observation.type == PvrTaObservationType::RenderDone
+							&& raw->writer->getSummary().typeCounts[4]
+									== raw->configuration.manifest.renderDoneCount)
+					{
+						raw->taWindowComplete = true;
+						freezePvrTaObservedRenderGenerationWindow();
+					}
 				}
 				catch (const std::exception& exception)
 				{
@@ -244,6 +254,8 @@ void subscribeSession(Session& active)
 						ERROR_LOG(PVR, "PowerVR presentation writer failed");
 					}
 				});
+		observePvrInitialRegisterState(pvr_regs, sizeof(pvr_regs),
+				pvrCurrentRenderGeneration(), sh4_sched_now64());
 	}
 	if (active.drawWriter != nullptr)
 	{
@@ -613,6 +625,11 @@ void abortPvrTaCaptureRuntime() noexcept
 bool pvrTaCaptureRuntimeActive()
 {
 	return session != nullptr;
+}
+
+bool pvrTaCaptureWindowComplete()
+{
+	return session != nullptr && session->taWindowComplete;
 }
 
 } // namespace research

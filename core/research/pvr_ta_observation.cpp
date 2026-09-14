@@ -7,6 +7,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 namespace research
@@ -34,6 +35,8 @@ std::recursive_mutex dispatchMutex;
 std::mutex stateMutex;
 std::vector<std::shared_ptr<SubscriptionEntry>> subscriptions;
 std::unordered_map<std::uint32_t, ContextState> contexts;
+std::unordered_set<std::uint64_t> observedRenderGenerations;
+bool observedRenderGenerationWindowFrozen = false;
 std::atomic<std::size_t> activeSubscriptionCount {0};
 std::atomic<bool> activeEvidenceSubscription {false};
 std::atomic<std::uint64_t> nextSubscription {1};
@@ -177,6 +180,8 @@ PvrTaObservationSubscription subscribe(
 		{
 			const std::lock_guard<std::mutex> stateLock(stateMutex);
 			contexts.clear();
+			observedRenderGenerations.clear();
+			observedRenderGenerationWindowFrozen = false;
 			pendingRenderGeneration = 0;
 		}
 		subscriptions.push_back(std::move(entry));
@@ -246,6 +251,39 @@ std::uint64_t pvrTaObservationDroppedCount() noexcept
 	return droppedObservationCount.load(std::memory_order_acquire);
 }
 
+bool pvrTaRenderGenerationObserved(std::uint64_t renderGeneration) noexcept
+{
+	if (renderGeneration == 0)
+		return false;
+	// Presentation and draw observation buses can be used independently of TA
+	// evidence capture. In that mode there is no delayed TA slice boundary to
+	// enforce, so retain their established generation semantics.
+	if (!pvrTaObservationBusActive())
+		return true;
+	try
+	{
+		const std::lock_guard<std::mutex> lock(stateMutex);
+		return observedRenderGenerations.count(renderGeneration) != 0;
+	}
+	catch (...)
+	{
+		return false;
+	}
+}
+
+void freezePvrTaObservedRenderGenerationWindow() noexcept
+{
+	try
+	{
+		const std::lock_guard<std::mutex> lock(stateMutex);
+		observedRenderGenerationWindowFrozen = true;
+	}
+	catch (...)
+	{
+		noteDroppedObservation();
+	}
+}
+
 void beginPvrTaProvenanceSession() noexcept
 {
 	try
@@ -254,6 +292,8 @@ void beginPvrTaProvenanceSession() noexcept
 			return;
 		const std::lock_guard<std::mutex> lock(stateMutex);
 		contexts.clear();
+		observedRenderGenerations.clear();
+		observedRenderGenerationWindowFrozen = false;
 		pendingRenderGeneration = 0;
 	}
 	catch (...)
@@ -287,8 +327,13 @@ void observePvrTaListBoundary(bool continuation, std::uint32_t contextAddress,
 			else
 			{
 				const auto found = contexts.find(contextAddress);
-				if (found != contexts.end())
-					observation.contextGeneration = found->second.generation;
+				// A continuation for a context created before observation began
+				// has no causal generation. Do not write an invalid partial
+				// context into an evidence artifact; wait for the next observed
+				// ListInit boundary to establish provenance.
+				if (found == contexts.end())
+					return;
+				observation.contextGeneration = found->second.generation;
 			}
 		}
 		publish(std::move(observation));
@@ -330,11 +375,24 @@ PvrTaBlockProvenance observePvrTaAcceptedBlock(PvrTaInputSource source,
 		{
 			const std::lock_guard<std::mutex> lock(stateMutex);
 			const auto found = contexts.find(contextAddress);
-			if (found != contexts.end())
+			// The TA may already be inside a context when delayed observation
+			// begins. Its bytes remain valid renderer input, but without the
+			// initiating ListInit they cannot be claimed as causal evidence.
+			// Return unavailable provenance to downstream semantic observation
+			// and suppress the structurally invalid partial artifact event.
+			if (found == contexts.end())
 			{
-				observation.contextGeneration = found->second.generation;
-				observation.contextBlockOrdinal = found->second.nextBlockOrdinal++;
+				PvrTaBlockProvenance provenance;
+				provenance.initiator = observation.initiator;
+				provenance.contextAddress = observation.contextAddress;
+				provenance.renderPass = observation.renderPass;
+				provenance.source = observation.source;
+				provenance.sourceAddress = observation.sourceAddress;
+				provenance.taAddress = observation.taAddress;
+				return provenance;
 			}
+			observation.contextGeneration = found->second.generation;
+			observation.contextBlockOrdinal = found->second.nextBlockOrdinal++;
 		}
 		PvrTaBlockProvenance provenance;
 		provenance.initiator = observation.initiator;
@@ -409,6 +467,8 @@ std::uint64_t observePvrTaStartRender(const std::uint32_t* contextAddresses,
 					!observation.selectedContexts.empty()
 					&& observation.selectedContexts.front().available;
 			pendingRenderGeneration = observation.renderGeneration;
+			if (!observedRenderGenerationWindowFrozen)
+				observedRenderGenerations.insert(observation.renderGeneration);
 		}
 		publish(std::move(observation));
 	}
@@ -432,6 +492,8 @@ void observePvrTaRenderDone(std::uint64_t tick) noexcept
 			observation.renderGeneration = pendingRenderGeneration;
 			pendingRenderGeneration = 0;
 		}
+		if (observation.renderGeneration == 0)
+			return;
 		publish(std::move(observation));
 	}
 	catch (...)
@@ -449,6 +511,8 @@ void resetPvrTaObservation(std::uint64_t tick) noexcept
 		{
 			const std::lock_guard<std::mutex> lock(stateMutex);
 			contexts.clear();
+			if (!observedRenderGenerationWindowFrozen)
+				observedRenderGenerations.clear();
 			pendingRenderGeneration = 0;
 		}
 		publish(baseObservation(PvrTaObservationType::Reset, tick));

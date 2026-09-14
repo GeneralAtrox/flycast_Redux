@@ -11,6 +11,10 @@
 namespace
 {
 
+const std::array<std::int32_t, 16> zeroDspInputs {};
+const std::array<std::int16_t, 16> zeroDspOutputs {};
+const std::array<std::uint8_t, 8192> keySourceRam {};
+
 class AicaSubscription
 {
 public:
@@ -74,10 +78,12 @@ TEST(ResearchAicaObservation, PreservesRawChannelStateAndMixerComponents)
 		registers[index] = static_cast<std::uint8_t>(index);
 	{
 		research::AicaWriterScope writer(research::AicaWriter::Arm7);
-		research::observeAicaKeyTransition(true, 17, registers.data(), 300);
+		research::observeAicaKeyTransition(true, 17, registers.data(),
+				keySourceRam.data(), keySourceRam.size(), 300);
 	}
 	research::observeAicaSampleFrame(1ull << 17, 100, -101, 20, -21,
-			3, -4, true, 5, -6, 123, -124, 9, 3, 301);
+			3, -4, true, 5, -6, zeroDspInputs.data(), zeroDspOutputs.data(),
+			123, -124, 9, 3, 301);
 
 	ASSERT_EQ(2u, events.size());
 	EXPECT_EQ(research::AicaObservationType::KeyOn, events[0].type);
@@ -110,6 +116,32 @@ TEST(ResearchAicaObservation, RejectsCompetingEvidenceSubscriber)
 			[](const auto&) {}), std::logic_error);
 }
 
+TEST(ResearchAicaObservation, BindsPreKeyBatchAndTransitionsToExactSampleCut)
+{
+	std::vector<research::AicaObservation> events;
+	AicaSubscription subscription(research::subscribeAicaEvidenceObservations(
+			[&](const auto& event) { events.push_back(event); }));
+	const auto cut=research::aicaObservationNextSampleOrdinal();
+	std::array<std::uint8_t,0x80> registers{};
+	registers[12]=4;
+	{
+		research::AicaWriterScope writer(research::AicaWriter::Arm7);
+		research::observeAicaKeyBatchBegin(100);
+		research::observeAicaKeyTransition(true,3,registers.data(),
+				keySourceRam.data(),keySourceRam.size(),101);
+		research::observeAicaKeyBatchComplete(1ull<<3,0,102);
+	}
+	research::observeAicaSampleFrame(1ull<<3,0,0,0,0,0,0,true,0,0,
+			zeroDspInputs.data(),zeroDspOutputs.data(),0,0,1,0,103);
+	ASSERT_EQ(4u,events.size());
+	EXPECT_EQ(research::AicaObservationType::KeyBatchBegin,events[0].type);
+	EXPECT_EQ(cut,events[0].sampleCutOrdinal);
+	EXPECT_EQ(cut,events[1].sampleCutOrdinal);
+	EXPECT_EQ(cut,events[2].sampleCutOrdinal);
+	EXPECT_EQ(cut,events[3].sampleOrdinal);
+	EXPECT_EQ(cut+1,research::aicaObservationNextSampleOrdinal());
+}
+
 TEST(ResearchAicaObservation, PreservesStableBatchCddaJoinAndSuppression)
 {
 	std::vector<research::AicaObservation> events;
@@ -121,7 +153,8 @@ TEST(ResearchAicaObservation, PreservesStableBatchCddaJoinAndSuppression)
 	const auto generation = research::observeAicaCddaSector(45150, 1, 3, true,
 			sector.data(), sector.size(), 11);
 	research::observeAicaSampleFrame(1, 1, 2, 0x1234, -2, 3, 4, true,
-			5, 6, 7, 8, generation, 0, 12);
+			5, 6, zeroDspInputs.data(), zeroDspOutputs.data(),
+			7, 8, generation, 0, 12);
 	research::observeAicaSampleSuppressed(
 			research::AicaSampleSuppression::FastForward, 13);
 	ASSERT_EQ(4u, events.size());

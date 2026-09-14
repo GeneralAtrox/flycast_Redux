@@ -1,6 +1,7 @@
 #include "maple_if.h"
 #include "maple_cfg.h"
 #include "maple_helper.h"
+#include "cfg/option.h"
 #include "hw/holly/holly_intc.h"
 #include "hw/holly/sb.h"
 #include "hw/sh4/sh4_mem.h"
@@ -10,6 +11,8 @@
 #include "research/maple_runtime.h"
 #include "research/maple_observation.h"
 #include "research/memory_ranges_runtime.h"
+#include "research/sh4_observation_runtime.h"
+#include "log/Log.h"
 
 #include <memory>
 
@@ -48,6 +51,21 @@ bool maple_ddt_pending_reset;
 std::vector<std::pair<u32, std::vector<u32>>> mapleDmaOut;
 bool SDCKBOccupied;
 static u64 researchPendingDma = UINT64_MAX;
+
+#ifdef FLYCAST_TEST_FILES
+namespace research_test
+{
+namespace
+{
+MapleDmaTickObserver mapleDmaTickObserver = nullptr;
+}
+
+void setMapleDmaTickObserver(MapleDmaTickObserver observer)
+{
+	mapleDmaTickObserver = observer;
+}
+}
+#endif
 
 static std::vector<u8> mapleWordsToLittleEndian(const u32 *words, u32 size)
 {
@@ -214,6 +232,25 @@ static void maple_DoDma(research::MapleDmaTrigger trigger)
 	const bool swap_msb = (SB_MMSEL == 0);
 	research::MapleDmaBeginEvent beginEvent;
 	beginEvent.tick = sh4_sched_now64();
+	const u64 executionTick = research::sh4ObservationSynchronousHardwareTick(
+			beginEvent.tick);
+	const research::Sh4InstructionOwnerToken owner =
+			research::sh4ObservationCurrentInstructionOwner();
+#ifdef FLYCAST_TEST_FILES
+	if (research_test::mapleDmaTickObserver != nullptr)
+		research_test::mapleDmaTickObserver(beginEvent.tick, executionTick,
+				owner.pc, owner.opcode, owner.valid);
+#endif
+	if (config::ResearchDynarecObservation.get())
+	{
+		NOTICE_LOG(MAPLE,
+				"Research Maple synchronous tick candidate raw=%llu execution=%llu delta=%llu owner_valid=%u owner_pc=%08x owner_opcode=%04x owner_tick=%llu owner_depth=%u",
+				static_cast<unsigned long long>(beginEvent.tick),
+				static_cast<unsigned long long>(executionTick),
+				static_cast<unsigned long long>(executionTick - beginEvent.tick),
+				owner.valid ? 1u : 0u, owner.pc, owner.opcode,
+				static_cast<unsigned long long>(owner.tick), owner.delaySlotDepth);
+	}
 	beginEvent.descriptorAddress = SB_MDSTAR;
 	beginEvent.mden = SB_MDEN;
 	beginEvent.mdst = SB_MDST;

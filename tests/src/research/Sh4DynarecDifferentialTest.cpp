@@ -1,6 +1,8 @@
 #include "cfg/option.h"
 #include "emulator.h"
 #include "hw/mem/addrspace.h"
+#include "hw/holly/sb.h"
+#include "hw/maple/maple_if.h"
 #include "hw/sh4/modules/ccn.h"
 #include "hw/sh4/modules/mmu.h"
 #include "hw/sh4/sh4_core.h"
@@ -35,7 +37,48 @@ namespace
 constexpr std::uint32_t StartPc = 0xac000000;
 constexpr std::uint32_t DataAddress = 0x8c001000;
 constexpr std::uint32_t LoopEndPc = StartPc + 0x1c;
+constexpr std::uint32_t MapleStorePc = StartPc + 0x20;
+constexpr std::uint32_t InterruptVectorBase = 0x8c002000;
+constexpr std::uint32_t InterruptHandlerPc = InterruptVectorBase + 0x600;
+constexpr std::uint32_t InterruptMapleStorePc = InterruptHandlerPc + 0x2000;
 constexpr std::size_t LoopCount = 8;
+
+struct MapleDmaTickSample
+{
+	std::uint64_t rawTick = 0;
+	std::uint64_t executionTick = 0;
+	std::uint32_t ownerPc = 0;
+	std::uint16_t ownerOpcode = 0;
+	bool ownerValid = false;
+	bool captured = false;
+};
+
+MapleDmaTickSample *activeMapleDmaTickSample = nullptr;
+
+void captureMapleDmaTick(std::uint64_t rawTick, std::uint64_t executionTick,
+		std::uint32_t ownerPc, std::uint16_t ownerOpcode, bool ownerValid)
+{
+	if (activeMapleDmaTickSample == nullptr)
+		return;
+	*activeMapleDmaTickSample = {rawTick, executionTick, ownerPc, ownerOpcode,
+			ownerValid, true};
+}
+
+class MapleDmaTickObserverGuard
+{
+public:
+	explicit MapleDmaTickObserverGuard(MapleDmaTickSample& sample)
+	{
+		activeMapleDmaTickSample = &sample;
+		research_test::setMapleDmaTickObserver(captureMapleDmaTick);
+	}
+
+	~MapleDmaTickObserverGuard()
+	{
+		research_test::setMapleDmaTickObserver(nullptr);
+		activeMapleDmaTickSample = nullptr;
+	}
+};
 
 class TemporaryTraceDirectory
 {
@@ -120,30 +163,34 @@ class NativeCaptureTimingGuard
 {
 public:
 	explicit NativeCaptureTimingGuard(
-			research::Sh4ObservationBackend backend) : backend(backend)
+			research::Sh4ObservationBackend backend, bool precise = true)
+		: backend(backend), precise(precise)
 	{
 		research::sh4DynarecExecutionTimingReset();
-		research::sh4ObservationSetPreciseTiming(backend, true);
+		research::sh4ObservationSetPreciseTiming(backend, precise);
 	}
 
 	~NativeCaptureTimingGuard()
 	{
-		research::sh4ObservationSetPreciseTiming(backend, false);
+		if (precise)
+			research::sh4ObservationSetPreciseTiming(backend, false);
 		research::sh4DynarecExecutionTimingReset();
 	}
 
 private:
 	research::Sh4ObservationBackend backend;
+	bool precise;
 };
 
 std::vector<research::Sh4Observation> runBackend(
-		research::Sh4ObservationBackend backend, bool fullMmu)
+		research::Sh4ObservationBackend backend, bool fullMmu,
+		bool precise = true)
 {
 	const bool dynarec = backend == research::Sh4ObservationBackend::Dynarec;
 	config::DynarecEnabled.override(dynarec);
 	config::ResearchDynarecObservation.override(dynarec);
 	emu.dc_reset(true);
-	NativeCaptureTimingGuard captureTiming(backend);
+	NativeCaptureTimingGuard captureTiming(backend, precise);
 	configureMmu(fullMmu);
 
 	// Three exact-width stores and reads, a static call/return pair with delay
@@ -262,13 +309,13 @@ std::vector<research::Sh4Observation> runFaultBackend(
 }
 
 std::vector<research::Sh4Observation> runInterruptBackend(
-		research::Sh4ObservationBackend backend)
+		research::Sh4ObservationBackend backend, bool precise = true)
 {
 	const bool dynarec = backend == research::Sh4ObservationBackend::Dynarec;
 	config::DynarecEnabled.override(dynarec);
 	config::ResearchDynarecObservation.override(dynarec);
 	emu.dc_reset(true);
-	NativeCaptureTimingGuard captureTiming(backend);
+	NativeCaptureTimingGuard captureTiming(backend, precise);
 	configureMmu(false);
 	writeProgram({0xaffe, 0x0009}); // bra StartPc; nop
 	Sh4cntx.pc = StartPc;
@@ -292,8 +339,9 @@ std::vector<research::Sh4Observation> runInterruptBackend(
 							const research::Sh4Observation& event) {
 						events.push_back(event);
 						if (event.type == research::Sh4ObservationType::Exception
-								&& event.opcode == 0
-								&& event.delaySlotDepth == 0)
+								&& event.delaySlotDepth == 0
+								&& event.exceptionCode == Sh4Ex_ExtInterrupt9
+								&& event.vectorPc == Sh4cntx.vbr + 0x600u)
 						{
 							interruptSeen = true;
 							executor->Stop();
@@ -304,6 +352,182 @@ std::vector<research::Sh4Observation> runInterruptBackend(
 	EXPECT_TRUE(interruptSeen);
 	EXPECT_TRUE(research::unsubscribeSh4Observations(subscription));
 	return events;
+}
+
+std::vector<research::Sh4Observation> runRteInterruptBackend(
+		research::Sh4ObservationBackend backend, bool precise)
+{
+	const bool dynarec = backend == research::Sh4ObservationBackend::Dynarec;
+	config::DynarecEnabled.override(dynarec);
+	config::ResearchDynarecObservation.override(dynarec);
+	emu.dc_reset(true);
+	NativeCaptureTimingGuard captureTiming(backend, precise);
+	configureMmu(false);
+	writeProgram({0x002b, 0x0009}); // rte; nop
+	addrspace::write16(StartPc + 0x100, 0xaffe); // bra resume PC
+	addrspace::write16(StartPc + 0x102, 0x0009); // delay-slot nop
+	Sh4cntx.pc = StartPc;
+	Sh4cntx.vbr = 0x8c002000;
+	Sh4cntx.spc = StartPc + 0x100;
+	Sh4cntx.ssr = Sh4cntx.sr.getFull();
+	Sh4cntx.ssr &= ~(1u << 28); // restored SR.BL = 0
+	Sh4cntx.ssr &= ~(0xfu << 4); // restored SR.IMASK = 0
+	Sh4cntx.sr.BL = 1;
+	Sh4cntx.old_sr.status = Sh4cntx.sr.status;
+	UpdateSR();
+	SetInterruptMask(sh4_IRL_9);
+	SetInterruptPend(sh4_IRL_9);
+	Sh4cntx.cycle_counter = SH4_TIMESLICE;
+
+	std::vector<research::Sh4Observation> events;
+	Sh4Executor *executor = emu.getSh4Executor();
+	bool interruptSeen = false;
+	research::Sh4ObservationFilter filter;
+	filter.backendMask = research::sh4ObservationBackendBit(backend);
+	const research::Sh4ObservationSubscription subscription =
+			research::subscribeSh4Observations(filter,
+					[&events, &interruptSeen, executor](
+							const research::Sh4Observation& event) {
+						events.push_back(event);
+						if (event.type == research::Sh4ObservationType::Exception
+								&& event.delaySlotDepth == 0
+								&& event.exceptionCode == Sh4Ex_ExtInterrupt9
+								&& event.vectorPc == Sh4cntx.vbr + 0x600u
+								&& event.exceptionPc == StartPc + 0x100u)
+						{
+							interruptSeen = true;
+							executor->Stop();
+						}
+					});
+	executor->Start();
+	executor->Run();
+	EXPECT_TRUE(interruptSeen);
+	EXPECT_TRUE(research::unsubscribeSh4Observations(subscription));
+	return events;
+}
+
+std::pair<std::vector<research::Sh4Observation>, MapleDmaTickSample>
+runMapleMmioBackend(research::Sh4ObservationBackend backend)
+{
+	const bool dynarec = backend == research::Sh4ObservationBackend::Dynarec;
+	config::DynarecEnabled.override(dynarec);
+	config::ResearchDynarecObservation.override(dynarec);
+	emu.dc_reset(true);
+	NativeCaptureTimingGuard captureTiming(backend, false);
+	configureMmu(false);
+	for (std::uint32_t pc = StartPc; pc < MapleStorePc; pc += 2)
+		addrspace::write16(pc, 0x0009); // accumulate within one scheduler slice
+	addrspace::write16(MapleStorePc, 0x2102); // mov.l r0,@r1 -> SB_MDST
+	addrspace::write16(MapleStorePc + 2u, 0xaffe); // bra MapleStorePc + 2
+	addrspace::write16(MapleStorePc + 4u, 0x0009); // delay-slot nop
+	addrspace::write32(DataAddress, 0x80000700u); // terminal Maple NOP
+	addrspace::write32(DataAddress + 4u, 0);
+	SB_MDSTAR = DataAddress;
+	SB_MDEN = 1;
+	SB_MDST = 0;
+	SB_MMSEL = 1;
+	Sh4cntx.pc = StartPc;
+	Sh4cntx.r[0] = 1;
+	Sh4cntx.r[1] = 0xa05f6c18u;
+	Sh4cntx.cycle_counter = SH4_TIMESLICE;
+
+	MapleDmaTickSample sample;
+	MapleDmaTickObserverGuard observer(sample);
+	std::vector<research::Sh4Observation> events;
+	Sh4Executor *executor = emu.getSh4Executor();
+	bool storeCompleted = false;
+	research::Sh4ObservationFilter filter;
+	filter.backendMask = research::sh4ObservationBackendBit(backend);
+	const research::Sh4ObservationSubscription subscription =
+			research::subscribeSh4Observations(filter,
+					[&events, &storeCompleted, executor](
+							const research::Sh4Observation& event) {
+						events.push_back(event);
+						if (event.type == research::Sh4ObservationType::InstructionEnd
+								&& event.instructionPc == MapleStorePc
+								&& event.delaySlotDepth == 0)
+						{
+							storeCompleted = true;
+							executor->Stop();
+						}
+					});
+	executor->Start();
+	executor->Run();
+	EXPECT_TRUE(storeCompleted);
+	EXPECT_TRUE(sample.captured);
+	EXPECT_TRUE(research::unsubscribeSh4Observations(subscription));
+	return {std::move(events), sample};
+}
+
+std::pair<std::vector<research::Sh4Observation>, MapleDmaTickSample>
+runInterruptMapleMmioBackend(research::Sh4ObservationBackend backend)
+{
+	const bool dynarec = backend == research::Sh4ObservationBackend::Dynarec;
+	config::DynarecEnabled.override(dynarec);
+	config::ResearchDynarecObservation.override(dynarec);
+	emu.dc_reset(true);
+	NativeCaptureTimingGuard captureTiming(backend, false);
+	configureMmu(false);
+	writeProgram({0xaffe, 0x0009}); // bra StartPc; nop until interrupt entry
+	for (std::uint32_t pc = InterruptHandlerPc;
+			pc < InterruptMapleStorePc; pc += 2)
+		addrspace::write16(pc, 0x0009); // handler work across more than 33 slices
+	addrspace::write16(InterruptMapleStorePc,
+			0x2102); // mov.l r0,@r1 -> SB_MDST
+	addrspace::write16(InterruptMapleStorePc + 2u,
+			0xaffe); // bra InterruptMapleStorePc + 2
+	addrspace::write16(InterruptMapleStorePc + 4u, 0x0009); // delay-slot nop
+	addrspace::write32(DataAddress, 0x80000700u); // terminal Maple NOP
+	addrspace::write32(DataAddress + 4u, 0);
+	SB_MDSTAR = DataAddress;
+	SB_MDEN = 1;
+	SB_MDST = 0;
+	SB_MMSEL = 1;
+	Sh4cntx.pc = StartPc;
+	Sh4cntx.vbr = InterruptVectorBase;
+	Sh4cntx.r[0] = 1;
+	Sh4cntx.r[1] = 0xa05f6c18u;
+	Sh4cntx.sr.BL = 0;
+	Sh4cntx.sr.IMASK = 0;
+	Sh4cntx.old_sr.status = Sh4cntx.sr.status;
+	UpdateSR();
+	SetInterruptMask(sh4_IRL_9);
+	SetInterruptPend(sh4_IRL_9);
+	Sh4cntx.cycle_counter = SH4_TIMESLICE;
+
+	MapleDmaTickSample sample;
+	MapleDmaTickObserverGuard observer(sample);
+	std::vector<research::Sh4Observation> events;
+	Sh4Executor *executor = emu.getSh4Executor();
+	bool interruptSeen = false;
+	bool storeCompleted = false;
+	research::Sh4ObservationFilter filter;
+	filter.backendMask = research::sh4ObservationBackendBit(backend);
+	const research::Sh4ObservationSubscription subscription =
+			research::subscribeSh4Observations(filter,
+					[&events, &interruptSeen, &storeCompleted, executor](
+							const research::Sh4Observation& event) {
+						events.push_back(event);
+						if (event.type == research::Sh4ObservationType::Exception
+								&& event.exceptionCode == Sh4Ex_ExtInterrupt9
+								&& event.vectorPc == InterruptHandlerPc)
+							interruptSeen = true;
+						if (event.type
+								== research::Sh4ObservationType::InstructionEnd
+								&& event.instructionPc == InterruptMapleStorePc
+								&& event.delaySlotDepth == 0)
+						{
+							storeCompleted = true;
+							executor->Stop();
+						}
+					});
+	executor->Start();
+	executor->Run();
+	EXPECT_TRUE(interruptSeen);
+	EXPECT_TRUE(storeCompleted);
+	EXPECT_TRUE(sample.captured);
+	EXPECT_TRUE(research::unsubscribeSh4Observations(subscription));
+	return {std::move(events), sample};
 }
 
 std::vector<research::Sh4Observation> runSelfModifyingBackend(
@@ -626,6 +850,77 @@ TEST(ResearchSh4DynarecDifferential,
 						research::Sh4ObservationBackend::Dynarec);
 		expectSameSemanticStream(interpreter, dynarec);
 	}
+	config::ResearchDynarecObservation.override(false);
+	config::DynarecEnabled.override(false);
+	os_UninstallFaultHandler();
+}
+
+TEST(ResearchSh4DynarecDifferential,
+		WarmupBlockBoundaryAndSchedulerStreamMatchesInterpreter)
+{
+	if (!addrspace::reserve())
+		GTEST_SKIP() << "address-space reservation is unavailable";
+	config::DynarecEnabled.override(true);
+	os_InstallFaultHandler();
+	emu.init();
+	mem_map_default();
+	const std::vector<research::Sh4Observation> interpreter = runBackend(
+			research::Sh4ObservationBackend::Interpreter, false, false);
+	const std::vector<research::Sh4Observation> dynarec = runBackend(
+			research::Sh4ObservationBackend::Dynarec, false, false);
+	expectSameSemanticStream(interpreter, dynarec);
+	const std::vector<research::Sh4Observation> interruptInterpreter =
+			runInterruptBackend(research::Sh4ObservationBackend::Interpreter,
+					false);
+	const std::vector<research::Sh4Observation> interruptDynarec =
+			runInterruptBackend(research::Sh4ObservationBackend::Dynarec, false);
+	expectSameSemanticStream(interruptInterpreter, interruptDynarec);
+	const std::vector<research::Sh4Observation> rteInterpreter =
+			runRteInterruptBackend(research::Sh4ObservationBackend::Interpreter,
+					false);
+	const std::vector<research::Sh4Observation> rteDynarec =
+			runRteInterruptBackend(research::Sh4ObservationBackend::Dynarec, false);
+	expectSameSemanticStream(rteInterpreter, rteDynarec);
+	const auto [mapleInterpreterEvents, mapleInterpreterSample] =
+			runMapleMmioBackend(research::Sh4ObservationBackend::Interpreter);
+	const auto [mapleDynarecEvents, mapleDynarecSample] =
+			runMapleMmioBackend(research::Sh4ObservationBackend::Dynarec);
+	expectSameSemanticStream(mapleInterpreterEvents, mapleDynarecEvents);
+	EXPECT_TRUE(mapleInterpreterSample.ownerValid);
+	EXPECT_TRUE(mapleDynarecSample.ownerValid);
+	EXPECT_EQ(mapleInterpreterSample.ownerPc, MapleStorePc);
+	EXPECT_EQ(mapleDynarecSample.ownerPc, MapleStorePc);
+	EXPECT_EQ(mapleInterpreterSample.ownerOpcode, 0x2102u);
+	EXPECT_EQ(mapleDynarecSample.ownerOpcode, 0x2102u);
+	EXPECT_EQ(mapleInterpreterSample.rawTick,
+			mapleInterpreterSample.executionTick);
+	EXPECT_EQ(mapleInterpreterSample.rawTick, mapleDynarecSample.rawTick);
+	EXPECT_GT(mapleDynarecSample.executionTick, mapleDynarecSample.rawTick);
+	EXPECT_LT(mapleDynarecSample.executionTick,
+			mapleDynarecSample.rawTick + SH4_TIMESLICE);
+	const auto [interruptMapleInterpreterEvents,
+			interruptMapleInterpreterSample] = runInterruptMapleMmioBackend(
+			research::Sh4ObservationBackend::Interpreter);
+	const auto [interruptMapleDynarecEvents, interruptMapleDynarecSample] =
+			runInterruptMapleMmioBackend(
+					research::Sh4ObservationBackend::Dynarec);
+	expectSameSemanticStream(interruptMapleInterpreterEvents,
+			interruptMapleDynarecEvents);
+	EXPECT_TRUE(interruptMapleInterpreterSample.ownerValid);
+	EXPECT_TRUE(interruptMapleDynarecSample.ownerValid);
+	EXPECT_EQ(interruptMapleInterpreterSample.ownerPc,
+			InterruptMapleStorePc);
+	EXPECT_EQ(interruptMapleDynarecSample.ownerPc, InterruptMapleStorePc);
+	EXPECT_EQ(interruptMapleInterpreterSample.ownerOpcode, 0x2102u);
+	EXPECT_EQ(interruptMapleDynarecSample.ownerOpcode, 0x2102u);
+	EXPECT_EQ(interruptMapleInterpreterSample.rawTick,
+			interruptMapleInterpreterSample.executionTick);
+	EXPECT_EQ(interruptMapleInterpreterSample.rawTick,
+			interruptMapleDynarecSample.rawTick);
+	EXPECT_GT(interruptMapleDynarecSample.executionTick,
+			interruptMapleDynarecSample.rawTick);
+	EXPECT_LT(interruptMapleDynarecSample.executionTick,
+			interruptMapleDynarecSample.rawTick + SH4_TIMESLICE);
 	config::ResearchDynarecObservation.override(false);
 	config::DynarecEnabled.override(false);
 	os_UninstallFaultHandler();

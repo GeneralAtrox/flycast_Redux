@@ -50,6 +50,7 @@
 #include "research/research_control.h"
 #include "research/sh4_events_runtime.h"
 #include "research/sh4_observation_capture_runtime.h"
+#include "research/sh4_pc_checkpoint_runtime.h"
 #include "research/sh4_profile_capture_runtime.h"
 #include "oslib/storage.h"
 #include "wsi/context.h"
@@ -577,11 +578,13 @@ void Emulator::loadGame(const char *path, LoadProgress *progress)
 #ifndef LIBRETRO
 		// A bounded GD-ROM capture owns the whole process. Exit the UI loop only
 		// after the terminal Maple commit so every research writer finalizes at
-		// the exact replay boundary. Other research sessions retain the normal
-		// paused-at-checkpoint behavior.
+		// the exact replay boundary. A bounded PVR capture may close at that
+		// boundary only after its requested render-done window has frozen; other
+		// research sessions retain the normal paused-at-checkpoint behavior.
 		if (!config::ResearchGdromRecordPath.get().empty())
 			mainui_stop();
-		else
+		else if (!research::pvrTaCaptureRuntimeActive()
+				|| research::pvrTaCaptureWindowComplete())
 #endif
 			emu.stop();
 	});
@@ -623,6 +626,7 @@ void Emulator::loadGame(const char *path, LoadProgress *progress)
 		research::configureCddaCaptureRuntime();
 		research::configureMemoryRangesRuntime();
 		research::configureSh4EventsRuntime();
+		research::configureSh4PcCheckpointRuntime();
 		dc_reset(true);
 		memset(&settings.network.md5, 0, sizeof(settings.network.md5));
 
@@ -712,7 +716,16 @@ void Emulator::loadGame(const char *path, LoadProgress *progress)
 		research::startAicaCaptureRuntime();
 		research::startCddaCaptureRuntime();
 		research::startMemoryRangesRuntime();
-		research::startSh4EventsRuntime();
+		research::startSh4EventsRuntime([] {
+			mainui_stop();
+			emu.stop();
+		});
+#ifndef LIBRETRO
+		research::startSh4PcCheckpointRuntime([] {
+			mainui_stop();
+			emu.stop();
+		});
+#endif
 #ifndef LIBRETRO
 		research::startResearchControl([] { mainui_stop(); });
 #endif
@@ -725,7 +738,10 @@ void Emulator::loadGame(const char *path, LoadProgress *progress)
 			if (config::GGPOEnable)
 				dc_loadstate(-1);
 			else if (config::AutoLoadState && !naomiNetworkSupported() && !settings.naomi.multiboard)
+			{
 				dc_loadstate(config::SavestateSlot);
+				research::sh4EventsInitialStateLoaded();
+			}
 #endif
 		}
 
@@ -750,6 +766,7 @@ void Emulator::loadGame(const char *path, LoadProgress *progress)
 		research::abortCddaCaptureRuntime();
 		research::abortSh4EventsRuntime();
 		research::abortMemoryRangesRuntime();
+		research::stopSh4PcCheckpointRuntime();
 		research::abortRuntime();
 		state = Error;
 		throw;
@@ -788,6 +805,7 @@ void Emulator::runInternal()
 					research::abortGdromCaptureRuntime();
 					research::abortSh4EventsRuntime();
 					research::abortMemoryRangesRuntime();
+					research::stopSh4PcCheckpointRuntime();
 					nvmem::saveFiles();
 					dc_reset(false);
 					if (!restartCpu())
@@ -856,6 +874,7 @@ void Emulator::unloadGame()
 		} catch (const std::exception& e) {
 			ERROR_LOG(COMMON, "Memory-ranges finalization failed: %s", e.what());
 		}
+		research::stopSh4PcCheckpointRuntime();
 #ifndef LIBRETRO
 		if (state == Loaded && config::AutoSaveState && !settings.content.path.empty()
 				&& !settings.naomi.multiboard && !config::GGPOEnable && !naomiNetworkSupported())

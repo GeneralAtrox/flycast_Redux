@@ -139,7 +139,13 @@ void subscribeSession(Session& active)
 					ERROR_LOG(SH4, "SH-4 observation writer failed");
 				}
 			});
-	sh4ObservationSetPreciseTiming(backend, true);
+	// Replay-only diagnostics must observe the existing dynarec timing failure,
+	// not replace the warm-up timing model at the capture boundary.  Their
+	// identity is permanently rejected by the equivalence validator, so the
+	// resulting trace remains diagnostic-only even though it uses the common
+	// typed writer.
+	if (!active.configuration.identity.runtimeConfiguration.dynarecReplayDiagnostic)
+		sh4ObservationSetPreciseTiming(backend, true);
 }
 
 void observationDmaBegin(std::uint64_t oneBasedDmaCount)
@@ -235,7 +241,10 @@ void configureSh4ObservationCaptureRuntime()
 			"SH-4 observation manifest-set and output paths alias");
 
 	next->identity = loadIdentityManifest(next->identityPath);
-	requireSh4EquivalenceIdentityV2(next->identity);
+	if (next->identity.runtimeConfiguration.dynarecReplayDiagnostic)
+		requireSh4DynarecReplayDiagnosticIdentityV2(next->identity);
+	else
+		requireSh4EquivalenceIdentityV2(next->identity);
 #if FEAT_SHREC == DYNAREC_NONE
 	if (next->identity.runtimeConfiguration.cpuBackend == "dynarec")
 		throw FlycastException("SH-4 equivalence identity requires an unavailable dynarec backend");
