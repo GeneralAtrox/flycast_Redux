@@ -524,10 +524,19 @@ extern Option<int64_t, false> ResearchSh4PcCheckpoint;
 extern Option<int64_t, false> ResearchSh4PcCheckpointU32Address;
 extern Option<int64_t, false> ResearchSh4PcCheckpointU32Value;
 extern Option<int64_t, false> ResearchDreamcastRtcSeed;
-extern Option<std::string, false> ResearchControlPipeName;
-extern Option<std::string, false> ResearchControlNonce;
-extern Option<std::string, false> ResearchControlClientExecutable;
-extern Option<std::string, false> ResearchControlClientSha256;
+extern Option<std::string, false> ResearchWorkbenchRecordPath;
+extern Option<std::string, false> ResearchWorkbenchBuses;
+extern Option<std::string, false> ResearchWorkbenchSh4Types;
+extern Option<int64_t, false> ResearchWorkbenchSh4PcStart;
+extern Option<int64_t, false> ResearchWorkbenchSh4PcEnd;
+extern Option<int64_t, false> ResearchWorkbenchSh4MemStart;
+extern Option<int64_t, false> ResearchWorkbenchSh4MemEnd;
+extern Option<bool, false> ResearchWorkbenchVramWrites;
+extern Option<bool, false> ResearchWorkbenchSampleFrames;
+extern Option<bool, false> ResearchWorkbenchTextureBytes;
+extern Option<std::string, false> ResearchWorkbenchNote;
+extern Option<int64_t, false> ResearchControlPort;
+extern Option<std::string, false> ResearchControlToken;
 
 // Profiling
 extern Option<bool> ProfilerEnabled;

@@ -173,12 +173,19 @@ Option<int64_t, false> ResearchSh4PcCheckpointU32Value(
 		"Sh4PcCheckpointU32Value", 0, "research");
 Option<int64_t, false> ResearchDreamcastRtcSeed(
 		"DreamcastRtcSeed", -1, "research");
-Option<std::string, false> ResearchControlPipeName("ControlPipe", "", "research");
-Option<std::string, false> ResearchControlNonce("ControlNonce", "", "research");
-Option<std::string, false> ResearchControlClientExecutable(
-		"ControlClientExecutable", "", "research");
-Option<std::string, false> ResearchControlClientSha256(
-		"ControlClientSha256", "", "research");
+Option<std::string, false> ResearchWorkbenchRecordPath("WorkbenchRecord", "", "research");
+Option<std::string, false> ResearchWorkbenchBuses("WorkbenchBuses", "", "research");
+Option<std::string, false> ResearchWorkbenchSh4Types("WorkbenchSh4Types", "", "research");
+Option<int64_t, false> ResearchWorkbenchSh4PcStart("WorkbenchSh4PcStart", -1, "research");
+Option<int64_t, false> ResearchWorkbenchSh4PcEnd("WorkbenchSh4PcEnd", -1, "research");
+Option<int64_t, false> ResearchWorkbenchSh4MemStart("WorkbenchSh4MemStart", -1, "research");
+Option<int64_t, false> ResearchWorkbenchSh4MemEnd("WorkbenchSh4MemEnd", -1, "research");
+Option<bool, false> ResearchWorkbenchVramWrites("WorkbenchVramWrites", false, "research");
+Option<bool, false> ResearchWorkbenchSampleFrames("WorkbenchSampleFrames", false, "research");
+Option<bool, false> ResearchWorkbenchTextureBytes("WorkbenchTextureBytes", false, "research");
+Option<std::string, false> ResearchWorkbenchNote("WorkbenchNote", "", "research");
+Option<int64_t, false> ResearchControlPort("ControlPort", 0, "research");
+Option<std::string, false> ResearchControlToken("ControlToken", "", "research");
 
 // Profiler
 Option<bool> ProfilerEnabled("Profiler.Enabled");
