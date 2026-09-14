@@ -43,16 +43,29 @@ struct RowOptions
 	bool recordSampleFrames = false;    // aica per-sample mixer frames (44.1 kHz)
 };
 
+// AICA is written tens of thousands of times per second by the ARM7 sound
+// driver. By default only SH-4-originated and DMA traffic is recorded.
+struct AicaRecordFilter
+{
+	std::uint32_t writerMask = 0;   // bit (1 << AicaWriter); 0 = default set
+	std::uint32_t typeMask = 0;     // bit (1 << AicaObservationType); 0 = all
+};
+
 struct RecorderConfig
 {
 	std::uint32_t buses = AllWorkbenchBuses;
 	Sh4ObservationFilter sh4;
 	MapleObservationFilter maple;
 	PvrTaObservationFilter pvrTa;
+	AicaRecordFilter aica;
 	RowOptions rows;
-	std::size_t queueCapacity = 1u << 16;
+	std::size_t queueCapacity = 1u << 18;
 	std::string note;
 };
+
+// "sh4,g2dma,arm7,internal,mixer,reios,unknown" or "all".
+std::uint32_t parseAicaWriterList(std::string_view list);
+std::string aicaWriterListToString(std::uint32_t writers);
 
 // Every bus enabled; SH-4 limited to calls, returns, and exceptions so a
 // default capture is useful without producing millions of rows per second.
@@ -71,6 +84,7 @@ std::string sh4TypeListToString(std::uint64_t types);
 //   "pc_start": 0x8c010000, "pc_end": 0x8c01ffff,
 //   "mem_start": 0x8c000000, "mem_end": 0x8cffffff },
 //   "maple": { "bus": 0, "port": 5, "command": 9 },
+//   "aica": { "writers": "sh4,g2dma,reios" },
 //   "rows": { "texture_bytes": false, ... }, "queue_capacity": 65536,
 //   "note": "..." }
 RecorderConfig recorderConfigFromJson(const nlohmann::json& json);
