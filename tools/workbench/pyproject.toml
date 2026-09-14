@@ -1,0 +1,17 @@
+[project]
+name = "flycast-workbench"
+version = "0.1.0"
+description = "Control client, launcher, SQLite queries, and MCP server for the Flycast reverse-engineering workbench"
+requires-python = ">=3.10"
+dependencies = ["mcp>=1.0"]
+
+[project.scripts]
+flycast-workbench = "flycast_workbench.cli:main"
+flycast-workbench-mcp = "flycast_workbench.server:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["flycast_workbench"]

@@ -1,5 +1,7 @@
 #include "research/workbench/workbench_config.h"
 
+#include "research/aica_observation.h"
+
 #include <algorithm>
 #include <cctype>
 #include <stdexcept>
@@ -34,6 +36,17 @@ const NamedBit Sh4TypeNames[] = {
 	{"call", sh4ObservationTypeBit(Sh4ObservationType::Call)},
 	{"return", sh4ObservationTypeBit(Sh4ObservationType::Return)},
 };
+
+const NamedBit AicaWriterNames[] = {
+	{"unknown", 1u << static_cast<unsigned>(AicaWriter::Unknown)},
+	{"sh4", 1u << static_cast<unsigned>(AicaWriter::Sh4Direct)},
+	{"g2dma", 1u << static_cast<unsigned>(AicaWriter::Sh4G2Dma)},
+	{"arm7", 1u << static_cast<unsigned>(AicaWriter::Arm7)},
+	{"internal", 1u << static_cast<unsigned>(AicaWriter::AicaInternalDma)},
+	{"mixer", 1u << static_cast<unsigned>(AicaWriter::Mixer)},
+	{"reios", 1u << static_cast<unsigned>(AicaWriter::ReiosHle)},
+};
+constexpr std::uint32_t AllAicaWriters = 0x7f;
 
 std::vector<std::string> splitList(std::string_view list)
 {
@@ -186,6 +199,13 @@ void parseMaple(const nlohmann::json& json, MapleObservationFilter& filter)
 	}
 }
 
+void parseAica(const nlohmann::json& json, AicaRecordFilter& filter)
+{
+	rejectUnknownKeys(json, {"writers"}, "aica");
+	if (json.contains("writers"))
+		filter.writerMask = parseAicaWriterList(json.at("writers").get<std::string>());
+}
+
 void parseRows(const nlohmann::json& json, RowOptions& rows)
 {
 	rejectUnknownKeys(json, {"texture_bytes", "draw_vertices", "vram_writes",
@@ -211,7 +231,18 @@ RecorderConfig defaultRecorderConfig()
 	config.sh4.typeMask = sh4ObservationTypeBit(Sh4ObservationType::Call)
 			| sh4ObservationTypeBit(Sh4ObservationType::Return)
 			| sh4ObservationTypeBit(Sh4ObservationType::Exception);
+	config.aica.writerMask = parseAicaWriterList("sh4,g2dma,internal,reios");
 	return config;
+}
+
+std::uint32_t parseAicaWriterList(std::string_view list)
+{
+	return static_cast<std::uint32_t>(parseBits(list, AicaWriterNames, AllAicaWriters, "aica writer"));
+}
+
+std::string aicaWriterListToString(std::uint32_t writers)
+{
+	return bitsToString(writers, AicaWriterNames);
 }
 
 std::uint32_t parseBusList(std::string_view list)
@@ -238,7 +269,7 @@ RecorderConfig recorderConfigFromJson(const nlohmann::json& json)
 {
 	if (!json.is_object())
 		throw std::invalid_argument("recorder config must be a JSON object");
-	rejectUnknownKeys(json, {"buses", "sh4", "maple", "rows", "queue_capacity", "note"},
+	rejectUnknownKeys(json, {"buses", "sh4", "maple", "aica", "rows", "queue_capacity", "note"},
 			"recorder config");
 	RecorderConfig config = defaultRecorderConfig();
 	if (json.contains("buses"))
@@ -247,6 +278,8 @@ RecorderConfig recorderConfigFromJson(const nlohmann::json& json)
 		parseSh4(json.at("sh4"), config.sh4);
 	if (json.contains("maple"))
 		parseMaple(json.at("maple"), config.maple);
+	if (json.contains("aica"))
+		parseAica(json.at("aica"), config.aica);
 	if (json.contains("rows"))
 		parseRows(json.at("rows"), config.rows);
 	if (json.contains("queue_capacity"))
@@ -286,6 +319,7 @@ nlohmann::json recorderConfigToJson(const RecorderConfig& config)
 		{"buses", busListToString(config.buses)},
 		{"sh4", std::move(sh4)},
 		{"maple", std::move(maple)},
+		{"aica", {{"writers", aicaWriterListToString(config.aica.writerMask)}}},
 		{"rows", {
 			{"texture_bytes", config.rows.storeTextureBytes},
 			{"draw_vertices", config.rows.storeDrawVertices},

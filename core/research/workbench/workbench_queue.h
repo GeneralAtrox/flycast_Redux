@@ -14,6 +14,7 @@
 #include "research/pvr_ta_observation.h"
 #include "research/sh4_observation.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -30,26 +31,38 @@ using WorkbenchEvent = std::variant<Sh4Observation, MapleObservation, PvrTaObser
 		PvrDrawObservation, PvrPresentationObservation, GdromObservation,
 		GdromHardwareObservation, AicaObservation, CddaObservation>;
 
+// Two lanes: the SH-4 bus can emit millions of events per second and would
+// otherwise starve the hardware buses out of a single FIFO. The writer drains
+// the priority lane first, so Maple/PVR/GD-ROM/AICA rows survive even while
+// SH-4 rows are being dropped.
+enum class Lane
+{
+	Bulk,
+	Priority,
+};
+
 class EventQueue
 {
 public:
 	explicit EventQueue(std::size_t capacity)
-		: capacity(capacity)
+		: capacity(capacity), priorityCapacity(std::max<std::size_t>(1024, capacity / 4))
 	{
 	}
 
-	// Returns false (and counts a drop) when the queue is full or closed.
-	bool push(WorkbenchEvent&& event) noexcept
+	// Returns false (and counts a drop) when the lane is full or the queue is closed.
+	bool push(WorkbenchEvent&& event, Lane lane = Lane::Bulk) noexcept
 	{
 		try
 		{
 			std::lock_guard<std::mutex> lock(mutex);
-			if (closedFlag || pending.size() >= capacity)
+			std::deque<WorkbenchEvent>& target = lane == Lane::Priority ? priority : pending;
+			const std::size_t limit = lane == Lane::Priority ? priorityCapacity : capacity;
+			if (closedFlag || target.size() >= limit)
 			{
 				droppedCount.fetch_add(1, std::memory_order_relaxed);
 				return false;
 			}
-			pending.push_back(std::move(event));
+			target.push_back(std::move(event));
 		}
 		catch (...)
 		{
@@ -67,13 +80,17 @@ public:
 			std::chrono::milliseconds wait)
 	{
 		std::unique_lock<std::mutex> lock(mutex);
-		available.wait_for(lock, wait, [this] { return !pending.empty() || closedFlag; });
+		available.wait_for(lock, wait,
+				[this] { return !pending.empty() || !priority.empty() || closedFlag; });
 		std::size_t moved = 0;
-		while (moved < maximum && !pending.empty())
+		for (std::deque<WorkbenchEvent> *lane : {&priority, &pending})
 		{
-			out.push_back(std::move(pending.front()));
-			pending.pop_front();
-			++moved;
+			while (moved < maximum && !lane->empty())
+			{
+				out.push_back(std::move(lane->front()));
+				lane->pop_front();
+				++moved;
+			}
 		}
 		return moved;
 	}
@@ -96,7 +113,7 @@ public:
 	std::size_t size() const noexcept
 	{
 		std::lock_guard<std::mutex> lock(mutex);
-		return pending.size();
+		return pending.size() + priority.size();
 	}
 
 	std::uint64_t dropped() const noexcept
@@ -106,9 +123,11 @@ public:
 
 private:
 	const std::size_t capacity;
+	const std::size_t priorityCapacity;
 	mutable std::mutex mutex;
 	std::condition_variable available;
 	std::deque<WorkbenchEvent> pending;
+	std::deque<WorkbenchEvent> priority;
 	std::atomic<std::uint64_t> droppedCount {0};
 	bool closedFlag = false;
 };

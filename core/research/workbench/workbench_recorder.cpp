@@ -56,7 +56,7 @@ struct WorkbenchRecorder::Subscriptions
 namespace
 {
 
-constexpr std::size_t WriterBatch = 8192;
+constexpr std::size_t WriterBatch = 16384;
 constexpr std::chrono::milliseconds WriterWait {50};
 
 void createCommonSchema(Database& db)
@@ -127,6 +127,10 @@ void WorkbenchRecorder::start(const std::filesystem::path& database,
 	db = std::make_unique<Database>(database);
 	try
 	{
+		// Recording favours throughput: WAL plus no fsync per commit. A crash
+		// loses the last few batches, never the database.
+		db->exec("PRAGMA synchronous=OFF");
+		db->exec("PRAGMA cache_size=-65536");
 		createCommonSchema(*db);
 		if (config.buses & BusSh4) Sh4Rows::createTables(*db);
 		if (config.buses & BusMaple) MapleRows::createTables(*db);
@@ -183,19 +187,24 @@ void WorkbenchRecorder::subscribeAll(const RecorderConfig& config)
 	retainSh4InstructionOwnership(Sh4ObservationBackend::Dynarec);
 	ownershipRetained = true;
 
-	const auto push = [this](auto observation) noexcept {
+	// SH-4 rows ride the bulk lane; everything else is priority so a flood of
+	// instruction events cannot starve the hardware buses.
+	const auto pushLane = [this](auto observation, Lane lane) noexcept {
 		try
 		{
-			queue->push(WorkbenchEvent(std::move(observation)));
+			queue->push(WorkbenchEvent(std::move(observation)), lane);
 		}
 		catch (...)
 		{
 			callbackDrops.fetch_add(1, std::memory_order_relaxed);
 		}
 	};
+	const auto push = [pushLane](auto observation) noexcept {
+		pushLane(std::move(observation), Lane::Priority);
+	};
 	if (config.buses & BusSh4)
 		subscriptions->sh4 = subscribeSh4Observations(config.sh4,
-				[push](const Sh4Observation& o) { push(o); });
+				[pushLane](const Sh4Observation& o) { pushLane(o, Lane::Bulk); });
 	if (config.buses & BusMaple)
 		subscriptions->maple = subscribeMapleObservations(config.maple,
 				[push](const MapleObservation& o) { push(o); });
@@ -224,9 +233,16 @@ void WorkbenchRecorder::subscribeAll(const RecorderConfig& config)
 	if (config.buses & BusAica)
 	{
 		const bool sampleFrames = config.rows.recordSampleFrames;
+		const std::uint32_t writers = config.aica.writerMask != 0
+				? config.aica.writerMask : defaultRecorderConfig().aica.writerMask;
+		const std::uint32_t types = config.aica.typeMask;
 		subscriptions->aica = subscribeAicaObservations(
-				[push, sampleFrames](const AicaObservation& o) {
+				[push, sampleFrames, writers, types](const AicaObservation& o) {
 					if (!sampleFrames && o.type == AicaObservationType::SampleFrame)
+						return;
+					if ((writers & (1u << static_cast<unsigned>(o.owner.writer))) == 0)
+						return;
+					if (types != 0 && (types & (1u << static_cast<unsigned>(o.type))) == 0)
 						return;
 					push(o);
 				});
