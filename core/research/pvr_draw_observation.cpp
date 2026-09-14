@@ -224,6 +224,8 @@ void observePvrPrimitiveDecoded(PvrDrawObservation observation) noexcept
 {
 	if (!pvrDrawObservationBusActive())
 		return;
+	if (!pvrTaRenderGenerationObserved(observation.renderGeneration))
+		return;
 	if (observation.renderGeneration == 0 || observation.primitiveGeneration == 0
 			|| observation.count == 0)
 	{
@@ -243,6 +245,8 @@ std::uint64_t observePvrDrawConsumed(std::uint64_t renderGeneration,
 		bool indexed, std::uint64_t tick) noexcept
 {
 	if (!pvrDrawObservationBusActive())
+		return 0;
+	if (!pvrTaRenderGenerationObserved(renderGeneration))
 		return 0;
 	if (renderGeneration == 0 || count == 0)
 	{
@@ -285,6 +289,8 @@ void observePvrDrawRenderCompleted(std::uint64_t renderGeneration,
 		bool successful, std::uint64_t tick) noexcept
 {
 	if (!pvrDrawObservationBusActive())
+		return;
+	if (!pvrTaRenderGenerationObserved(renderGeneration))
 		return;
 	if (renderGeneration == 0)
 	{

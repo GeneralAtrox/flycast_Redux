@@ -11,6 +11,13 @@
 #include <limits>
 #include <stdexcept>
 
+namespace
+{
+Sh4RCB researchTestSh4Rcb {};
+}
+
+Sh4RCB *p_sh4rcb = &researchTestSh4Rcb;
+
 namespace nvmem
 {
 namespace
@@ -65,6 +72,12 @@ Option<int64_t, false> ResearchSh4ObservationMaxBytes(
 		"Sh4ObservationMaxBytes", 512ll * 1024 * 1024, "research");
 Option<int64_t, false> ResearchSh4ObservationStartDma(
 		"Sh4ObservationStartDma", 0, "research");
+Option<int64_t, false> ResearchSh4PcCheckpoint(
+		"Sh4PcCheckpoint", 0, "research");
+Option<int64_t, false> ResearchSh4PcCheckpointU32Address(
+		"Sh4PcCheckpointU32Address", 0, "research");
+Option<int64_t, false> ResearchSh4PcCheckpointU32Value(
+		"Sh4PcCheckpointU32Value", 0, "research");
 Option<std::string, false> ResearchSh4ProfileRecordPath(
 		"Sh4ProfileRecord", "", "research");
 Option<int64_t, false> ResearchSh4ProfileMaxBytes(
@@ -95,6 +108,18 @@ Option<std::string, false> ResearchGdromRecordPath(
 		"GdromRecord", "", "research");
 Option<int64_t, false> ResearchGdromMaxBytes(
 		"GdromMaxBytes", 512ll * 1024 * 1024, "research");
+Option<std::string, false> ResearchAicaRecordPath(
+		"AicaRecord", "", "research");
+Option<int64_t, false> ResearchAicaMaxBytes(
+		"AicaMaxBytes", 512ll * 1024 * 1024, "research");
+Option<int64_t, false> ResearchAicaSampleFrames(
+		"AicaSampleFrames", 22050, "research");
+Option<std::string, false> ResearchCddaRecordPath(
+		"CddaRecord", "", "research");
+Option<int64_t, false> ResearchCddaMaxBytes(
+		"CddaMaxBytes", 64ll * 1024 * 1024, "research");
+Option<int64_t, false> ResearchCddaSampleFrames(
+		"CddaSampleFrames", 588, "research");
 Option<int64_t, false> ResearchDreamcastRtcSeed(
 		"DreamcastRtcSeed", -1, "research");
 

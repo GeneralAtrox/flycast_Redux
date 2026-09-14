@@ -1,7 +1,9 @@
 #pragma once
 
 #include "research/pvr_ta_observation.h"
+#include "research/sha256.h"
 
+#include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -11,7 +13,7 @@
 namespace research
 {
 
-constexpr std::uint32_t PvrDrawObservationSchemaVersion = 1;
+constexpr std::uint32_t PvrDrawObservationSchemaVersion = 3;
 
 enum class PvrDrawObservationType : std::uint8_t
 {
@@ -67,6 +69,54 @@ struct PvrPrimitiveBounds
 	bool available = false;
 };
 
+// Bit-exact post-TA vertex consumed by the renderer. Float fields are retained
+// as their IEEE-754 payloads so the research contract never depends on text
+// formatting or host floating-point round trips.
+struct PvrDecodedVertex
+{
+	std::uint32_t xBits = 0;
+	std::uint32_t yBits = 0;
+	std::uint32_t zBits = 0;
+	std::uint32_t uBits = 0;
+	std::uint32_t vBits = 0;
+	std::uint32_t u1Bits = 0;
+	std::uint32_t v1Bits = 0;
+	std::uint32_t nxBits = 0;
+	std::uint32_t nyBits = 0;
+	std::uint32_t nzBits = 0;
+	std::array<std::uint8_t, 4> baseColor {};
+	std::array<std::uint8_t, 4> offsetColor {};
+	std::array<std::uint8_t, 4> baseColor1 {};
+	std::array<std::uint8_t, 4> offsetColor1 {};
+};
+
+// Identity of the exact texture source sampled by this primitive. The source
+// digest covers the complete Dreamcast VRAM range used by the texture,
+// including VQ codebook and authored mip levels. Paletted textures bind the
+// exact raw palette register range through a second digest.
+struct PvrSampledTexture
+{
+	bool available = false;
+	std::uint32_t sourceAddress = UINT32_MAX;
+	std::uint32_t sourceSize = 0;
+	std::uint32_t maximumLevelAddress = UINT32_MAX;
+	std::uint32_t maximumLevelSize = 0;
+	std::uint32_t width = 0;
+	std::uint32_t height = 0;
+	std::uint32_t pixelFormat = 0;
+	std::uint32_t paletteFirstEntry = 0;
+	std::uint32_t paletteEntryCount = 0;
+	std::uint32_t cacheUpdates = 0;
+	bool gpuPalette = false;
+	bool customReplacement = false;
+	Sha256Digest sourceDigest {};
+	Sha256Digest paletteDigest {};
+	// Exact bytes covered by sourceDigest. This is intentionally retained only
+	// on the research observation path so selected decoded movie textures can be
+	// compared with a native decoder without trusting either implementation.
+	std::vector<std::uint8_t> sourceBytes;
+};
+
 struct PvrDrawObservation
 {
 	std::uint32_t schemaVersion = PvrDrawObservationSchemaVersion;
@@ -95,6 +145,8 @@ struct PvrDrawObservation
 	std::uint32_t first = 0;
 	std::uint32_t count = 0;
 	PvrPrimitiveBounds bounds;
+	std::vector<PvrDecodedVertex> vertices;
+	PvrSampledTexture sampledTexture;
 	std::vector<PvrTaBlockProvenance> parameterBlocks;
 	std::vector<PvrTaBlockProvenance> vertexBlocks;
 

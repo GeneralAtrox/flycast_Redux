@@ -220,6 +220,30 @@ research::MapleTransactionEvent controllerConditionTransaction()
 	return transaction;
 }
 
+TEST(ResearchSh4LuaApi, CurrentSh4TickFailsCleanlyBeforeSchedulerInitialization)
+{
+	LuaTestDirectory directory;
+	LuaRuntimeGuard runtime;
+	set_user_config_dir(directory.directory().u8string());
+	config::LuaFileName.set("init.lua");
+	const auto resultPath = directory.file("tick.txt");
+	std::ostringstream script;
+	script << "local ok, message = pcall(function() "
+			<< "return flycast.research.current_sh4_tick_decimal() end)\n"
+			<< "assert(not ok and message:match('scheduler is not initialized'))\n"
+			<< "assert(not pcall(function() "
+			<< "flycast.research.current_sh4_tick_decimal(1) end))\n"
+			<< "local output = assert(io.open([[" << luaPath(resultPath)
+			<< "]], 'wb'))\n"
+			<< "output:write('clean-error')\n"
+			<< "output:close()\n";
+	writeText(directory.file("init.lua"), script.str());
+	lua::init();
+
+	ASSERT_TRUE(std::filesystem::exists(resultPath));
+	EXPECT_EQ("clean-error", readText(resultPath));
+}
+
 TEST(ResearchSh4LuaApi, DeliversTypedDiscoveryTableAndReportsOverflow)
 {
 	LuaTestDirectory directory;

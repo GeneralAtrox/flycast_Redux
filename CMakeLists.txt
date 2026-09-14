@@ -411,6 +411,8 @@ if(NOT LIBRETRO)
 			core/research/sh4_observation_capture_runtime.h
 			core/research/sh4_observation_runtime.cpp
 			core/research/sh4_observation_runtime.h
+			core/research/sh4_pc_checkpoint_runtime.cpp
+			core/research/sh4_pc_checkpoint_runtime.h
 			core/research/sh4_observation_trace.cpp
 			core/research/sh4_profile.cpp
 			core/research/sh4_profile.h
@@ -2027,6 +2029,7 @@ if(BUILD_RESEARCH_TOOLS AND BUILD_TESTING AND NOT LIBRETRO)
 			tests/src/research/Sh4ObservationTest.cpp
 			tests/src/research/Sh4LuaSubscriptionsTest.cpp
 			tests/src/research/Sh4ObservationCaptureRuntimeTest.cpp
+			tests/src/research/Sh4PcCheckpointRuntimeTest.cpp
 			tests/src/research/Sh4EquivalenceTest.cpp
 			tests/src/research/Sh4ObservationTraceTest.cpp
 			tests/src/research/Sh4ProfileTest.cpp
@@ -2078,6 +2081,7 @@ if(BUILD_RESEARCH_TOOLS AND BUILD_TESTING AND NOT LIBRETRO)
 			core/research/sh4_observation_compare.cpp
 			core/research/sh4_observation_capture_runtime.cpp
 			core/research/sh4_observation_runtime.cpp
+			core/research/sh4_pc_checkpoint_runtime.cpp
 			core/research/sh4_observation_trace.cpp
 			core/research/sh4_profile.cpp
 			core/research/sh4_profile_artifact.cpp

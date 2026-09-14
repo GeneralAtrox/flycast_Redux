@@ -27,6 +27,7 @@ enum class AicaObservationType : std::uint8_t
 	KeyBatchComplete = 10,
 	CddaSector = 11,
 	SampleSuppressed = 12,
+	KeyBatchBegin = 13,
 };
 
 enum class AicaSampleSuppression : std::uint8_t
@@ -81,6 +82,9 @@ struct AicaObservation
 	std::array<std::uint8_t, 0x80> channelRegisters {};
 	std::uint64_t keyOnMask = 0;
 	std::uint64_t keyOffMask = 0;
+	// Number of AICA sample frames completed before this key transition/batch.
+	// This is the authoritative cut used to schedule the transition on replay.
+	std::uint64_t sampleCutOrdinal = 0;
 
 	std::uint64_t cddaGeneration = 0;
 	std::uint32_t cddaFad = 0;
@@ -101,8 +105,17 @@ struct AicaObservation
 	bool dspEnabled = false;
 	std::int32_t dspContributionLeft = 0;
 	std::int32_t dspContributionRight = 0;
+	std::array<std::int32_t, 16> dspInputs {};
+	std::array<std::int16_t, 16> dspEffectOutputs {};
 	std::int16_t finalLeft = 0;
 	std::int16_t finalRight = 0;
+};
+
+enum class AicaCheckpointPhase : std::uint32_t
+{
+	Unknown = 0,
+	PreKeyBatch = 1,
+	PostSample = 2,
 };
 
 struct AicaChannelCheckpoint
@@ -133,6 +146,8 @@ struct AicaChannelCheckpoint
 struct AicaCheckpoint
 {
 	std::uint64_t tick = 0;
+	std::uint64_t nextSampleOrdinal = 0;
+	AicaCheckpointPhase phase = AicaCheckpointPhase::Unknown;
 	std::uint64_t activeChannelMask = 0;
 	std::array<std::uint8_t, 0x8000> registers {};
 	std::vector<std::uint8_t> ram;
@@ -190,7 +205,8 @@ inline void observeAicaG2DmaTransfer(std::uint64_t, const std::uint8_t*,
 		std::size_t, std::uint64_t) noexcept {}
 inline void observeAicaG2DmaComplete(std::uint64_t) noexcept {}
 inline void observeAicaKeyTransition(bool, std::uint8_t, const std::uint8_t*,
-		std::uint64_t) noexcept {}
+		const std::uint8_t*, std::size_t, std::uint64_t) noexcept {}
+inline void observeAicaKeyBatchBegin(std::uint64_t) noexcept {}
 inline void observeAicaKeyBatchComplete(std::uint64_t, std::uint64_t,
 		std::uint64_t) noexcept {}
 inline std::uint64_t observeAicaCddaSector(std::uint32_t, std::uint32_t,
@@ -200,9 +216,11 @@ inline void observeAicaSampleSuppressed(AicaSampleSuppression,
 		std::uint64_t) noexcept {}
 inline void observeAicaSampleFrame(std::uint64_t, std::int32_t, std::int32_t,
 		std::int32_t, std::int32_t, std::int32_t, std::int32_t, bool,
-		std::int32_t, std::int32_t, std::int16_t, std::int16_t,
+		std::int32_t, std::int32_t, const std::int32_t*, const std::int16_t*,
+		std::int16_t, std::int16_t,
 		std::uint64_t, std::uint16_t, std::uint64_t) noexcept {}
 inline bool aicaObservationDmaActive() noexcept { return false; }
+inline std::uint64_t aicaObservationNextSampleOrdinal() noexcept { return 0; }
 inline void restoreAicaCddaGeneration(std::uint64_t) noexcept {}
 inline void resetAicaObservation(std::uint64_t) noexcept {}
 #else
@@ -228,7 +246,9 @@ void observeAicaG2DmaTransfer(std::uint64_t generation,
 		std::uint64_t tick) noexcept;
 void observeAicaG2DmaComplete(std::uint64_t tick) noexcept;
 void observeAicaKeyTransition(bool keyOn, std::uint8_t channel,
-		const std::uint8_t* channelRegisters, std::uint64_t tick) noexcept;
+		const std::uint8_t* channelRegisters, const std::uint8_t* aicaRam,
+		std::size_t aicaRamSize, std::uint64_t tick) noexcept;
+void observeAicaKeyBatchBegin(std::uint64_t tick) noexcept;
 void observeAicaKeyBatchComplete(std::uint64_t keyOnMask,
 		std::uint64_t keyOffMask, std::uint64_t tick) noexcept;
 std::uint64_t observeAicaCddaSector(std::uint32_t fad,
@@ -242,10 +262,12 @@ void observeAicaSampleFrame(std::uint64_t activeChannelMask,
 		std::int32_t cddaInputLeft, std::int32_t cddaInputRight,
 		std::int32_t cddaContributionLeft, std::int32_t cddaContributionRight,
 		bool dspEnabled, std::int32_t dspContributionLeft,
-		std::int32_t dspContributionRight, std::int16_t finalLeft,
+		std::int32_t dspContributionRight, const std::int32_t* dspInputs,
+		const std::int16_t* dspEffectOutputs, std::int16_t finalLeft,
 		std::int16_t finalRight, std::uint64_t cddaGeneration,
 		std::uint16_t cddaFrameIndex, std::uint64_t tick) noexcept;
 bool aicaObservationDmaActive() noexcept;
+std::uint64_t aicaObservationNextSampleOrdinal() noexcept;
 void restoreAicaCddaGeneration(std::uint64_t generation) noexcept;
 void resetAicaObservation(std::uint64_t tick) noexcept;
 #endif

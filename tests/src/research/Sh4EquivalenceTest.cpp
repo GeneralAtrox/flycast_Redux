@@ -316,6 +316,44 @@ TEST(ResearchSh4Equivalence, ProfileIdentitySelectsNormalDynarecWithoutMarkers)
 	EXPECT_THROW(research::loadIdentityManifest(identityPath), std::runtime_error);
 }
 
+TEST(ResearchSh4Equivalence, DiagnosticIdentityCannotBecomeEquivalenceEvidence)
+{
+	TemporaryDirectory directory;
+	const auto emulator = directory.file("flycast-fixture.exe");
+	const auto identityPath = directory.file("diagnostic-identity.json");
+	writeText(emulator, "diagnostic emulator executable bytes");
+	auto root = identity("dynarec", blob(emulator), std::string(64, '1'));
+	root["configuration"]["values"]["dynarec_observation"] = false;
+	root["configuration"]["values"]["dynarec_replay_diagnostic"] = true;
+	root["configuration"]["sha256"] =
+			digest(root["configuration"]["values"].dump());
+	writeText(identityPath, root.dump());
+	const auto diagnosticIdentity = research::loadIdentityManifest(identityPath);
+	EXPECT_NO_THROW(research::requireSh4DynarecReplayDiagnosticIdentityV2(
+			diagnosticIdentity));
+	EXPECT_THROW(research::requireSh4EquivalenceIdentityV2(diagnosticIdentity),
+			std::runtime_error);
+	EXPECT_THROW(research::requireSh4DynarecProfileIdentityV2(diagnosticIdentity),
+			std::runtime_error);
+
+	root["configuration"]["values"]["dynarec_observation"] = true;
+	root["configuration"]["sha256"] =
+			digest(root["configuration"]["values"].dump());
+	writeText(identityPath, root.dump());
+	const auto observedDiagnosticIdentity =
+			research::loadIdentityManifest(identityPath);
+	EXPECT_NO_THROW(research::requireSh4DynarecReplayDiagnosticIdentityV2(
+			observedDiagnosticIdentity));
+	EXPECT_THROW(research::requireSh4EquivalenceIdentityV2(
+			observedDiagnosticIdentity), std::runtime_error);
+
+	root["configuration"]["values"]["dynarec_profile"] = true;
+	root["configuration"]["sha256"] =
+			digest(root["configuration"]["values"].dump());
+	writeText(identityPath, root.dump());
+	EXPECT_THROW(research::loadIdentityManifest(identityPath), std::runtime_error);
+}
+
 TEST(ResearchSh4Equivalence, IssuesAndRevalidatesEquivalentTypedReport)
 {
 	TemporaryDirectory directory;

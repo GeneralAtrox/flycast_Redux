@@ -158,6 +158,31 @@ TEST(ResearchPvrTaObservation, RenderGenerationIsSealedAtStartRender)
 	EXPECT_EQ(sealedRender, observed.back().renderGeneration);
 }
 
+TEST(ResearchPvrTaObservation, FrozenRenderWindowRejectsLaterGenerations)
+{
+	std::vector<research::PvrTaObservation> observed;
+	PvrSubscription subscription(research::subscribePvrTaObservations(
+			research::PvrTaObservationFilter {},
+			[&observed](const research::PvrTaObservation& observation) {
+				observed.push_back(observation);
+			}));
+	const std::uint32_t selected[] {0x00100000};
+	const bool available[] {true};
+	const auto transcript = selectionTranscript();
+
+	research::observePvrTaListBoundary(false, 0x00100000, 0, 1);
+	const std::uint64_t included = research::observePvrTaStartRender(
+			selected, available, 1, &transcript, 2);
+	ASSERT_TRUE(research::pvrTaRenderGenerationObserved(included));
+	research::freezePvrTaObservedRenderGenerationWindow();
+
+	research::observePvrTaListBoundary(false, 0x00100000, 0, 3);
+	const std::uint64_t excluded = research::observePvrTaStartRender(
+			selected, available, 1, &transcript, 4);
+	EXPECT_TRUE(research::pvrTaRenderGenerationObserved(included));
+	EXPECT_FALSE(research::pvrTaRenderGenerationObserved(excluded));
+}
+
 TEST(ResearchPvrTaObservation,
 		StartRenderRecordsEveryPopResultAndConsumesOnlyAvailableContexts)
 {
@@ -222,6 +247,55 @@ TEST(ResearchPvrTaObservation,
 	EXPECT_EQ(0u, observed[0].selectedContexts[0].generation);
 }
 
+TEST(ResearchPvrTaObservation,
+		DelayedObservationSuppressesOrphanContextUntilObservedListInit)
+{
+	std::vector<research::PvrTaObservation> observed;
+	PvrSubscription subscription(research::subscribePvrTaObservations(
+			research::PvrTaObservationFilter {},
+			[&observed](const research::PvrTaObservation& observation) {
+				observed.push_back(observation);
+			}));
+	const std::uint64_t dropsBefore = research::pvrTaObservationDroppedCount();
+	std::array<std::uint8_t, 32> block {};
+
+	// Observation starts after this context's ListInit. Neither its continuation
+	// nor its blocks may be serialized with a zero context generation.
+	research::observePvrTaListBoundary(true, 0x00100000, 1, 1);
+	const research::PvrTaBlockProvenance orphan =
+			research::observePvrTaAcceptedBlock(
+			research::PvrTaInputSource::Channel2Dma,
+			0x0c001000, 0x10000000, block.data(), 0x00100000, 1,
+			7, 7, 0, 0, 2);
+
+	EXPECT_TRUE(observed.empty());
+	EXPECT_FALSE(orphan.available);
+	EXPECT_EQ(0x00100000u, orphan.contextAddress);
+	EXPECT_EQ(0u, orphan.contextGeneration);
+	EXPECT_EQ(research::PvrTaInputSource::Channel2Dma, orphan.source);
+	EXPECT_EQ(0x0c001000u, orphan.sourceAddress);
+	EXPECT_EQ(0x10000000u, orphan.taAddress);
+	EXPECT_EQ(dropsBefore, research::pvrTaObservationDroppedCount());
+
+	// The next observed ListInit establishes a complete causal context and the
+	// following block resumes normal evidence publication.
+	research::observePvrTaListBoundary(false, 0x00100000, 0, 3);
+	const research::PvrTaBlockProvenance complete =
+			research::observePvrTaAcceptedBlock(
+			research::PvrTaInputSource::Channel2Dma,
+			0x0c001020, 0x10000020, block.data(), 0x00100000, 0,
+			7, 7, 0, 0, 4);
+
+	ASSERT_EQ(2u, observed.size());
+	EXPECT_EQ(research::PvrTaObservationType::ListInit, observed[0].type);
+	EXPECT_EQ(research::PvrTaObservationType::AcceptedBlock, observed[1].type);
+	EXPECT_NE(0u, observed[0].contextGeneration);
+	EXPECT_EQ(observed[0].contextGeneration, observed[1].contextGeneration);
+	EXPECT_EQ(observed[0].emissionOrdinal + 1, observed[1].emissionOrdinal);
+	EXPECT_TRUE(complete.available);
+	EXPECT_EQ(observed[1].contextGeneration, complete.contextGeneration);
+}
+
 TEST(ResearchPvrTaObservation, FiltersSourcesAndIsolatesCallbackFailures)
 {
 	const std::uint64_t dropsBefore = research::pvrTaObservationDroppedCount();
@@ -267,11 +341,11 @@ TEST(ResearchPvrTaObservation, ResetInvalidatesRawAddressGeneration)
 	research::observePvrTaListBoundary(true, 0x00100000, 1, 3);
 	research::observePvrTaListBoundary(false, 0x00100000, 0, 4);
 
-	ASSERT_EQ(4u, observed.size());
+	ASSERT_EQ(3u, observed.size());
 	EXPECT_EQ(research::PvrTaObservationType::Reset, observed[1].type);
-	EXPECT_EQ(0u, observed[2].contextGeneration);
-	EXPECT_NE(0u, observed[3].contextGeneration);
-	EXPECT_NE(beforeReset, observed[3].contextGeneration);
+	EXPECT_EQ(research::PvrTaObservationType::ListInit, observed[2].type);
+	EXPECT_NE(0u, observed[2].contextGeneration);
+	EXPECT_NE(beforeReset, observed[2].contextGeneration);
 }
 
 TEST(ResearchPvrTaObservation, EvidenceSubscriptionOwnsBusExclusively)

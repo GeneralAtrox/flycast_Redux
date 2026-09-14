@@ -85,7 +85,8 @@ std::string digestHex(const std::string& text)
 
 json identityV2(const char *backend, bool observation,
 		const std::string& replayIdentityDigest, std::uint64_t dmaCheckpoint = 0,
-		std::uint64_t observationStartDma = 0)
+		std::uint64_t observationStartDma = 0,
+		bool dynarecReplayDiagnostic = false)
 {
 	json values {
 		{"cpu_backend", backend},
@@ -100,6 +101,8 @@ json identityV2(const char *backend, bool observation,
 		values["maple_dma_checkpoint"] = dmaCheckpoint;
 	if (observationStartDma != 0)
 		values["sh4_observation_start_dma"] = observationStartDma;
+	if (dynarecReplayDiagnostic)
+		values["dynarec_replay_diagnostic"] = true;
 	const json blob {
 		{"path", "descriptive-only.bin"},
 		{"size", 0},
@@ -435,6 +438,60 @@ TEST(ResearchSh4ObservationCaptureRuntime,
 	binding.identityDigest = identity.digest;
 	const std::string replayBytes = "typed replay fixture";
 	const std::string manifestSetBytes = "{\"fixture\":true}";
+	binding.replayDigest = research::sha256(replayBytes.data(), replayBytes.size());
+	binding.manifestSetDigest = research::sha256(manifestSetBytes.data(),
+			manifestSetBytes.size());
+	const auto summary = research::validateSh4ObservationTraceFile(outputPath,
+			binding, 1024 * 1024, 100);
+	EXPECT_EQ(2u, summary.eventCount);
+}
+
+TEST(ResearchSh4ObservationCaptureRuntime,
+		DiagnosticTraceDoesNotActivatePreciseTiming)
+{
+	RuntimeReset reset;
+	TemporaryDirectory directory;
+	const auto identityPath = directory.file("diagnostic-identity-v2.json");
+	const auto replayPath = directory.file("replay.fcmt");
+	const auto manifestSetPath = directory.file("manifest-set.json");
+	const auto outputPath = directory.file("diagnostic-dynarec.fcso");
+	const std::string replayBytes = "typed replay fixture";
+	const std::string manifestSetBytes = "{\"fixture\":true}";
+	writeText(identityPath, identityV2("dynarec", true,
+			std::string(64, '1'), 0, 0, true).dump());
+	writeText(replayPath, replayBytes);
+	writeText(manifestSetPath, manifestSetBytes);
+
+	config::ResearchIdentityManifestPath.set(identityPath.u8string());
+	config::ResearchMapleReplayPath.set(replayPath.u8string());
+	config::ResearchSh4ObservationManifestSetPath.set(
+			manifestSetPath.u8string());
+	config::ResearchSh4ObservationRecordPath.set(outputPath.u8string());
+	config::ResearchSh4ObservationMaxBytes.set(1024 * 1024);
+	config::ResearchMapleTraceMaxBytes.set(1024 * 1024);
+
+	research::configureSh4ObservationCaptureRuntime();
+	research::startSh4ObservationCaptureRuntime();
+	ASSERT_TRUE(research::sh4ObservationBusActive(
+			research::Sh4ObservationBackend::Dynarec));
+	EXPECT_FALSE(research::sh4ObservationPreciseTimingActive(
+			research::Sh4ObservationBackend::Dynarec));
+
+	Sh4Context context {};
+	context.pc = 0x8c020002;
+	research::sh4ObservationInstructionBegin(
+			research::Sh4ObservationBackend::Dynarec,
+			0x8c020000, 0x0009, 20, context);
+	research::sh4ObservationInstructionEnd(
+			research::Sh4ObservationBackend::Dynarec,
+			0x8c020000, 0x0009, 28, context);
+	research::stopSh4ObservationCaptureRuntime(true);
+
+	const research::IdentityManifest identity =
+			research::loadIdentityManifest(identityPath);
+	research::Sh4ObservationTraceBinding binding;
+	binding.backend = research::Sh4ObservationBackend::Dynarec;
+	binding.identityDigest = identity.digest;
 	binding.replayDigest = research::sha256(replayBytes.data(), replayBytes.size());
 	binding.manifestSetDigest = research::sha256(manifestSetBytes.data(),
 			manifestSetBytes.size());

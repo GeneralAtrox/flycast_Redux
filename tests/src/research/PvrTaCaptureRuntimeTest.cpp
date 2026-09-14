@@ -278,6 +278,7 @@ void emitCompleteDrawSlice(const CompleteSlice& slice)
 	primitive.primitiveKind = PvrPrimitiveKind::PolygonStrip;
 	primitive.ownerClass = PvrPrimitiveOwnerClass::Exact;
 	primitive.count = 3;
+	primitive.vertices.resize(primitive.count);
 	primitive.bounds.available = true;
 	primitive.bounds.maximumX = 10;
 	primitive.bounds.maximumY = 10;
@@ -410,6 +411,23 @@ research::PvrDrawArtifactBinding drawBindingFor(const FixturePaths& paths)
 
 } // namespace
 
+TEST(ResearchPvrTaCaptureRuntime, IdentityAllowsExplicitFullSessionStart)
+{
+	TemporaryDirectory directory;
+	const research::Sha256Digest replayIdentity = research::sha256(
+			"runtime-maple-identity", 22);
+	json identity = identityV2(replayIdentity);
+	json& values = identity["configuration"]["values"];
+	values["pvr_ta_start_dma"] = 0;
+	identity["configuration"]["sha256"] = digestHex(values.dump());
+	const auto path = directory.file("identity.json");
+	writeText(path, identity.dump());
+
+	const research::IdentityManifest parsed =
+			research::loadIdentityManifest(path);
+	EXPECT_EQ(0u, parsed.runtimeConfiguration.pvrTaStartDma);
+}
+
 TEST(ResearchPvrTaCaptureRuntime, FinalizesAuthenticatedCompleteSlice)
 {
 	RuntimeReset reset;
@@ -443,6 +461,46 @@ TEST(ResearchPvrTaCaptureRuntime, FinalizesSameRunPresentationArtifact)
 	EXPECT_TRUE(presentation.completeVerticalSlice);
 }
 
+TEST(ResearchPvrTaCaptureRuntime,
+		FreezesCompletedTaWindowWhilePresentationContinues)
+{
+	RuntimeReset reset;
+	TemporaryDirectory directory;
+	const FixturePaths paths = configureFixture(directory);
+	config::RendererType.set(RenderType::DirectX11);
+	config::ResearchPvrPresentationRecordPath.set(paths.presentation.u8string());
+	config::ResearchPvrPresentationMaxBytes.set(1024 * 1024);
+	config::ResearchPvrDrawRecordPath.set(paths.draw.u8string());
+	config::ResearchPvrDrawMaxBytes.set(1024 * 1024);
+	research::configurePvrTaCaptureRuntime();
+	research::startPvrTaCaptureRuntime();
+
+	const CompleteSlice included = emitCompleteSlice();
+	emitCompleteDrawSlice(included);
+	// A later producer generation is outside the manifest's exact one-render
+	// TA window. Its TA and draw events must both be excluded while completion
+	// for the already-included generation remains admissible.
+	const CompleteSlice excluded = emitCompleteSlice();
+	emitCompleteDrawSlice(excluded);
+	emitCompletePresentationSlice();
+	research::stopPvrTaCaptureRuntime(true);
+
+	const auto ta = research::validatePvrTaArtifactFile(paths.output,
+			bindingFor(paths), 1024 * 1024, 100);
+	EXPECT_EQ(5u, ta.eventCount);
+	EXPECT_EQ(1u, ta.typeCounts[4]);
+	const auto presentation = research::validatePvrPresentationArtifactFile(
+			paths.presentation, presentationBindingFor(paths), 1024 * 1024, 100);
+	EXPECT_TRUE(presentation.completeVerticalSlice);
+	const auto draw = research::validatePvrDrawArtifactFile(
+			paths.draw, drawBindingFor(paths), 1024 * 1024, 100);
+	EXPECT_TRUE(draw.completeVerticalSlice);
+	EXPECT_EQ(3u, draw.eventCount);
+	EXPECT_EQ(1u, draw.typeCounts[0]);
+	EXPECT_EQ(1u, draw.typeCounts[1]);
+	EXPECT_EQ(1u, draw.typeCounts[2]);
+}
+
 TEST(ResearchPvrTaCaptureRuntime, FinalizesDrawArtifactBoundToSameRun)
 {
 	RuntimeReset reset;
@@ -459,6 +517,44 @@ TEST(ResearchPvrTaCaptureRuntime, FinalizesDrawArtifactBoundToSameRun)
 	emitCompleteDrawSlice(slice);
 	emitCompletePresentationSlice();
 	research::stopPvrTaCaptureRuntime(true);
+	const auto draw = research::validatePvrDrawArtifactFile(paths.draw,
+			drawBindingFor(paths), 1024 * 1024, 100);
+	EXPECT_TRUE(draw.completeVerticalSlice);
+}
+
+TEST(ResearchPvrTaCaptureRuntime, IgnoresOnlyPreSubscriptionRenderCompletion)
+{
+	RuntimeReset reset;
+	TemporaryDirectory directory;
+	const FixturePaths paths = configureFixture(directory);
+	config::RendererType.set(RenderType::DirectX11);
+	config::ResearchPvrPresentationRecordPath.set(paths.presentation.u8string());
+	config::ResearchPvrPresentationMaxBytes.set(1024 * 1024);
+	config::ResearchPvrDrawRecordPath.set(paths.draw.u8string());
+	config::ResearchPvrDrawMaxBytes.set(1024 * 1024);
+	research::configurePvrTaCaptureRuntime();
+	research::startPvrTaCaptureRuntime();
+
+	// A delayed subscription can observe completion of the render that began
+	// before its authenticated Maple boundary. That frame is outside the slice.
+	research::observePvrTaRenderDone(90);
+	research::observePvrRenderCompleted(999,
+			research::PvrRenderKind::Screen, true, 91);
+	research::observePvrPresentation(research::PvrPresentationSource::Render,
+			999, true, 92);
+	research::observePvrDrawRenderCompleted(999, true, 93);
+
+	const CompleteSlice slice = emitCompleteSlice();
+	emitCompleteDrawSlice(slice);
+	emitCompletePresentationSlice();
+	research::stopPvrTaCaptureRuntime(true);
+
+	const auto ta = research::validatePvrTaArtifactFile(paths.output,
+			bindingFor(paths), 1024 * 1024, 100);
+	EXPECT_EQ(5u, ta.eventCount);
+	const auto presentation = research::validatePvrPresentationArtifactFile(
+			paths.presentation, presentationBindingFor(paths), 1024 * 1024, 100);
+	EXPECT_TRUE(presentation.completeVerticalSlice);
 	const auto draw = research::validatePvrDrawArtifactFile(paths.draw,
 			drawBindingFor(paths), 1024 * 1024, 100);
 	EXPECT_TRUE(draw.completeVerticalSlice);

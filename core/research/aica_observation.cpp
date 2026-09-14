@@ -350,20 +350,75 @@ void observeAicaG2DmaComplete(std::uint64_t tick) noexcept
 }
 
 void observeAicaKeyTransition(bool keyOn, std::uint8_t channel,
-		const std::uint8_t* channelRegisters, std::uint64_t tick) noexcept
+		const std::uint8_t* channelRegisters, const std::uint8_t* aicaRam,
+		std::size_t aicaRamSize, std::uint64_t tick) noexcept
+{
+	if (!aicaObservationBusActive())
+		return;
+	try
+	{
+		AicaObservation observation;
+		observation.type = keyOn ? AicaObservationType::KeyOn
+				: AicaObservationType::KeyOff;
+		observation.tick = tick;
+		observation.owner = currentOwner(currentWriter);
+		if (observation.owner.sh4.valid)
+			observation.tick = std::max(observation.tick, observation.owner.sh4.tick);
+		observation.channel = channel;
+		observation.sampleCutOrdinal = nextSampleOrdinal.load(std::memory_order_acquire);
+		std::copy(channelRegisters,
+				channelRegisters + observation.channelRegisters.size(),
+				observation.channelRegisters.begin());
+		if (keyOn)
+		{
+			if (aicaRam == nullptr || aicaRamSize == 0
+					|| (aicaRamSize & (aicaRamSize - 1)) != 0)
+			{
+				dropped();
+				return;
+			}
+			const auto& r = observation.channelRegisters;
+			const std::uint16_t word0 = std::uint16_t(r[0])
+					| (std::uint16_t(r[1]) << 8);
+			if (((word0 >> 10) & 1) == 0)
+			{
+				const std::uint32_t format = (word0 >> 7) & 3;
+				std::uint32_t address = (std::uint32_t(word0 & 0x7f) << 16)
+						| r[4] | (std::uint32_t(r[5]) << 8);
+				if (format == 0) address &= ~1u;
+				const std::uint32_t lsa = r[8] | (std::uint32_t(r[9]) << 8);
+				const std::uint32_t lea = r[12] | (std::uint32_t(r[13]) << 8);
+				const std::uint32_t samples = std::max(lsa, lea);
+				const std::uint64_t length = format == 0
+						? std::uint64_t(samples) * 2
+						: format == 1 ? samples : (std::uint64_t(samples) + 1) / 2;
+				if (length == 0 || length > aicaRamSize)
+				{
+					dropped();
+					return;
+				}
+				observation.bytes.resize(static_cast<std::size_t>(length));
+				for (std::size_t index = 0; index < observation.bytes.size(); ++index)
+					observation.bytes[index] = aicaRam[(std::uint64_t(address) + index)
+							& (aicaRamSize - 1)];
+			}
+		}
+		publish(std::move(observation));
+	}
+	catch (...) { dropped(); }
+}
+
+void observeAicaKeyBatchBegin(std::uint64_t tick) noexcept
 {
 	if (!aicaObservationBusActive())
 		return;
 	AicaObservation observation;
-	observation.type = keyOn ? AicaObservationType::KeyOn
-			: AicaObservationType::KeyOff;
+	observation.type = AicaObservationType::KeyBatchBegin;
 	observation.tick = tick;
 	observation.owner = currentOwner(currentWriter);
 	if (observation.owner.sh4.valid)
 		observation.tick = std::max(observation.tick, observation.owner.sh4.tick);
-	observation.channel = channel;
-	std::copy(channelRegisters, channelRegisters + observation.channelRegisters.size(),
-			observation.channelRegisters.begin());
+	observation.sampleCutOrdinal = nextSampleOrdinal.load(std::memory_order_acquire);
 	publish(std::move(observation));
 }
 
@@ -380,6 +435,7 @@ void observeAicaKeyBatchComplete(std::uint64_t keyOnMask,
 		observation.tick = std::max(observation.tick, observation.owner.sh4.tick);
 	observation.keyOnMask = keyOnMask;
 	observation.keyOffMask = keyOffMask;
+	observation.sampleCutOrdinal = nextSampleOrdinal.load(std::memory_order_acquire);
 	publish(std::move(observation));
 }
 
@@ -427,7 +483,8 @@ void observeAicaSampleFrame(std::uint64_t activeChannelMask,
 		std::int32_t cddaInputLeft, std::int32_t cddaInputRight,
 		std::int32_t cddaContributionLeft, std::int32_t cddaContributionRight,
 		bool dspEnabled, std::int32_t dspContributionLeft,
-		std::int32_t dspContributionRight, std::int16_t finalLeft,
+		std::int32_t dspContributionRight, const std::int32_t* dspInputs,
+		const std::int16_t* dspEffectOutputs, std::int16_t finalLeft,
 		std::int16_t finalRight, std::uint64_t cddaGeneration,
 		std::uint16_t cddaFrameIndex, std::uint64_t tick) noexcept
 {
@@ -449,11 +506,21 @@ void observeAicaSampleFrame(std::uint64_t activeChannelMask,
 	observation.dspEnabled = dspEnabled;
 	observation.dspContributionLeft = dspContributionLeft;
 	observation.dspContributionRight = dspContributionRight;
+	std::copy(dspInputs, dspInputs + observation.dspInputs.size(),
+			observation.dspInputs.begin());
+	std::copy(dspEffectOutputs,
+			dspEffectOutputs + observation.dspEffectOutputs.size(),
+			observation.dspEffectOutputs.begin());
 	observation.finalLeft = finalLeft;
 	observation.finalRight = finalRight;
 	observation.cddaGeneration = cddaGeneration;
 	observation.cddaFrameIndex = cddaFrameIndex;
 	publish(std::move(observation));
+}
+
+std::uint64_t aicaObservationNextSampleOrdinal() noexcept
+{
+	return nextSampleOrdinal.load(std::memory_order_acquire);
 }
 
 void resetAicaObservation(std::uint64_t tick) noexcept

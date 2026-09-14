@@ -39,6 +39,7 @@ public:
 	void abandon() noexcept;
 
 	bool instructionActive() const { return !instructionFrames.empty(); }
+	bool completionRequested() const;
 
 private:
 	struct InstructionFrame
@@ -65,6 +66,7 @@ private:
 	std::vector<InstructionFrame> instructionFrames;
 	std::vector<Invocation> invocations;
 	std::uint64_t nextInvocationId = 0;
+	bool stopHookCompleted = false;
 	bool exceptionUnwinding = false;
 	bool finished = false;
 };

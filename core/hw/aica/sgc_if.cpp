@@ -31,7 +31,9 @@
 #include "serialize.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <cstdint>
 
 #undef FAR
 
@@ -766,7 +768,8 @@ struct ChannelEx
 		(this->*StepStreamInitial)();
 		research::observeAicaKeyTransition(true,
 				static_cast<std::uint8_t>(ChannelNumber),
-				reinterpret_cast<const std::uint8_t*>(ccd), sh4_sched_now64());
+				reinterpret_cast<const std::uint8_t*>(ccd), &aica_ram[0], ARAM_SIZE,
+				sh4_sched_now64());
 		key_printf("[%d] KEY_ON %s @ %g Hz, loop %d - AEG AR %d DC1R %d DC2V %d DC2R %d RR %d - KRS %d OCT %d FNS %d - SA %x LSA %x LEA %x",
 				ChannelNumber, stream_names[ccd->PCMS], (44100.0 * update_rate) / 1024, ccd->LPCTL,
 				ccd->AR, ccd->D1R, ccd->DL << 5, ccd->D2R, ccd->RR,
@@ -781,7 +784,8 @@ struct ChannelEx
 			return false;
 		research::observeAicaKeyTransition(false,
 				static_cast<std::uint8_t>(ChannelNumber),
-				reinterpret_cast<const std::uint8_t*>(ccd), sh4_sched_now64());
+				reinterpret_cast<const std::uint8_t*>(ccd), &aica_ram[0], ARAM_SIZE,
+				sh4_sched_now64());
 		key_printf("[%d] KEY_OFF -> Release", ChannelNumber);
 		SetAegState(EG_Release);
 		SetFegState(EG_Release);
@@ -949,6 +953,7 @@ struct ChannelEx
 				UpdateSA();
 			if ((offset == 1 || size == 2) && ccd->KYONEX)
 			{
+				research::observeAicaKeyBatchBegin(sh4_sched_now64());
 				ccd->KYONEX=0;
 				std::uint64_t keyOnMask = 0;
 				std::uint64_t keyOffMask = 0;
@@ -1572,6 +1577,7 @@ research::AicaCheckpoint captureResearchCheckpoint()
 {
 	research::AicaCheckpoint checkpoint;
 	checkpoint.tick = sh4_sched_now64();
+	checkpoint.nextSampleOrdinal = research::aicaObservationNextSampleOrdinal();
 	std::copy(std::begin(aica_reg), std::end(aica_reg), checkpoint.registers.begin());
 	checkpoint.ram.resize(ARAM_SIZE);
 	for (std::size_t i = 0; i < checkpoint.ram.size(); ++i)
@@ -1641,6 +1647,9 @@ void AICA_Sample()
 	ChannelEx::StepAll(mixl,mixr);
 	const SampleType dryLeft = mixl;
 	const SampleType dryRight = mixr;
+	std::array<std::int32_t, 16> dspInputs {};
+	std::copy(std::begin(dsp::state.MIXS), std::end(dsp::state.MIXS),
+			dspInputs.begin());
 	
 	//OK , generated all Channels  , now DSP/ect + final mix ;p
 	//CDDA EXTS input
@@ -1669,12 +1678,16 @@ void AICA_Sample()
 
 	const SampleType beforeDspLeft = mixl;
 	const SampleType beforeDspRight = mixr;
+	std::array<std::int16_t, 16> dspEffectOutputs {};
 	if (config::DSPEnabled)
 	{
 		dsp::step();
 
 		for (int i = 0; i < 16; i++)
+		{
+			dspEffectOutputs[i] = *(s16*)&DSPData->EFREG[i];
 			VolumePan(*(s16*)&DSPData->EFREG[i], dsp_out_vol[i].EFSDL, dsp_out_vol[i].EFPAN, mixl, mixr);
+		}
 	}
 	const SampleType dspContributionLeft = mixl - beforeDspLeft;
 	const SampleType dspContributionRight = mixr - beforeDspRight;
@@ -1736,6 +1749,7 @@ void AICA_Sample()
 	research::observeAicaSampleFrame(activeChannelMask, dryLeft, dryRight,
 			EXTS0L, EXTS0R, cddaContributionLeft, cddaContributionRight,
 			config::DSPEnabled, dspContributionLeft, dspContributionRight,
+			dspInputs.data(), dspEffectOutputs.data(),
 			static_cast<s16>(mixl), static_cast<s16>(mixr), cdda_generation,
 			cddaFrameIndex, sh4_sched_now64());
 	WriteSample(mixr, mixl);

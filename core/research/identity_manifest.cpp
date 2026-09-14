@@ -280,6 +280,8 @@ ValidatedIdentity validateIdentityJson(const json& root)
 			"firmware.flash_initial", firmwareMode == "real");
 	if (firmwareMode == "real")
 	{
+		if (firmwareIdentity.initialFlash.size != DreamcastFlashBytes)
+			invalid("real firmware requires a 128 KiB initial flash");
 		if (!firmware.contains("bios") || firmware.at("bios").is_null())
 			invalid("real firmware requires firmware.bios");
 		firmwareIdentity.bios = parseBlobIdentity(firmware.at("bios"),
@@ -390,6 +392,18 @@ ValidatedIdentity validateIdentityJson(const json& root)
 						|| runtimeConfiguration.dynarecObservation))
 			invalid("dynarec_profile requires normal dynarec execution without instruction markers");
 	}
+	if (values.contains("dynarec_replay_diagnostic"))
+	{
+		if (!values.at("dynarec_replay_diagnostic").is_boolean())
+			invalid("configuration.values.dynarec_replay_diagnostic must be boolean");
+		runtimeConfiguration.dynarecReplayDiagnostic =
+				values.at("dynarec_replay_diagnostic").get<bool>();
+		if (runtimeConfiguration.dynarecReplayDiagnostic
+				&& (schemaVersion != 2
+						|| runtimeConfiguration.cpuBackend != "dynarec"
+						|| runtimeConfiguration.dynarecProfile))
+			invalid("dynarec_replay_diagnostic requires identity-v2 normal dynarec replay without profiling");
+	}
 	if (schemaVersion == 3 && runtimeConfiguration.cpuBackend == "dynarec"
 			&& !runtimeConfiguration.dynarecProfile)
 		invalid("identity v3 dynarec recording requires dynarec_profile");
@@ -424,15 +438,61 @@ ValidatedIdentity validateIdentityJson(const json& root)
 	{
 		invalid("configuration.values.savestate_slot requires initial_state");
 	}
+	if (values.contains("sh4_pc_checkpoint"))
+	{
+		if (schemaVersion != 2)
+			invalid("only identity v2 permits configuration.values.sh4_pc_checkpoint");
+		const json& checkpoint = values.at("sh4_pc_checkpoint");
+		if (!checkpoint.is_number_unsigned()
+				|| checkpoint.get<std::uint64_t>() == 0
+				|| checkpoint.get<std::uint64_t>()
+						> std::numeric_limits<std::uint32_t>::max()
+				|| (checkpoint.get<std::uint64_t>() & 1u) != 0)
+			invalid("configuration.values.sh4_pc_checkpoint must be an aligned non-zero 32-bit guest PC");
+		runtimeConfiguration.sh4PcCheckpoint = static_cast<std::uint32_t>(
+				checkpoint.get<std::uint64_t>());
+	}
+	const bool hasCheckpointGateAddress =
+			values.contains("sh4_pc_checkpoint_u32_address");
+	const bool hasCheckpointGateValue =
+			values.contains("sh4_pc_checkpoint_u32_value");
+	if (hasCheckpointGateAddress || hasCheckpointGateValue)
+	{
+		if (schemaVersion != 2 || runtimeConfiguration.sh4PcCheckpoint == 0)
+			invalid("SH-4 PC checkpoint U32 gate requires an identity-v2 SH-4 PC checkpoint");
+		if (!hasCheckpointGateAddress || !hasCheckpointGateValue)
+			invalid("SH-4 PC checkpoint U32 gate requires both address and value");
+		const json& address = values.at("sh4_pc_checkpoint_u32_address");
+		const json& value = values.at("sh4_pc_checkpoint_u32_value");
+		if (!address.is_number_unsigned()
+				|| address.get<std::uint64_t>() < 0x8c000000u
+				|| address.get<std::uint64_t>() > 0x8cfffffcu
+				|| (address.get<std::uint64_t>() & 3u) != 0)
+			invalid("configuration.values.sh4_pc_checkpoint_u32_address must be aligned Dreamcast system RAM");
+		if (!value.is_number_unsigned()
+				|| value.get<std::uint64_t>()
+						> std::numeric_limits<std::uint32_t>::max())
+			invalid("configuration.values.sh4_pc_checkpoint_u32_value is outside [0, 4294967295]");
+		runtimeConfiguration.sh4PcCheckpointU32Address =
+				static_cast<std::uint32_t>(address.get<std::uint64_t>());
+		runtimeConfiguration.sh4PcCheckpointU32Value =
+				static_cast<std::uint32_t>(value.get<std::uint64_t>());
+	}
 	if (values.contains("maple_dma_checkpoint"))
 	{
 		const json& checkpoint = values.at("maple_dma_checkpoint");
 		if (!checkpoint.is_number_unsigned()
-				|| checkpoint.get<std::uint64_t>() == 0
 				|| checkpoint.get<std::uint64_t>() > MaximumMapleDmaCheckpoint)
-			invalid("configuration.values.maple_dma_checkpoint is outside [1, 10000000]");
+			invalid("configuration.values.maple_dma_checkpoint is outside [0, 10000000]");
+		if (checkpoint.get<std::uint64_t>() == 0
+				&& (schemaVersion != 2
+						|| runtimeConfiguration.sh4PcCheckpoint == 0))
+			invalid("configuration.values.maple_dma_checkpoint zero requires an identity-v2 SH-4 PC checkpoint");
 		runtimeConfiguration.mapleDmaCheckpoint = checkpoint.get<std::uint64_t>();
 	}
+	if (runtimeConfiguration.sh4PcCheckpoint != 0
+			&& runtimeConfiguration.mapleDmaCheckpoint != 0)
+		invalid("SH-4 PC and Maple DMA checkpoints are mutually exclusive");
 	if (schemaVersion == 3 && runtimeConfiguration.mapleDmaCheckpoint == 0)
 		invalid("identity v3 requires configuration.values.maple_dma_checkpoint");
 	if (schemaVersion == 3 && (values.contains("sh4_observation_start_dma")
@@ -454,9 +514,8 @@ ValidatedIdentity validateIdentityJson(const json& root)
 	{
 		const json& startDma = values.at("pvr_ta_start_dma");
 		if (!startDma.is_number_unsigned()
-				|| startDma.get<std::uint64_t>() == 0
 				|| startDma.get<std::uint64_t>() > MaximumMapleDmaCheckpoint)
-			invalid("configuration.values.pvr_ta_start_dma is outside [1, 10000000]");
+			invalid("configuration.values.pvr_ta_start_dma is outside [0, 10000000]");
 		runtimeConfiguration.pvrTaStartDma = startDma.get<std::uint64_t>();
 	}
 	if (values.contains("pvr_draw_configuration"))
@@ -884,6 +943,8 @@ void requireSh4EquivalenceIdentityV2(const IdentityManifest& manifest)
 	if (manifest.runtimeConfiguration.dynarecObservation
 			!= (manifest.runtimeConfiguration.cpuBackend == "dynarec"))
 		invalid("SH-4 equivalence identity dynarec observation mismatch");
+	if (manifest.runtimeConfiguration.dynarecReplayDiagnostic)
+		invalid("SH-4 equivalence does not accept diagnostic-only dynarec replay identities");
 }
 
 void requireSh4DynarecProfileIdentityV2(const IdentityManifest& manifest)
@@ -894,8 +955,22 @@ void requireSh4DynarecProfileIdentityV2(const IdentityManifest& manifest)
 		invalid("SH-4 dynarec profile identity is missing Maple replay provenance");
 	if (manifest.runtimeConfiguration.cpuBackend != "dynarec"
 			|| manifest.runtimeConfiguration.dynarecObservation
-			|| !manifest.runtimeConfiguration.dynarecProfile)
+			|| !manifest.runtimeConfiguration.dynarecProfile
+			|| manifest.runtimeConfiguration.dynarecReplayDiagnostic)
 		invalid("SH-4 dynarec profile identity does not select normal profiled dynarec execution");
+}
+
+void requireSh4DynarecReplayDiagnosticIdentityV2(
+		const IdentityManifest& manifest)
+{
+	if (manifest.schemaVersion != 2)
+		invalid("SH-4 dynarec replay diagnostic requires identity schema_version 2");
+	if (!manifest.hasMapleReplayIdentityDigest)
+		invalid("SH-4 dynarec replay diagnostic identity is missing Maple replay provenance");
+	if (manifest.runtimeConfiguration.cpuBackend != "dynarec"
+			|| manifest.runtimeConfiguration.dynarecProfile
+			|| !manifest.runtimeConfiguration.dynarecReplayDiagnostic)
+		invalid("SH-4 dynarec replay diagnostic identity does not select normal dynarec execution");
 }
 
 void requireSh4DynarecProfileRecordIdentityV3(const IdentityManifest& manifest)

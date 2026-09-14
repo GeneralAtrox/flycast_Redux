@@ -101,12 +101,16 @@ struct IdentityRuntimeConfiguration
 	std::string cpuBackend;
 	bool dynarecObservation = false;
 	bool dynarecProfile = false;
+	bool dynarecReplayDiagnostic = false;
 	bool threadedRendering = true;
 	bool autoLoadState = true;
 	bool autoSaveState = true;
 	bool ggpo = true;
 	std::uint32_t savestateSlot = 0;
 	std::uint64_t mapleDmaCheckpoint = 0;
+	std::uint32_t sh4PcCheckpoint = 0;
+	std::uint32_t sh4PcCheckpointU32Address = 0;
+	std::uint32_t sh4PcCheckpointU32Value = 0;
 	std::uint64_t sh4ObservationStartDma = 0;
 	std::uint64_t pvrTaStartDma = 0;
 	std::uint32_t dreamcastRtcSeed = 0;
@@ -148,6 +152,8 @@ void requireCaptureV1Identity(const IdentityManifest& manifest);
 void requireMapleRecordIdentityV3(const IdentityManifest& manifest);
 void requireSh4EquivalenceIdentityV2(const IdentityManifest& manifest);
 void requireSh4DynarecProfileIdentityV2(const IdentityManifest& manifest);
+void requireSh4DynarecReplayDiagnosticIdentityV2(
+		const IdentityManifest& manifest);
 void requireSh4DynarecProfileRecordIdentityV3(const IdentityManifest& manifest);
 Sha256Digest pvrDrawConfigurationDigest(const PvrDrawConfiguration& configuration);
 Sha256Digest aicaConfigurationDigest(const AicaConfiguration& configuration);

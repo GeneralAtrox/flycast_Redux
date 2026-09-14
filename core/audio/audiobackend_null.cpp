@@ -1,6 +1,7 @@
 #include "audiostream.h"
 #include "oslib/i18n.h"
 #include <chrono>
+#include <cstdlib>
 #include <thread>
 
 class NullAudioBackend : public AudioBackend
@@ -19,7 +20,10 @@ public:
 
 	u32 push(const void* frame, u32 samples, bool wait) override
 	{
-		if (wait && last_time.time_since_epoch() != the_clock::duration::zero())
+		const bool researchUnthrottled =
+				std::getenv("FLYCAST_RESEARCH_UNTHROTTLED_NULL_AUDIO") != nullptr;
+		if (wait && !researchUnthrottled
+				&& last_time.time_since_epoch() != the_clock::duration::zero())
 		{
 			auto fduration = std::chrono::nanoseconds(1'000'000'000LL * samples / 44100);
 			auto duration = fduration - (the_clock::now() - last_time);

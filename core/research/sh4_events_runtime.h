@@ -3,6 +3,7 @@
 #include "research/sh4_events_artifact.h"
 
 #include <cstdint>
+#include <functional>
 
 struct Sh4Context;
 
@@ -12,7 +13,8 @@ namespace research
 #ifdef LIBRETRO
 
 inline void configureSh4EventsRuntime() {}
-inline void startSh4EventsRuntime() {}
+inline void startSh4EventsRuntime(std::function<void()> = {}) {}
+inline void sh4EventsInitialStateLoaded() {}
 inline void stopSh4EventsRuntime(bool) {}
 inline void abortSh4EventsRuntime() noexcept {}
 inline void sh4EventsInstructionBegin(std::uint32_t, std::uint16_t, std::uint64_t,
@@ -29,7 +31,8 @@ inline bool sh4EventsRuntimeActive() { return false; }
 #else
 
 void configureSh4EventsRuntime();
-void startSh4EventsRuntime();
+void startSh4EventsRuntime(std::function<void()> completion = {});
+void sh4EventsInitialStateLoaded();
 void stopSh4EventsRuntime(bool clean);
 void abortSh4EventsRuntime() noexcept;
 void sh4EventsInstructionBegin(std::uint32_t pc, std::uint16_t opcode,

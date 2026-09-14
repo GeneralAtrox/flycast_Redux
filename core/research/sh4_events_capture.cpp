@@ -1,5 +1,6 @@
 #include "research/sh4_events_capture.h"
 
+#include <algorithm>
 #include <limits>
 #include <stdexcept>
 #include <utility>
@@ -31,6 +32,14 @@ bool overlaps(std::uint32_t firstAddress, std::uint32_t firstLength,
 	const std::uint64_t firstEnd = static_cast<std::uint64_t>(firstAddress) + firstLength;
 	const std::uint64_t secondEnd = static_cast<std::uint64_t>(secondAddress) + secondLength;
 	return firstAddress < secondEnd && secondAddress < firstEnd;
+}
+
+bool decodeTailJump(const Sh4InstructionState& state, std::uint32_t& targetPc)
+{
+	if ((state.opcode & 0xf0ffu) != 0x402bu)
+		return false;
+	targetPc = state.registers.r[(state.opcode >> 8) & 0x0fu];
+	return true;
 }
 
 } // namespace
@@ -93,13 +102,18 @@ void Sh4EventsCapture::beginInstruction(const Sh4InstructionState& state,
 	frame.tick = state.tick;
 	instructionFrames.push_back(frame);
 
-	Sh4CallKind kind = Sh4CallKind::Bsr;
-	std::uint32_t targetPc = 0;
-	if (!decodeSh4Call(state, kind, targetPc))
-		return;
 	for (std::size_t hookIndex = 0; hookIndex < manifest.hooks.size(); ++hookIndex)
 	{
 		const Sh4HookDefinition& hook = manifest.hooks[hookIndex];
+		Sh4CallKind kind = Sh4CallKind::Bsr;
+		std::uint32_t targetPc = 0;
+		const bool decoded = hook.entryTransfer == Sh4HookEntryTransfer::Call
+				? decodeSh4Call(state, kind, targetPc)
+				: decodeTailJump(state, targetPc);
+		if (hook.entryTransfer == Sh4HookEntryTransfer::TailJump)
+			kind = Sh4CallKind::Jmp;
+		if (!decoded)
+			continue;
 		if (targetPc != hook.entryPc)
 			continue;
 		if (invocations.size() >= manifest.maximumOpenInvocations)
@@ -112,7 +126,8 @@ void Sh4EventsCapture::beginInstruction(const Sh4InstructionState& state,
 		event.opcode = state.opcode;
 		event.callPc = state.pc;
 		event.targetPc = targetPc;
-		event.returnPc = state.pc + 4u;
+		event.returnPc = kind == Sh4CallKind::Jmp
+				? state.registers.pr : state.pc + 4u;
 		event.delaySlotPc = state.pc + 2u;
 		event.delaySlotDepth = static_cast<std::uint32_t>(instructionFrames.size() - 1);
 		event.registers = state.registers;
@@ -156,6 +171,9 @@ void Sh4EventsCapture::endInstruction(const Sh4InstructionState& state,
 			event.snapshots = collectSnapshots(hook, Sh4SnapshotPhase::Return,
 					state.registers, reader);
 			writer->writeReturn(event);
+			if (manifest.stopAfterHookIndex.has_value()
+					&& invocation.hookIndex == *manifest.stopAfterHookIndex)
+				stopHookCompleted = true;
 			invocations.pop_back();
 		}
 	}
@@ -186,6 +204,19 @@ void Sh4EventsCapture::observeMemoryAccess(std::uint32_t address, std::uint8_t w
 				|| !overlaps(address, width, range.address, range.length))
 			continue;
 		const InstructionFrame& frame = instructionFrames.back();
+		if (range.scopeHookIndex.has_value())
+		{
+			const std::uint32_t hookIndex = *range.scopeHookIndex;
+			const Sh4HookDefinition& hook = manifest.hooks.at(hookIndex);
+			if (frame.pc < hook.entryPc || frame.pc >= hook.endPcExclusive)
+				continue;
+			const bool invocationOpen = std::any_of(invocations.begin(), invocations.end(),
+					[hookIndex](const Invocation& invocation) {
+						return invocation.hookIndex == hookIndex;
+					});
+			if (!invocationOpen)
+				continue;
+		}
 		Sh4WatchEvent event;
 		event.tick = frame.tick;
 		event.watchIndex = static_cast<std::uint32_t>(index);
@@ -248,6 +279,11 @@ Sh4EventsArtifactSummary Sh4EventsCapture::finish()
 	const Sh4EventsArtifactSummary& observed = writer->getSummary();
 	if (observed.callCount < manifest.minimumCallEvents)
 		throw std::logic_error("SH-4 call-event minimum was not reached");
+	if (manifest.stopAfterCompletedCalls != 0
+			&& observed.callCount != manifest.stopAfterCompletedCalls)
+		throw std::logic_error("SH-4 completed-call boundary was not reached exactly");
+	if (manifest.stopAfterHookIndex.has_value() && !stopHookCompleted)
+		throw std::logic_error("SH-4 stop hook boundary was not reached");
 	if (observed.watchReadCount + observed.watchWriteCount
 			< manifest.minimumWatchEvents)
 		throw std::logic_error("SH-4 watch-event minimum was not reached");
@@ -265,6 +301,19 @@ void Sh4EventsCapture::abandon() noexcept
 	invocations.clear();
 	if (writer != nullptr)
 		writer->abandon();
+}
+
+bool Sh4EventsCapture::completionRequested() const
+{
+	if (finished || !invocations.empty())
+		return false;
+	if (manifest.stopAfterHookIndex.has_value())
+		return stopHookCompleted;
+	if (manifest.stopAfterCompletedCalls == 0)
+		return false;
+	const Sh4EventsArtifactSummary& summary = writer->getSummary();
+	return summary.callCount == summary.returnCount
+			&& summary.returnCount >= manifest.stopAfterCompletedCalls;
 }
 
 } // namespace research

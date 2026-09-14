@@ -16,6 +16,7 @@
 #include <memory>
 #include <optional>
 #include <thread>
+#include <vector>
 
 namespace research
 {
@@ -27,12 +28,39 @@ namespace research
 class Sh4LuaSubscriptionQueue
 {
 public:
+	struct GuestU32Snapshot
+	{
+		std::uint32_t address = 0;
+		std::uint32_t value = 0;
+		bool available = false;
+	};
+	// Discovery-only envelope. The canonical TA observation remains unchanged;
+	// these guest reads occur synchronously when the TA accepts a block, before
+	// the observation is copied into the asynchronous Lua delivery queue.
+	struct PvrTaLuaObservation
+	{
+		PvrTaObservation observation;
+		std::uint64_t guestSnapshotTick = 0;
+		std::vector<GuestU32Snapshot> guestU32Snapshot;
+	};
+	// Discovery-only envelope for synchronous guest words sampled at a PVR
+	// register or VRAM write. The canonical presentation observation is unchanged.
+	struct PvrPresentationLuaObservation
+	{
+		PvrPresentationObservation observation;
+		std::uint64_t guestSnapshotTick = 0;
+		std::vector<GuestU32Snapshot> guestU32Snapshot;
+		std::uint32_t guestR15 = 0;
+		bool guestR15Available = false;
+		std::vector<GuestU32Snapshot> guestR15U32Snapshot;
+	};
 	using Token = std::uint64_t;
 	using Callback = std::function<void(Token, const Sh4Observation&)>;
 	using MapleCallback = std::function<void(Token, const MapleObservation&)>;
-	using PvrTaCallback = std::function<void(Token, const PvrTaObservation&)>;
+	using PvrTaCallback =
+			std::function<void(Token, const PvrTaLuaObservation&)>;
 	using PvrPresentationCallback =
-			std::function<void(Token, const PvrPresentationObservation&)>;
+			std::function<void(Token, const PvrPresentationLuaObservation&)>;
 	using PvrDrawCallback = std::function<void(Token, const PvrDrawObservation&)>;
 	using GdromCallback = std::function<void(Token, const GdromObservation&)>;
 	using CddaCallback = std::function<void(Token, const CddaObservation&)>;
@@ -45,12 +73,21 @@ public:
 		bool hasAddressRange = false;
 		std::uint32_t addressStart = 0;
 		std::uint64_t addressEndExclusive = 0;
+		bool framebufferDigestOnly = false;
+		std::vector<std::uint32_t> guestU32Addresses;
+		std::vector<std::uint32_t> guestR15U32Offsets;
+	};
+	struct PvrTaFilter
+	{
+		PvrTaObservationFilter observation;
+		std::vector<std::uint32_t> guestU32Addresses;
 	};
 	struct PvrDrawFilter
 	{
 		std::uint32_t typeMask = 0x0f;
 		bool hasRenderGeneration = false;
 		std::uint64_t renderGeneration = 0;
+		bool sampledTextureDigestOnly = false;
 	};
 	struct GdromFilter
 	{
@@ -87,7 +124,12 @@ public:
 	static constexpr std::size_t MaximumCapacity = 65536;
 	static constexpr std::size_t MaximumSubscriptions = 64;
 	static constexpr std::size_t MaximumTotalQueued = 65536;
-	static constexpr std::size_t DefaultDrainLimit = 1024;
+	static constexpr std::size_t MaximumGuestU32Snapshot = 16;
+	static constexpr std::size_t MaximumGuestR15U32Snapshot = 256;
+	// A full-rate AICA sample subscription produces 44,100 observations per
+	// second.  The prior 1,024-event host-overlay drain could not keep pace on
+	// ordinary displays and caused otherwise bounded audio probes to drop data.
+	static constexpr std::size_t DefaultDrainLimit = 8192;
 
 	struct Stats
 	{
@@ -112,7 +154,7 @@ public:
 	Token subscribe(const MapleObservationFilter& filter, MapleCallback callback,
 			std::size_t capacity = DefaultCapacity,
 			ErrorCallback errorCallback = {});
-	Token subscribe(const PvrTaObservationFilter& filter, PvrTaCallback callback,
+	Token subscribe(const PvrTaFilter& filter, PvrTaCallback callback,
 			std::size_t capacity = DefaultCapacity,
 			ErrorCallback errorCallback = {});
 	Token subscribe(const PvrPresentationFilter& filter,

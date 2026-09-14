@@ -164,6 +164,11 @@ inline bool pvrTaObservationBusActive() noexcept { return false; }
 inline bool pvrTaEvidenceSubscriptionActive() noexcept { return false; }
 inline std::size_t pvrTaObservationSubscriberCount() noexcept { return 0; }
 inline std::uint64_t pvrTaObservationDroppedCount() noexcept { return 0; }
+inline bool pvrTaRenderGenerationObserved(std::uint64_t renderGeneration) noexcept
+{
+	return renderGeneration != 0;
+}
+inline void freezePvrTaObservedRenderGenerationWindow() noexcept {}
 inline void beginPvrTaProvenanceSession() noexcept {}
 inline void observePvrTaListBoundary(bool, std::uint32_t, std::uint32_t,
 		std::uint64_t) noexcept {}
@@ -188,6 +193,8 @@ bool pvrTaObservationBusActive() noexcept;
 bool pvrTaEvidenceSubscriptionActive() noexcept;
 std::size_t pvrTaObservationSubscriberCount() noexcept;
 std::uint64_t pvrTaObservationDroppedCount() noexcept;
+bool pvrTaRenderGenerationObserved(std::uint64_t renderGeneration) noexcept;
+void freezePvrTaObservedRenderGenerationWindow() noexcept;
 void beginPvrTaProvenanceSession() noexcept;
 
 void observePvrTaListBoundary(bool continuation, std::uint32_t contextAddress,

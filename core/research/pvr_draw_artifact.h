@@ -12,7 +12,7 @@
 namespace research
 {
 
-constexpr std::uint32_t PvrDrawArtifactSchemaVersion = 1;
+constexpr std::uint32_t PvrDrawArtifactSchemaVersion = 3;
 constexpr std::uint32_t PvrDrawArtifactHeaderSize = 320;
 constexpr std::uint32_t PvrDrawArtifactEndianSentinel = 0x01020304;
 constexpr std::uint64_t DefaultMaximumPvrDrawArtifactBytes =
@@ -20,6 +20,8 @@ constexpr std::uint64_t DefaultMaximumPvrDrawArtifactBytes =
 constexpr std::uint64_t DefaultMaximumPvrDrawArtifactEvents = 10'000'000;
 constexpr std::size_t MaximumPvrDrawBlocksPerPrimitive = 65'536;
 constexpr std::size_t MaximumPvrDrawPrimitiveRefs = 65'536;
+constexpr std::size_t MaximumPvrDrawVerticesPerPrimitive = 65'536;
+constexpr std::size_t MaximumPvrDrawTextureBytes = 8u * 1024u * 1024u;
 
 struct PvrDrawArtifactBinding
 {
@@ -33,6 +35,7 @@ struct PvrDrawArtifactBinding
 
 struct PvrDrawArtifactSummary
 {
+	std::uint32_t schemaVersion = PvrDrawArtifactSchemaVersion;
 	PvrDrawArtifactBinding binding;
 	Sha256Digest payloadDigest {};
 	std::uint64_t eventCount = 0;

@@ -20,6 +20,17 @@
 #include <string>
 #include <vector>
 
+#if !defined(RESEARCH_FORMAT_ONLY) \
+		&& !defined(FLYCAST_RESEARCH_STANDALONE_TESTS)
+namespace research_test
+{
+void setInitialFlashData(const std::vector<std::uint8_t>& bytes)
+{
+	nvmem::setInitialFlashDataForTesting(bytes.data(), bytes.size());
+}
+}
+#endif
+
 namespace
 {
 
@@ -129,6 +140,32 @@ std::filesystem::path writeIdentity(const TemporaryDirectory& directory,
 	track["offset"] = 0;
 	root["media"]["tracks"] = json::array({track});
 	const std::filesystem::path path = directory.file(name);
+	writeText(path, root.dump(2));
+	return path;
+}
+
+std::filesystem::path writeObservedDynarecDiagnosticIdentity(
+		const TemporaryDirectory& directory,
+		const std::filesystem::path& recordIdentityPath)
+{
+	const research::IdentityManifest recordIdentity =
+			research::loadIdentityManifest(recordIdentityPath);
+	json root = json::parse(std::ifstream(recordIdentityPath));
+	root["schema_version"] = 2;
+	json& values = root["configuration"]["values"];
+	values["cpu_backend"] = "dynarec";
+	values["dynarec_observation"] = true;
+	values["dynarec_replay_diagnostic"] = true;
+	values["dreamcast_rtc_seed"] = 0;
+	const std::string canonicalValues = values.dump();
+	root["configuration"]["sha256"] = research::sha256ToHex(
+			research::sha256(canonicalValues.data(), canonicalValues.size()));
+	root["equivalence"] = {
+		{"maple_replay_identity_sha256",
+			research::sha256ToHex(recordIdentity.digest)},
+	};
+	const std::filesystem::path path =
+			directory.file("observed-dynarec-diagnostic-identity.json");
 	writeText(path, root.dump(2));
 	return path;
 }
@@ -255,6 +292,55 @@ TEST(ResearchIdentity, ValidatesSchemaAndConfigurationDigest)
 	EXPECT_THROW(research::loadIdentityManifest(invalidPath), std::runtime_error);
 }
 
+TEST(ResearchIdentity, BindsMutuallyExclusiveSh4PcTerminalForV2Replay)
+{
+	TemporaryDirectory directory;
+	const research::IdentityManifest base = research::loadIdentityManifest(
+			writeIdentity(directory));
+	json root = json::parse(std::string(base.bytes.begin(), base.bytes.end()));
+	root["schema_version"] = 2;
+	root["equivalence"] = {
+		{"maple_replay_identity_sha256", zeroDigest()},
+	};
+	json& values = root["configuration"]["values"];
+	values["dynarec_observation"] = false;
+	values["dreamcast_rtc_seed"] = 0;
+
+	auto writeCandidate = [&](const char *name) {
+		const std::string canonical = values.dump();
+		root["configuration"]["sha256"] = research::sha256ToHex(
+				research::sha256(canonical.data(), canonical.size()));
+		const std::filesystem::path path = directory.file(name);
+		writeText(path, root.dump(2));
+		return path;
+	};
+
+	const auto legacyPath = writeCandidate("identity-v2-legacy.json");
+	const auto legacy = research::loadIdentityManifest(legacyPath);
+	EXPECT_EQ(0u, legacy.runtimeConfiguration.mapleDmaCheckpoint);
+	EXPECT_EQ(0u, legacy.runtimeConfiguration.sh4PcCheckpoint);
+
+	values["maple_dma_checkpoint"] = 0;
+	values["sh4_pc_checkpoint"] = 0x8c097a7e;
+	const auto pcPath = writeCandidate("identity-v2-pc.json");
+	const auto pc = research::loadIdentityManifest(pcPath);
+	EXPECT_EQ(0u, pc.runtimeConfiguration.mapleDmaCheckpoint);
+	EXPECT_EQ(0x8c097a7eu, pc.runtimeConfiguration.sh4PcCheckpoint);
+
+	values.erase("sh4_pc_checkpoint");
+	EXPECT_THROW(research::loadIdentityManifest(
+			writeCandidate("identity-v2-zero-maple-only.json")), std::runtime_error);
+
+	values["sh4_pc_checkpoint"] = 0x8c097a7f;
+	EXPECT_THROW(research::loadIdentityManifest(
+			writeCandidate("identity-v2-odd-pc.json")), std::runtime_error);
+
+	values["sh4_pc_checkpoint"] = 0x8c097a7e;
+	values["maple_dma_checkpoint"] = 1;
+	EXPECT_THROW(research::loadIdentityManifest(
+			writeCandidate("identity-v2-two-terminals.json")), std::runtime_error);
+}
+
 TEST(ResearchIdentity, AuthenticatesRealDreamcastFirmwareAndLoadedBytes)
 {
 	TemporaryDirectory directory;
@@ -321,6 +407,7 @@ TEST(ResearchIdentity, RejectsUnboundOrWrongSizedRealBios)
 	json root = json::parse(std::string(hle.bytes.begin(), hle.bytes.end()));
 	root["firmware"]["mode"] = "real";
 	root["firmware"].erase("hle_identity");
+	root["firmware"]["flash_initial"]["size"] = research::DreamcastFlashBytes;
 	root["firmware"]["bios"] = {
 		{"path", ""}, {"size", research::DreamcastBiosBytes},
 		{"sha256", zeroDigest()},
@@ -335,6 +422,30 @@ TEST(ResearchIdentity, RejectsUnboundOrWrongSizedRealBios)
 	std::vector<std::uint8_t> bytes(research::DreamcastBiosBytes - 1, 0);
 	EXPECT_THROW(research::authenticateLoadedDreamcastFirmware(wrongSize, false,
 			bytes.data(), bytes.size()), std::runtime_error);
+}
+
+TEST(ResearchIdentity, RejectsWrongSizedRealInitialFlash)
+{
+	TemporaryDirectory directory;
+	const research::IdentityManifest hle = research::loadIdentityManifest(
+			writeIdentity(directory));
+	json root = json::parse(std::string(hle.bytes.begin(), hle.bytes.end()));
+	std::vector<std::uint8_t> bios(research::DreamcastBiosBytes);
+	const auto biosPath = directory.file("dc_boot.bin");
+	const auto flashPath = directory.file("dc_nvmem-empty.bin");
+	writeBytes(biosPath, bios);
+	writeBytes(flashPath, {});
+	root["firmware"] = {
+		{"mode", "real"},
+		{"bios", {{"path", biosPath.u8string()}, {"size", bios.size()},
+			{"sha256", research::sha256ToHex(research::sha256(
+					bios.data(), bios.size()))}}},
+		{"flash_initial", {{"path", flashPath.u8string()}, {"size", 0},
+			{"sha256", research::sha256ToHex(research::sha256(nullptr, 0))}}},
+	};
+	const auto path = directory.file("identity-real-empty-flash.json");
+	writeText(path, root.dump(2));
+	EXPECT_THROW(research::loadIdentityManifest(path), std::runtime_error);
 }
 
 TEST(ResearchIdentity, AuthenticatesBoundInitialSavestate)
@@ -710,6 +821,33 @@ TEST(ResearchMapleTrace, IndependentValidationRejectsAbortAndWireMismatch)
 #ifndef RESEARCH_FORMAT_ONLY
 unsigned checkpointCalls = 0;
 
+class DiagnosticConfigurationResetGuard
+{
+public:
+	~DiagnosticConfigurationResetGuard()
+	{
+		research::abortRuntime();
+		config::DynarecEnabled.reset();
+		config::ResearchDynarecObservation.reset();
+		config::ResearchDreamcastRtcSeed.reset();
+		config::ThreadedRendering.reset();
+		config::UseReios.reset();
+		config::AutoLoadState.reset();
+		config::AutoSaveState.reset();
+		config::GGPOEnable.reset();
+		config::ResearchIdentityManifestPath.reset();
+		config::ResearchMapleRecordPath.reset();
+		config::ResearchMapleReplayPath.reset();
+		config::ResearchMapleDmaCheckpoint.reset();
+		config::ResearchMapleTraceMaxBytes.reset();
+		config::ResearchSh4ObservationRecordPath.reset();
+		config::ResearchSh4EventsRecordPath.reset();
+		config::ResearchSh4ProfileRecordPath.reset();
+		config::ResearchPvrTaRecordPath.reset();
+		config::ResearchGdromRecordPath.reset();
+	}
+};
+
 class MapleObservationSubscriptionGuard
 {
 public:
@@ -756,6 +894,50 @@ TEST(ResearchMapleReplay, RejectsFirstRequestDivergence)
 	events.transaction.request.back() ^= 1;
 	EXPECT_THROW(research::mapleTransaction(events.transaction), FlycastException);
 	research::abortRuntime();
+}
+
+TEST(ResearchMapleReplay,
+		DiagnosticIdentityEnablesTimingInstrumentationWithoutTraceWriter)
+{
+	DiagnosticConfigurationResetGuard resetConfiguration;
+	TemporaryDirectory directory;
+	const std::filesystem::path recordIdentityPath = writeIdentity(directory);
+	const research::IdentityManifest recordIdentity =
+			research::loadIdentityManifest(recordIdentityPath);
+	const std::filesystem::path tracePath =
+			writeTrace(directory, recordIdentity.digest);
+	const std::filesystem::path identityPath =
+			writeObservedDynarecDiagnosticIdentity(directory, recordIdentityPath);
+
+	config::DynarecEnabled.set(false);
+	config::ResearchDynarecObservation.set(false);
+	config::ResearchSh4ObservationRecordPath.reset();
+	config::ResearchSh4EventsRecordPath.reset();
+	config::ResearchSh4ProfileRecordPath.reset();
+	config::ResearchPvrTaRecordPath.reset();
+	config::ResearchGdromRecordPath.reset();
+	config::ResearchIdentityManifestPath = identityPath.string();
+	config::ResearchMapleRecordPath = "";
+	config::ResearchMapleReplayPath = tracePath.string();
+	config::ResearchMapleDmaCheckpoint = 0;
+	config::ResearchMapleTraceMaxBytes = research::DefaultMaximumMapleTraceBytes;
+	config::setTransient("research", "IdentityManifest", identityPath.string());
+	config::setTransient("research", "MapleReplay", tracePath.string());
+
+	EXPECT_NO_THROW(research::configureRuntime());
+	EXPECT_TRUE(config::DynarecEnabled.get());
+	EXPECT_TRUE(config::ResearchDynarecObservation.get());
+	EXPECT_NO_THROW(research::startRuntime());
+	FixtureEvents events;
+	const std::uint64_t dma = research::mapleBeginDma(events.begin);
+	ASSERT_EQ(0u, dma);
+	events.transaction.dmaOrdinal = dma;
+	research::mapleTransaction(events.transaction);
+	research::mapleScheduleDma(events.schedule);
+	research::mapleCommitDma(events.commit);
+	EXPECT_TRUE(research::mapleReplayConsumed());
+	EXPECT_NO_THROW(research::stopRuntime(true));
+	EXPECT_FALSE(research::mapleReplayConsumed());
 }
 
 TEST(ResearchMapleReplay, RealFirmwareReplayAuthenticatesLoadedBiosAndFlash)
@@ -815,6 +997,83 @@ TEST(ResearchMapleReplay, RealFirmwareReplayAuthenticatesLoadedBiosAndFlash)
 	research::abortRuntime();
 }
 
+TEST(ResearchMapleReplay, HleReplayAuthenticatesDeclaredLoadedFlash)
+{
+	TemporaryDirectory directory;
+	const auto sourcePath = writeIdentity(directory);
+	const auto source = research::loadIdentityManifest(sourcePath);
+	json root = json::parse(std::string(source.bytes.begin(), source.bytes.end()));
+	std::vector<std::uint8_t> flash(research::DreamcastFlashBytes);
+	for (std::size_t index = 0; index < flash.size(); ++index)
+		flash[index] = static_cast<std::uint8_t>(index * 23u + 5u);
+	const auto flashPath = directory.file("dc_nvmem.bin");
+	writeBytes(flashPath, flash);
+	root["firmware"]["flash_initial"] = {
+		{"path", flashPath.u8string()},
+		{"size", flash.size()},
+		{"sha256", research::sha256ToHex(research::sha256(
+				flash.data(), flash.size()))},
+	};
+	const auto identityPath = directory.file("identity-hle-flash-replay.json");
+	writeText(identityPath, root.dump(2));
+	const auto identity = research::loadIdentityManifest(identityPath);
+	const auto tracePath = writeTrace(directory, identity.digest,
+			"hle-flash-replay.fcmt");
+	config::ResearchIdentityManifestPath = identityPath.string();
+	config::ResearchMapleRecordPath = "";
+	config::ResearchMapleReplayPath = tracePath.string();
+	config::ResearchMapleDmaCheckpoint = 0;
+	config::ResearchMapleTraceMaxBytes = research::DefaultMaximumMapleTraceBytes;
+	config::setTransient("research", "IdentityManifest", identityPath.string());
+	config::setTransient("research", "MapleReplay", tracePath.string());
+
+	research_test::setInitialFlashData(flash);
+	research::configureRuntime();
+	EXPECT_NO_THROW(research::startRuntime());
+	research::abortRuntime();
+	flash[321] ^= 1;
+	research_test::setInitialFlashData(flash);
+	research::configureRuntime();
+	EXPECT_THROW(research::startRuntime(), std::runtime_error);
+	research::abortRuntime();
+}
+
+TEST(ResearchMapleReplay, HleReplayRejectsNonzeroWrongSizedFlashDeclaration)
+{
+	TemporaryDirectory directory;
+	const auto sourcePath = writeIdentity(directory);
+	const auto source = research::loadIdentityManifest(sourcePath);
+	json root = json::parse(std::string(source.bytes.begin(), source.bytes.end()));
+	std::vector<std::uint8_t> flash(research::DreamcastFlashBytes);
+	for (std::size_t index = 0; index < flash.size(); ++index)
+		flash[index] = static_cast<std::uint8_t>(index * 31u + 9u);
+	const auto flashPath = directory.file("dc_nvmem-short.bin");
+	writeBytes(flashPath, flash);
+	root["firmware"]["flash_initial"] = {
+		{"path", flashPath.u8string()},
+		{"size", research::DreamcastFlashBytes - 1},
+		{"sha256", research::sha256ToHex(research::sha256(
+				flash.data(), flash.size()))},
+	};
+	const auto identityPath = directory.file("identity-hle-short-flash.json");
+	writeText(identityPath, root.dump(2));
+	const auto identity = research::loadIdentityManifest(identityPath);
+	const auto tracePath = writeTrace(directory, identity.digest,
+			"hle-short-flash-replay.fcmt");
+	config::ResearchIdentityManifestPath = identityPath.string();
+	config::ResearchMapleRecordPath = "";
+	config::ResearchMapleReplayPath = tracePath.string();
+	config::ResearchMapleDmaCheckpoint = 0;
+	config::ResearchMapleTraceMaxBytes = research::DefaultMaximumMapleTraceBytes;
+	config::setTransient("research", "IdentityManifest", identityPath.string());
+	config::setTransient("research", "MapleReplay", tracePath.string());
+
+	research_test::setInitialFlashData(flash);
+	research::configureRuntime();
+	EXPECT_THROW(research::startRuntime(), std::runtime_error);
+	research::abortRuntime();
+}
+
 TEST(ResearchMapleReplay, ReplaysTypedNopControlDescriptor)
 {
 	TemporaryDirectory directory;
@@ -852,12 +1111,17 @@ TEST(ResearchMapleReplay, ReplaysTypedNopControlDescriptor)
 	config::setTransient("research", "MapleReplay", tracePath.string());
 	research::configureRuntime();
 	research::startRuntime();
+	EXPECT_FALSE(research::mapleReplayConsumed());
 	EXPECT_EQ(0u, research::mapleBeginDma(events.begin));
+	EXPECT_FALSE(research::mapleReplayConsumed());
 	research::mapleTransaction(events.transaction);
 	EXPECT_NO_THROW(research::mapleControlDescriptor(control));
 	research::mapleScheduleDma(events.schedule);
+	EXPECT_FALSE(research::mapleReplayConsumed());
 	research::mapleCommitDma(events.commit);
+	EXPECT_TRUE(research::mapleReplayConsumed());
 	EXPECT_NO_THROW(research::stopRuntime(true));
+	EXPECT_FALSE(research::mapleReplayConsumed());
 }
 
 TEST(ResearchMapleReplay, LuaObservationUsesAuthenticatedReplayResponse)

@@ -1,4 +1,5 @@
 #include "research/pvr_presentation_observation.h"
+#include "research/pvr_ta_observation.h"
 
 #include <algorithm>
 #include <atomic>
@@ -240,6 +241,8 @@ void observePvrRegisterWrite(std::uint32_t physicalAddress,
 {
 	if (!pvrPresentationObservationBusActive())
 		return;
+	if (renderGeneration != 0 && !pvrTaRenderGenerationObserved(renderGeneration))
+		return;
 	auto observation = baseObservation(
 			PvrPresentationObservationType::RegisterWrite, tick, true);
 	observation.registerPhysicalAddress = physicalAddress;
@@ -258,6 +261,8 @@ void observePvrVramWrite(PvrVramWriteSource source,
 		std::uint64_t tick) noexcept
 {
 	if (!pvrPresentationObservationBusActive())
+		return;
+	if (renderGeneration != 0 && !pvrTaRenderGenerationObserved(renderGeneration))
 		return;
 	if (bytes == nullptr || size == 0)
 	{
@@ -288,6 +293,9 @@ void observePvrRenderQueued(std::uint64_t renderGeneration, PvrRenderKind kind,
 {
 	if (!pvrPresentationObservationBusActive())
 		return;
+	if (kind != PvrRenderKind::DirectFramebuffer
+			&& !pvrTaRenderGenerationObserved(renderGeneration))
+		return;
 	auto observation = baseObservation(
 			PvrPresentationObservationType::RenderQueued, tick, false);
 	observation.renderGeneration = renderGeneration;
@@ -301,6 +309,9 @@ void observePvrRenderCompleted(std::uint64_t renderGeneration, PvrRenderKind kin
 		bool successful, std::uint64_t tick) noexcept
 {
 	if (!pvrPresentationObservationBusActive())
+		return;
+	if (kind != PvrRenderKind::DirectFramebuffer
+			&& !pvrTaRenderGenerationObserved(renderGeneration))
 		return;
 	auto observation = baseObservation(
 			PvrPresentationObservationType::RenderCompleted, tick, false);
@@ -317,6 +328,9 @@ std::uint64_t observePvrFramebufferCaptured(PvrFramebufferKind kind,
 		const void* bytes, std::size_t size, std::uint64_t tick) noexcept
 {
 	if (!pvrPresentationObservationBusActive())
+		return 0;
+	if (sourceRenderGeneration != 0
+			&& !pvrTaRenderGenerationObserved(sourceRenderGeneration))
 		return 0;
 	if (bytes == nullptr || size == 0 || width == 0 || height == 0
 			|| rowBytes == 0 || size != static_cast<std::size_t>(rowBytes) * height)
@@ -355,6 +369,9 @@ std::uint64_t observePvrPresentation(PvrPresentationSource source,
 {
 	if (!pvrPresentationObservationBusActive())
 		return 0;
+	if (source == PvrPresentationSource::Render
+			&& !pvrTaRenderGenerationObserved(sourceGeneration))
+		return 0;
 	if (sourceGeneration == 0)
 	{
 		noteDroppedObservation();
@@ -377,6 +394,31 @@ void resetPvrPresentationObservation(std::uint64_t tick) noexcept
 	if (!pvrPresentationObservationBusActive())
 		return;
 	publish(baseObservation(PvrPresentationObservationType::Reset, tick, false));
+}
+
+void observePvrInitialRegisterState(const void* bytes, std::size_t size,
+		std::uint64_t renderGeneration, std::uint64_t tick) noexcept
+{
+	if (!pvrPresentationObservationBusActive())
+		return;
+	if (bytes == nullptr || size == 0)
+	{
+		noteDroppedObservation();
+		return;
+	}
+	try
+	{
+		auto observation = baseObservation(
+				PvrPresentationObservationType::InitialRegisterState, tick, false);
+		observation.renderGeneration = renderGeneration;
+		const auto* first = static_cast<const std::uint8_t*>(bytes);
+		observation.bytes.assign(first, first + size);
+		publish(std::move(observation));
+	}
+	catch (...)
+	{
+		noteDroppedObservation();
+	}
 }
 
 } // namespace research

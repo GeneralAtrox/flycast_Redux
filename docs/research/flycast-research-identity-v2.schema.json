@@ -136,6 +136,7 @@
             "cpu_backend": { "enum": ["interpreter", "dynarec"] },
             "dynarec_observation": { "type": "boolean" },
             "dynarec_profile": { "type": "boolean" },
+            "dynarec_replay_diagnostic": { "type": "boolean" },
             "dreamcast_rtc_seed": {
               "type": "integer",
               "minimum": 0,
@@ -281,6 +282,34 @@
                 "properties": {
                   "cpu_backend": { "const": "dynarec" },
                   "dynarec_observation": { "const": false }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "configuration": {
+            "properties": {
+              "values": {
+                "properties": { "dynarec_replay_diagnostic": { "const": true } },
+                "required": ["dynarec_replay_diagnostic"]
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "configuration": {
+            "properties": {
+              "values": {
+                "properties": {
+                  "cpu_backend": { "const": "dynarec" },
+                  "dynarec_profile": { "const": false }
                 }
               }
             }

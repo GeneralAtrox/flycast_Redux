@@ -1,5 +1,7 @@
 #pragma once
 
+#include "research/sha256.h"
+
 #include "research/sh4_observation_runtime.h"
 
 #include <cstddef>
@@ -10,7 +12,7 @@
 namespace research
 {
 
-constexpr std::uint32_t PvrPresentationObservationSchemaVersion = 1;
+constexpr std::uint32_t PvrPresentationObservationSchemaVersion = 2;
 
 enum class PvrPresentationObservationType : std::uint8_t
 {
@@ -21,6 +23,7 @@ enum class PvrPresentationObservationType : std::uint8_t
 	FramebufferCaptured = 5,
 	Presentation = 6,
 	Reset = 7,
+	InitialRegisterState = 8,
 };
 
 enum class PvrRegisterWriteDisposition : std::uint8_t
@@ -112,6 +115,8 @@ struct PvrPresentationObservation
 	std::uint32_t framebufferWidth = 0;
 	std::uint32_t framebufferHeight = 0;
 	std::uint32_t framebufferRowBytes = 0;
+	bool framebufferDigestAvailable = false;
+	Sha256Digest framebufferDigest {};
 
 	std::uint64_t presentationGeneration = 0;
 	PvrPresentationSource presentationSource = PvrPresentationSource::Render;
@@ -193,6 +198,8 @@ inline std::uint64_t observePvrFramebufferCaptured(PvrFramebufferKind,
 inline std::uint64_t observePvrPresentation(PvrPresentationSource,
 		std::uint64_t, bool, std::uint64_t) noexcept { return 0; }
 inline void resetPvrPresentationObservation(std::uint64_t) noexcept {}
+inline void observePvrInitialRegisterState(const void*, std::size_t,
+		std::uint64_t, std::uint64_t) noexcept {}
 
 #else
 
@@ -228,6 +235,8 @@ std::uint64_t observePvrPresentation(PvrPresentationSource source,
 		std::uint64_t sourceGeneration, bool successful,
 		std::uint64_t tick) noexcept;
 void resetPvrPresentationObservation(std::uint64_t tick) noexcept;
+void observePvrInitialRegisterState(const void* bytes, std::size_t size,
+		std::uint64_t renderGeneration, std::uint64_t tick) noexcept;
 
 #endif
 

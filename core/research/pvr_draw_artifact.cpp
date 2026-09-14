@@ -27,6 +27,7 @@ constexpr std::array<std::uint8_t, 8> ArtifactMagic {
 constexpr std::uint32_t HeaderComplete = 1u;
 constexpr std::uint32_t EventHeaderSize = 32;
 constexpr std::uint32_t BlockProvenanceSize = 72;
+constexpr std::uint32_t DecodedVertexSize = 56;
 
 void require(bool condition, const char* reason)
 {
@@ -90,6 +91,21 @@ void appendDigest(std::vector<std::uint8_t>& bytes,
 	bytes.insert(bytes.end(), digest.begin(), digest.end());
 }
 
+void appendDecodedVertex(std::vector<std::uint8_t>& bytes,
+		const PvrDecodedVertex& vertex)
+{
+	const std::size_t start = bytes.size();
+	for (const std::uint32_t bits : {vertex.xBits, vertex.yBits, vertex.zBits,
+			vertex.uBits, vertex.vBits, vertex.u1Bits, vertex.v1Bits,
+			vertex.nxBits, vertex.nyBits, vertex.nzBits})
+		appendU32(bytes, bits);
+	for (const auto* color : {&vertex.baseColor, &vertex.offsetColor,
+			&vertex.baseColor1, &vertex.offsetColor1})
+		bytes.insert(bytes.end(), color->begin(), color->end());
+	require(bytes.size() - start == DecodedVertexSize,
+			"internal decoded vertex size mismatch");
+}
+
 void appendOwner(std::vector<std::uint8_t>& bytes,
 		const Sh4InstructionOwnerToken& owner)
 {
@@ -143,11 +159,22 @@ std::vector<std::uint8_t> serializeObservation(
 	switch (observation.type)
 	{
 	case PvrDrawObservationType::PrimitiveDecoded:
+	{
 		require(observation.parameterBlocks.size()
 				<= MaximumPvrDrawBlocksPerPrimitive
 				&& observation.vertexBlocks.size()
 						<= MaximumPvrDrawBlocksPerPrimitive,
 				"primitive block count exceeds the schema limit");
+		require(observation.vertices.size() <= MaximumPvrDrawVerticesPerPrimitive,
+				"decoded vertex count exceeds the schema limit");
+		require(observation.sampledTexture.sourceBytes.size()
+				<= MaximumPvrDrawTextureBytes,
+				"sampled texture payload exceeds the schema limit");
+		require(!observation.sampledTexture.available
+					? observation.sampledTexture.sourceBytes.empty()
+					: observation.sampledTexture.sourceBytes.size()
+							== observation.sampledTexture.sourceSize,
+				"sampled texture payload size differs from its source range");
 		appendU64(body, observation.renderGeneration);
 		appendU64(body, observation.primitiveGeneration);
 		appendU32(body, observation.contextAddress);
@@ -177,11 +204,30 @@ std::vector<std::uint8_t> serializeObservation(
 		appendU32(body, static_cast<std::uint32_t>(
 				observation.vertexBlocks.size()));
 		appendU32(body, 0);
+		appendU32(body, static_cast<std::uint32_t>(observation.vertices.size()));
+		appendU32(body, observation.sampledTexture.available ? 1u : 0u);
+		const auto& texture = observation.sampledTexture;
+		for (const std::uint32_t field : {texture.sourceAddress,
+				texture.sourceSize, texture.maximumLevelAddress,
+				texture.maximumLevelSize, texture.width, texture.height,
+				texture.pixelFormat, texture.paletteFirstEntry,
+				texture.paletteEntryCount, texture.cacheUpdates})
+			appendU32(body, field);
+		appendU32(body, texture.gpuPalette ? 1u : 0u);
+		appendU32(body, texture.customReplacement ? 1u : 0u);
+		appendDigest(body, texture.sourceDigest);
+		appendDigest(body, texture.paletteDigest);
+		appendU32(body, static_cast<std::uint32_t>(texture.sourceBytes.size()));
+		for (const auto& vertex : observation.vertices)
+			appendDecodedVertex(body, vertex);
+		body.insert(body.end(), texture.sourceBytes.begin(),
+				texture.sourceBytes.end());
 		for (const auto& block : observation.parameterBlocks)
 			appendBlock(body, block);
 		for (const auto& block : observation.vertexBlocks)
 			appendBlock(body, block);
 		break;
+	}
 	case PvrDrawObservationType::DrawConsumed:
 		require(observation.primitiveGenerations.size()
 				<= MaximumPvrDrawPrimitiveRefs,

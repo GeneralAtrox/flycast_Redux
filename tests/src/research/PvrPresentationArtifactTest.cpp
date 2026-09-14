@@ -66,6 +66,9 @@ std::vector<research::PvrPresentationObservation> completeEvents()
 		event.tick = tick;
 		return event;
 	};
+	auto initial = make(PvrPresentationObservationType::InitialRegisterState, 99);
+	initial.bytes.resize(0x8000);
+	events.push_back(initial);
 
 	auto registerWrite = make(PvrPresentationObservationType::RegisterWrite, 100);
 	registerWrite.initiator = owner();
@@ -126,13 +129,57 @@ TEST(ResearchPvrPresentationArtifact, IndependentlyValidatesCompleteSlice)
 	for (const auto& event : completeEvents())
 		writer.write(event);
 	const auto written = writer.finalize();
-	EXPECT_EQ(6u, written.eventCount);
+	EXPECT_EQ(7u, written.eventCount);
 
 	const auto validated = research::validatePvrPresentationArtifactFile(
 			artifact.path, expectedBinding);
-	EXPECT_EQ(6u, validated.eventCount);
+	EXPECT_EQ(7u, validated.eventCount);
 	EXPECT_EQ(1u, validated.decodedFramebufferCount);
 	EXPECT_TRUE(validated.completeVerticalSlice);
+}
+
+TEST(ResearchPvrPresentationArtifact, PreservesFailedAttemptBeforeSuccessfulPresentation)
+{
+	TemporaryArtifact artifact;
+	const auto expectedBinding = binding();
+	auto events = completeEvents();
+	auto failed = events.back();
+	failed.presentationGeneration = 8;
+	failed.successful = false;
+	events.insert(events.end() - 1, failed);
+	for (std::size_t index = 0; index < events.size(); ++index)
+		events[index].emissionOrdinal = index;
+	{
+		research::PvrPresentationArtifactWriter writer(artifact.path,
+				expectedBinding);
+		for (const auto& event : events)
+			writer.write(event);
+		writer.finalize();
+	}
+
+	const auto validated = research::validatePvrPresentationArtifactFile(
+			artifact.path, expectedBinding);
+	EXPECT_EQ(8u, validated.eventCount);
+	EXPECT_TRUE(validated.completeVerticalSlice);
+}
+
+TEST(ResearchPvrPresentationArtifact, FailedPresentationDoesNotCompleteSlice)
+{
+	TemporaryArtifact artifact;
+	const auto expectedBinding = binding();
+	auto events = completeEvents();
+	events.back().successful = false;
+	{
+		research::PvrPresentationArtifactWriter writer(artifact.path,
+				expectedBinding);
+		for (const auto& event : events)
+			writer.write(event);
+		writer.finalize();
+	}
+
+	const auto validated = research::validatePvrPresentationArtifactFile(
+			artifact.path, expectedBinding);
+	EXPECT_FALSE(validated.completeVerticalSlice);
 }
 
 TEST(ResearchPvrPresentationArtifact, RejectsPayloadMutation)

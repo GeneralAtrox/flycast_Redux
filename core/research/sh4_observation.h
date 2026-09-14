@@ -43,6 +43,7 @@ enum class Sh4CallKind : std::uint16_t
 	Bsr = 1,
 	Bsrf = 2,
 	Jsr = 3,
+	Jmp = 4,
 };
 
 enum class Sh4MemoryAccessKind : std::uint8_t

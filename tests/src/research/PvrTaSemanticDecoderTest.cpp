@@ -234,6 +234,7 @@ std::filesystem::path writeDraw(const TemporaryDirectory& temporary,
 	background.ownerClass = research::PvrPrimitiveOwnerClass::Unowned;
 	background.first = 0;
 	background.count = 4;
+	background.vertices.resize(background.count);
 	background.bounds.available = true;
 	background.bounds.maximumX = 1;
 	background.bounds.maximumY = 1;
@@ -258,6 +259,7 @@ std::filesystem::path writeDraw(const TemporaryDirectory& temporary,
 	primitive.tileClip = (39u << 6) | (14u << 17);
 	primitive.first = 4;
 	primitive.count = 3;
+	primitive.vertices.resize(primitive.count);
 	primitive.bounds.available = true;
 	primitive.bounds.minimumX = 0;
 	primitive.bounds.minimumY = 1;

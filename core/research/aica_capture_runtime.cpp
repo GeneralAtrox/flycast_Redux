@@ -13,6 +13,7 @@
 #include <exception>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <vector>
 
 #ifdef _WIN32
@@ -37,8 +38,25 @@ std::filesystem::path pathFor(const std::string& value)
 #endif
 }
 struct Configuration{IdentityManifest identity;std::filesystem::path identityPath,replayPath,outputPath;Sha256Digest replayDigest{};std::uint64_t replayMaximum=0,artifactMaximum=0,targetFrames=0;};
-struct Session{Configuration configuration;std::unique_ptr<AicaArtifactWriter> writer;AicaObservationSubscription subscription=0;std::uint64_t droppedBaseline=0;std::vector<AicaObservation> pendingKeys;std::exception_ptr failure;};
+struct Session{Configuration configuration;std::unique_ptr<AicaArtifactWriter> writer;AicaObservationSubscription subscription=0;std::uint64_t droppedBaseline=0,targetDroppedEvents=0;std::vector<AicaObservation> pendingKeys;std::optional<AicaCheckpoint> preKeyCheckpoint;bool targetNoticeLogged=false,targetDmaActive=false,failureLogged=false;std::exception_ptr failure;};
 std::unique_ptr<Configuration> configured;std::unique_ptr<Session> session;
+
+bool signalTargetIfFinalizable(Session& value)
+{
+	if(!value.writer->targetReached()||value.targetNoticeLogged)return value.targetNoticeLogged;
+	const auto dropped=aicaObservationDroppedCount()-value.droppedBaseline;
+	if(dropped!=0)throw std::runtime_error("AICA observation loss at the sample target");
+	if(aicaObservationDmaActive())throw std::runtime_error("AICA sample target occurred during G2 DMA");
+	value.targetDroppedEvents=dropped;value.targetDmaActive=false;value.targetNoticeLogged=true;
+	NOTICE_LOG(AICA,"Typed AICA artifact sample target reached (%llu samples)",static_cast<unsigned long long>(value.writer->getSummary().sampleFrames));
+	return true;
+}
+
+void latchFailure(Session& value) noexcept
+{
+	value.failure=std::current_exception();if(value.failureLogged)return;value.failureLogged=true;
+	try{std::rethrow_exception(value.failure);}catch(const std::exception& error){ERROR_LOG(AICA,"Typed AICA artifact capture failed: %s",error.what());}catch(...){ERROR_LOG(AICA,"Typed AICA artifact capture failed: unknown exception");}
+}
 
 std::filesystem::path runningExecutable()
 {
@@ -91,18 +109,28 @@ void startAicaCaptureRuntime()
 	AicaArtifactBinding binding;binding.backend=dynarec?Sh4ObservationBackend::Dynarec:Sh4ObservationBackend::Interpreter;binding.identityDigest=configured->identity.digest;binding.replayDigest=configured->replayDigest;binding.configurationDigest=aicaConfigurationDigest(aica);binding.dspEnabled=aica.dspEnabled;binding.vmuSound=aica.vmuSound;
 	auto next=std::make_unique<Session>();next->configuration=*configured;next->writer=std::make_unique<AicaArtifactWriter>(configured->outputPath,binding,configured->targetFrames,configured->artifactMaximum);next->droppedBaseline=aicaObservationDroppedCount();Session* raw=next.get();
 	next->subscription=subscribeAicaEvidenceObservations([raw](const AicaObservation& event){
-		if(raw->failure||raw->writer->targetReached())return;try{
+		if(raw->failure)return;try{
+			if(raw->writer->targetReached()){signalTargetIfFinalizable(*raw);return;}
+			if(event.type==AicaObservationType::KeyBatchBegin){
+				if(raw->writer->getSummary().checkpointRamBytes==0){
+					if(aicaObservationDmaActive())throw std::runtime_error("AICA pre-key cut occurred during G2 DMA");
+					raw->preKeyCheckpoint=aica::sgc::captureResearchCheckpoint();
+					raw->preKeyCheckpoint->phase=AicaCheckpointPhase::PreKeyBatch;
+				}else raw->writer->write(event);
+				return;
+			}
 			if(event.type==AicaObservationType::KeyOn||event.type==AicaObservationType::KeyOff){if(raw->pendingKeys.size()>=64)throw std::runtime_error("AICA key batch exceeds 64 transitions");raw->pendingKeys.push_back(event);return;}
 			if(event.type==AicaObservationType::KeyBatchComplete){
 				if(raw->writer->getSummary().checkpointRamBytes==0){
-					if(event.keyOnMask==0){raw->pendingKeys.clear();return;}
-					if(aicaObservationDmaActive())throw std::runtime_error("AICA trigger occurred during G2 DMA");
-					raw->writer->writeCheckpoint(aica::sgc::captureResearchCheckpoint());
+					if(event.keyOnMask==0){raw->pendingKeys.clear();raw->preKeyCheckpoint.reset();return;}
+					if(!raw->preKeyCheckpoint)throw std::runtime_error("AICA nonzero key batch has no pre-key checkpoint");
+					if(raw->preKeyCheckpoint->nextSampleOrdinal!=event.sampleCutOrdinal)throw std::runtime_error("AICA pre-key checkpoint and key batch sample cuts differ");
+					raw->writer->writeCheckpoint(*raw->preKeyCheckpoint);raw->preKeyCheckpoint.reset();
 				}
 				for(const auto& key:raw->pendingKeys)raw->writer->write(key);raw->pendingKeys.clear();raw->writer->write(event);return;
 			}
-			if(raw->writer->getSummary().checkpointRamBytes!=0)raw->writer->write(event);
-		}catch(...){raw->failure=std::current_exception();}
+			if(raw->writer->getSummary().checkpointRamBytes!=0){raw->writer->write(event);signalTargetIfFinalizable(*raw);}
+		}catch(...){latchFailure(*raw);}
 	});
 	session=std::move(next);NOTICE_LOG(AICA,"Armed typed AICA artifact capture to %s",configured->outputPath.string().c_str());
 }
@@ -111,7 +139,7 @@ void stopAicaCaptureRuntime(bool clean)
 {
 	configured.reset();if(session==nullptr)return;auto finishing=std::move(session);const bool dmaActive=aicaObservationDmaActive();if(finishing->subscription)unsubscribeAicaObservations(finishing->subscription);
 	if(!clean){finishing->writer->abandon();return;}if(finishing->failure){finishing->writer->abandon();std::rethrow_exception(finishing->failure);}
-	try{reauthenticate(finishing->configuration);const auto dropped=aicaObservationDroppedCount()-finishing->droppedBaseline;const auto summary=finishing->writer->finalize(dropped,dmaActive);NOTICE_LOG(AICA,"Finalized typed AICA artifact (%llu samples)",static_cast<unsigned long long>(summary.sampleFrames));}catch(...){finishing->writer->abandon();throw;}
+	try{reauthenticate(finishing->configuration);const auto dropped=finishing->targetNoticeLogged?finishing->targetDroppedEvents:aicaObservationDroppedCount()-finishing->droppedBaseline;const bool finalDmaActive=finishing->targetNoticeLogged?finishing->targetDmaActive:dmaActive;const auto summary=finishing->writer->finalize(dropped,finalDmaActive);NOTICE_LOG(AICA,"Finalized typed AICA artifact (%llu samples)",static_cast<unsigned long long>(summary.sampleFrames));}catch(...){finishing->writer->abandon();throw;}
 }
 void abortAicaCaptureRuntime() noexcept{configured.reset();if(session==nullptr)return;auto abandoning=std::move(session);if(abandoning->subscription)unsubscribeAicaObservations(abandoning->subscription);abandoning->writer->abandon();}
 bool aicaCaptureRuntimeActive(){return session!=nullptr;}
