@@ -44,6 +44,7 @@
 #include "research/maple_runtime.h"
 #include "research/research_control.h"
 #include "research/sh4_pc_checkpoint_runtime.h"
+#include "research/workbench/workbench_runtime.h"
 #include "oslib/storage.h"
 #include "wsi/context.h"
 #include <chrono>
@@ -602,6 +603,7 @@ void Emulator::loadGame(const char *path, LoadProgress *progress)
 		config::Settings::instance().load(false);
 		research::configureRuntime();
 		research::configureSh4PcCheckpointRuntime();
+		research::workbench::configureWorkbenchRuntime();
 		dc_reset(true);
 		memset(&settings.network.md5, 0, sizeof(settings.network.md5));
 
@@ -684,6 +686,7 @@ void Emulator::loadGame(const char *path, LoadProgress *progress)
 		loadGameSpecificSettings();
 		research::configureResearchControl();
 		research::startRuntime();
+		research::workbench::startWorkbenchRuntime();
 #ifndef LIBRETRO
 		research::startSh4PcCheckpointRuntime([] {
 			mainui_stop();
@@ -721,6 +724,7 @@ void Emulator::loadGame(const char *path, LoadProgress *progress)
 		state = Loaded;
 	} catch (...) {
 		research::stopResearchControl();
+		research::workbench::stopWorkbenchRuntime();
 		research::stopSh4PcCheckpointRuntime();
 		research::abortRuntime();
 		state = Error;
@@ -784,6 +788,7 @@ void Emulator::unloadGame()
 			ERROR_LOG(COMMON, "Research runtime finalization failed: %s", e.what());
 		}
 		research::stopSh4PcCheckpointRuntime();
+		research::workbench::stopWorkbenchRuntime();
 #ifndef LIBRETRO
 		if (state == Loaded && config::AutoSaveState && !settings.content.path.empty()
 				&& !settings.naomi.multiboard && !config::GGPOEnable && !naomiNetworkSupported())

@@ -357,9 +357,15 @@ if(NOT LIBRETRO)
 			core/research/pvr_presentation_observation.h
 			core/research/pvr_ta_observation.cpp
 			core/research/pvr_ta_observation.h
+			core/research/control/control_actions.cpp
+			core/research/control/control_actions.h
+			core/research/control/control_protocol.cpp
+			core/research/control/control_protocol.h
+			core/research/control/control_server.cpp
+			core/research/control/control_server.h
+			core/research/control/control_ui_tasks.h
 			core/research/research_control.cpp
 			core/research/research_control.h
-			core/research/research_control_protocol.cpp
 			core/research/sh4_interpreter_hooks.h
 			core/research/sh4_lua_subscriptions.cpp
 			core/research/sh4_lua_subscriptions.h
@@ -372,6 +378,23 @@ if(NOT LIBRETRO)
 			core/research/sh4_profile.cpp
 			core/research/sh4_profile.h
 			core/research/sh4_profile_runtime_hooks.cpp
+			core/research/workbench/rows_audio.cpp
+			core/research/workbench/rows_gdrom.cpp
+			core/research/workbench/rows_maple.cpp
+			core/research/workbench/rows_pvr_draw.cpp
+			core/research/workbench/rows_pvr_present.cpp
+			core/research/workbench/rows_pvr_ta.cpp
+			core/research/workbench/rows_sh4.cpp
+			core/research/workbench/workbench_config.cpp
+			core/research/workbench/workbench_config.h
+			core/research/workbench/workbench_db.cpp
+			core/research/workbench/workbench_db.h
+			core/research/workbench/workbench_queue.h
+			core/research/workbench/workbench_recorder.cpp
+			core/research/workbench/workbench_recorder.h
+			core/research/workbench/workbench_rows.h
+			core/research/workbench/workbench_runtime.cpp
+			core/research/workbench/workbench_runtime.h
 			core/research/sha256.cpp
 			core/research/sha256.h)
 	if(WIN32 AND NOT WINDOWS_STORE)
@@ -1541,6 +1564,7 @@ if(BUILD_RESEARCH_TOOLS AND BUILD_TESTING AND NOT LIBRETRO)
 			tests/src/research/Sh4LuaSubscriptionsTest.cpp
 			tests/src/research/Sh4PcCheckpointRuntimeTest.cpp
 			tests/src/research/Sh4ProfileTest.cpp
+			tests/src/research/WorkbenchRecorderTest.cpp
 			tests/src/research/ResearchRuntimeStubs.cpp
 			core/research/aica_observation.cpp
 			core/research/cdda_observation.cpp
@@ -1553,14 +1577,30 @@ if(BUILD_RESEARCH_TOOLS AND BUILD_TESTING AND NOT LIBRETRO)
 			core/research/pvr_draw_observation.cpp
 			core/research/pvr_presentation_observation.cpp
 			core/research/pvr_framebuffer.cpp
-			core/research/research_control_protocol.cpp
+			core/research/control/control_protocol.cpp
 			core/research/sh4_lua_subscriptions.cpp
 			core/research/sh4_observation.cpp
 			core/research/sh4_observation_runtime.cpp
 			core/research/sh4_pc_checkpoint_runtime.cpp
 			core/research/sh4_profile.cpp
+			core/research/workbench/rows_audio.cpp
+			core/research/workbench/rows_gdrom.cpp
+			core/research/workbench/rows_maple.cpp
+			core/research/workbench/rows_pvr_draw.cpp
+			core/research/workbench/rows_pvr_present.cpp
+			core/research/workbench/rows_pvr_ta.cpp
+			core/research/workbench/rows_sh4.cpp
+			core/research/workbench/workbench_config.cpp
+			core/research/workbench/workbench_config.h
+			core/research/workbench/workbench_db.cpp
+			core/research/workbench/workbench_db.h
+			core/research/workbench/workbench_queue.h
+			core/research/workbench/workbench_recorder.cpp
+			core/research/workbench/workbench_recorder.h
+			core/research/workbench/workbench_rows.h
 			core/research/sha256.cpp)
 	target_include_directories(flycast-research-tests PRIVATE core core/deps core/deps/json)
+	target_link_libraries(flycast-research-tests PRIVATE sqlite3)
 	target_compile_definitions(flycast-research-tests PRIVATE
 			FLYCAST_RESEARCH_STANDALONE_TESTS)
 	target_link_libraries(flycast-research-tests PRIVATE GTest::gtest_main nowide::nowide)

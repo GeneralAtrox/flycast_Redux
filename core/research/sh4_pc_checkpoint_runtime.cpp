@@ -61,35 +61,26 @@ void releaseOwnership() noexcept
 
 } // namespace
 
-void configureSh4PcCheckpointRuntime()
+namespace
 {
-	stopSh4PcCheckpointRuntime();
-	const std::int64_t configuredPc = config::ResearchSh4PcCheckpoint.get();
-	if (configuredPc == 0)
-		return;
-	if (configuredPc < 0 || configuredPc > std::numeric_limits<std::uint32_t>::max()
-			|| (configuredPc & 1) != 0)
+
+void validateCheckpoint(std::int64_t pc, std::int64_t gateAddress, std::int64_t gateValue)
+{
+	if (pc <= 0 || pc > std::numeric_limits<std::uint32_t>::max() || (pc & 1) != 0)
 		throw FlycastException(
 				"research.Sh4PcCheckpoint must be an aligned non-zero 32-bit guest PC");
-	const std::int64_t configuredAddress =
-			config::ResearchSh4PcCheckpointU32Address.get();
-	const std::int64_t configuredValue =
-			config::ResearchSh4PcCheckpointU32Value.get();
-	if (configuredAddress == 0)
+	if (gateAddress == 0)
 	{
-		if (configuredValue != 0)
+		if (gateValue != 0)
 			throw FlycastException(
 					"research SH-4 PC checkpoint U32 value requires an address");
 	}
-	else
+	else if (gateAddress < 0x8c000000ll || gateAddress > 0x8cfffffcll
+			|| (gateAddress & 3) != 0 || gateValue < 0
+			|| gateValue > std::numeric_limits<std::uint32_t>::max())
 	{
-		if (configuredAddress < 0x8c000000ll
-				|| configuredAddress > 0x8cfffffcll
-				|| (configuredAddress & 3) != 0
-				|| configuredValue < 0
-				|| configuredValue > std::numeric_limits<std::uint32_t>::max())
-			throw FlycastException(
-					"research SH-4 PC checkpoint U32 gate is outside aligned Dreamcast system RAM/U32 bounds");
+		throw FlycastException(
+				"research SH-4 PC checkpoint U32 gate is outside aligned Dreamcast system RAM/U32 bounds");
 	}
 	if (config::ThreadedRendering.get())
 		throw FlycastException(
@@ -97,15 +88,41 @@ void configureSh4PcCheckpointRuntime()
 	if (config::DynarecEnabled.get() && !config::ResearchDynarecObservation.get())
 		throw FlycastException(
 				"research.Sh4PcCheckpoint with dynarec requires research.DynarecObservation");
-	const std::uint32_t boundPc = static_cast<std::uint32_t>(configuredPc);
-	targetU32Address.store(static_cast<std::uint32_t>(configuredAddress),
-			std::memory_order_release);
-	targetU32Value.store(static_cast<std::uint32_t>(configuredValue),
-			std::memory_order_release);
-	targetPc.store(boundPc,
-			std::memory_order_release);
+}
+
+void armTargets(std::uint32_t pc, std::uint32_t gateAddress, std::uint32_t gateValue)
+{
+	targetU32Address.store(gateAddress, std::memory_order_release);
+	targetU32Value.store(gateValue, std::memory_order_release);
+	targetPc.store(pc, std::memory_order_release);
 	triggered.store(false, std::memory_order_release);
 	configured.store(true, std::memory_order_release);
+}
+
+} // namespace
+
+void configureSh4PcCheckpointRuntime()
+{
+	stopSh4PcCheckpointRuntime();
+	const std::int64_t configuredPc = config::ResearchSh4PcCheckpoint.get();
+	if (configuredPc == 0)
+		return;
+	const std::int64_t gateAddress = config::ResearchSh4PcCheckpointU32Address.get();
+	const std::int64_t gateValue = config::ResearchSh4PcCheckpointU32Value.get();
+	validateCheckpoint(configuredPc, gateAddress, gateValue);
+	armTargets(static_cast<std::uint32_t>(configuredPc),
+			static_cast<std::uint32_t>(gateAddress), static_cast<std::uint32_t>(gateValue));
+}
+
+void armSh4PcCheckpointRuntime(std::uint32_t pc, std::uint32_t gateAddress,
+		std::uint32_t gateValue, std::function<void()> callback)
+{
+	if (!callback)
+		throw FlycastException("SH-4 PC checkpoint requires a callback");
+	validateCheckpoint(pc, gateAddress, gateValue);
+	stopSh4PcCheckpointRuntime();
+	armTargets(pc, gateAddress, gateValue);
+	startSh4PcCheckpointRuntime(std::move(callback));
 }
 
 void startSh4PcCheckpointRuntime(std::function<void()> cleanExitCallback)
