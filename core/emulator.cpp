@@ -42,16 +42,8 @@
 #include "hw/pvr/pvr.h"
 #include "profiler/fc_profiler.h"
 #include "research/maple_runtime.h"
-#include "research/aica_capture_runtime.h"
-#include "research/cdda_capture_runtime.h"
-#include "research/gdrom_capture_runtime.h"
-#include "research/memory_ranges_runtime.h"
-#include "research/pvr_ta_capture_runtime.h"
 #include "research/research_control.h"
-#include "research/sh4_events_runtime.h"
-#include "research/sh4_observation_capture_runtime.h"
 #include "research/sh4_pc_checkpoint_runtime.h"
-#include "research/sh4_profile_capture_runtime.h"
 #include "oslib/storage.h"
 #include "wsi/context.h"
 #include <chrono>
@@ -575,18 +567,9 @@ void Emulator::loadGame(const char *path, LoadProgress *progress)
 {
 	init();
 	research::setMapleCheckpointHandler([] {
-#ifndef LIBRETRO
-		// A bounded GD-ROM capture owns the whole process. Exit the UI loop only
-		// after the terminal Maple commit so every research writer finalizes at
-		// the exact replay boundary. A bounded PVR capture may close at that
-		// boundary only after its requested render-done window has frozen; other
-		// research sessions retain the normal paused-at-checkpoint behavior.
-		if (!config::ResearchGdromRecordPath.get().empty())
-			mainui_stop();
-		else if (!research::pvrTaCaptureRuntimeActive()
-				|| research::pvrTaCaptureWindowComplete())
-#endif
-			emu.stop();
+		// A configured Maple DMA checkpoint pauses at an exact emulated-time
+		// boundary so the workbench can inspect state or stop recording there.
+		emu.stop();
 	});
 	try {
 		DEBUG_LOG(BOOT, "Loading game %s", path == nullptr ? "(nil)" : path);
@@ -618,14 +601,6 @@ void Emulator::loadGame(const char *path, LoadProgress *progress)
 		config::Settings::instance().reset();
 		config::Settings::instance().load(false);
 		research::configureRuntime();
-		research::configureSh4ObservationCaptureRuntime();
-		research::configureSh4DynarecProfileCaptureRuntime();
-		research::configurePvrTaCaptureRuntime();
-		research::configureGdromCaptureRuntime();
-		research::configureAicaCaptureRuntime();
-		research::configureCddaCaptureRuntime();
-		research::configureMemoryRangesRuntime();
-		research::configureSh4EventsRuntime();
 		research::configureSh4PcCheckpointRuntime();
 		dc_reset(true);
 		memset(&settings.network.md5, 0, sizeof(settings.network.md5));
@@ -709,17 +684,6 @@ void Emulator::loadGame(const char *path, LoadProgress *progress)
 		loadGameSpecificSettings();
 		research::configureResearchControl();
 		research::startRuntime();
-		research::startSh4ObservationCaptureRuntime();
-		research::startSh4DynarecProfileCaptureRuntime();
-		research::startPvrTaCaptureRuntime();
-		research::startGdromCaptureRuntime();
-		research::startAicaCaptureRuntime();
-		research::startCddaCaptureRuntime();
-		research::startMemoryRangesRuntime();
-		research::startSh4EventsRuntime([] {
-			mainui_stop();
-			emu.stop();
-		});
 #ifndef LIBRETRO
 		research::startSh4PcCheckpointRuntime([] {
 			mainui_stop();
@@ -740,7 +704,6 @@ void Emulator::loadGame(const char *path, LoadProgress *progress)
 			else if (config::AutoLoadState && !naomiNetworkSupported() && !settings.naomi.multiboard)
 			{
 				dc_loadstate(config::SavestateSlot);
-				research::sh4EventsInitialStateLoaded();
 			}
 #endif
 		}
@@ -758,14 +721,6 @@ void Emulator::loadGame(const char *path, LoadProgress *progress)
 		state = Loaded;
 	} catch (...) {
 		research::stopResearchControl();
-		research::abortSh4ObservationCaptureRuntime();
-		research::abortSh4DynarecProfileCaptureRuntime();
-		research::abortPvrTaCaptureRuntime();
-		research::abortGdromCaptureRuntime();
-		research::abortAicaCaptureRuntime();
-		research::abortCddaCaptureRuntime();
-		research::abortSh4EventsRuntime();
-		research::abortMemoryRangesRuntime();
 		research::stopSh4PcCheckpointRuntime();
 		research::abortRuntime();
 		state = Error;
@@ -799,13 +754,8 @@ void Emulator::runInternal()
 
 				if (resetRequested)
 				{
-					research::abortSh4ObservationCaptureRuntime();
-					research::abortSh4DynarecProfileCaptureRuntime();
-					research::abortPvrTaCaptureRuntime();
-					research::abortGdromCaptureRuntime();
-					research::abortSh4EventsRuntime();
-					research::abortMemoryRangesRuntime();
 					research::stopSh4PcCheckpointRuntime();
+					research::abortRuntime();
 					nvmem::saveFiles();
 					dc_reset(false);
 					if (!restartCpu())
@@ -832,47 +782,6 @@ void Emulator::unloadGame()
 		} catch (const std::exception& e) {
 			replayComplete = false;
 			ERROR_LOG(COMMON, "Research runtime finalization failed: %s", e.what());
-		}
-		try {
-			research::stopSh4DynarecProfileCaptureRuntime(replayComplete);
-		} catch (const std::exception& e) {
-			replayComplete = false;
-			ERROR_LOG(COMMON, "SH-4 dynarec profile finalization failed: %s", e.what());
-		}
-		try {
-			research::stopPvrTaCaptureRuntime(replayComplete);
-		} catch (const std::exception& e) {
-			ERROR_LOG(COMMON, "PowerVR TA finalization failed: %s", e.what());
-		}
-		try {
-			research::stopGdromCaptureRuntime(replayComplete);
-		} catch (const std::exception& e) {
-			ERROR_LOG(COMMON, "GD-ROM finalization failed: %s", e.what());
-		}
-		try {
-			research::stopAicaCaptureRuntime(replayComplete);
-		} catch (const std::exception& e) {
-			ERROR_LOG(COMMON, "AICA finalization failed: %s", e.what());
-		}
-		try {
-			research::stopCddaCaptureRuntime(replayComplete);
-		} catch (const std::exception& e) {
-			ERROR_LOG(COMMON, "CD-DA finalization failed: %s", e.what());
-		}
-		try {
-			research::stopSh4ObservationCaptureRuntime(replayComplete);
-		} catch (const std::exception& e) {
-			ERROR_LOG(COMMON, "SH-4 observation finalization failed: %s", e.what());
-		}
-		try {
-			research::stopSh4EventsRuntime(replayComplete);
-		} catch (const std::exception& e) {
-			ERROR_LOG(COMMON, "SH-4 events finalization failed: %s", e.what());
-		}
-		try {
-			research::stopMemoryRangesRuntime(replayComplete);
-		} catch (const std::exception& e) {
-			ERROR_LOG(COMMON, "Memory-ranges finalization failed: %s", e.what());
 		}
 		research::stopSh4PcCheckpointRuntime();
 #ifndef LIBRETRO

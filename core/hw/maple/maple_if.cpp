@@ -10,7 +10,6 @@
 #include "hw/naomi/card_reader.h"
 #include "research/maple_runtime.h"
 #include "research/maple_observation.h"
-#include "research/memory_ranges_runtime.h"
 #include "research/sh4_observation_runtime.h"
 #include "log/Log.h"
 
@@ -599,13 +598,9 @@ static u64 reconnect_time;
 
 void maple_Reset(bool hard)
 {
-	const bool invalidatedResearchCapture = research::runtimeActive()
-			|| research::memoryRangesRuntimeActive();
+	const bool invalidatedResearchCapture = research::runtimeActive();
 	if (invalidatedResearchCapture)
-	{
-		research::abortMemoryRangesRuntime();
 		research::abortRuntime();
-	}
 	researchPendingDma = UINT64_MAX;
 	maple_ddt_pending_reset = false;
 	SB_MDTSEL = 0;
@@ -630,14 +625,11 @@ void maple_Term()
 
 void maple_ReconnectDevices()
 {
-	const bool mapleResearchActive = research::runtimeActive();
-	if (mapleResearchActive || research::memoryRangesRuntimeActive())
+	if (research::runtimeActive())
 	{
-		research::abortMemoryRangesRuntime();
 		research::abortRuntime();
-		throw FlycastException(mapleResearchActive
-				? "Maple topology changes are not supported by research trace v1"
-				: "Maple topology changes are not supported by an active memory-ranges capture");
+		throw FlycastException(
+				"Maple topology changes are not supported during Maple record/replay");
 	}
 	mcfg_DestroyDevices();
 	reconnect_time = sh4_sched_now64() + SH4_MAIN_CLOCK / 10;
@@ -645,14 +637,11 @@ void maple_ReconnectDevices()
 
 void maple_ReconnectDevice(int bus, int port)
 {
-	const bool mapleResearchActive = research::runtimeActive();
-	if (mapleResearchActive || research::memoryRangesRuntimeActive())
+	if (research::runtimeActive())
 	{
-		research::abortMemoryRangesRuntime();
 		research::abortRuntime();
-		throw FlycastException(mapleResearchActive
-				? "Maple topology changes are not supported by research trace v1"
-				: "Maple topology changes are not supported by an active memory-ranges capture");
+		throw FlycastException(
+				"Maple topology changes are not supported during Maple record/replay");
 	}
 	if (port == 5)
 	{

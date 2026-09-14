@@ -11,7 +11,7 @@
 #include "debug/gdb_server.h"
 #include "hw/sh4/dyna/decoder.h"
 #include "emulator.h"
-#include "research/sh4_events_memory.h"
+#include "research/sh4_interpreter_hooks.h"
 
 #ifdef STRICT_MODE
 #include "hw/sh4/sh4_cache.h"

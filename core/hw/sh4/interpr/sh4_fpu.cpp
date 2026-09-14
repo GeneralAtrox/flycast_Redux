@@ -5,7 +5,7 @@
 #include "hw/sh4/sh4_core.h"
 #include "hw/sh4/sh4_rom.h"
 #include "hw/sh4/sh4_mem.h"
-#include "research/sh4_events_memory.h"
+#include "research/sh4_interpreter_hooks.h"
 
 #define ReadMem8 research::observedSh4Read8
 #define ReadMem16 research::observedSh4Read16

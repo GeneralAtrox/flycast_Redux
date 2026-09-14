@@ -158,78 +158,19 @@ Option<bool, false> UseSafFilePicker("UseSafFilePicker", true);
 #endif
 OptionString LogServer("LogServer", "", "log");
 
-// Research toolkit
-Option<std::string, false> ResearchIdentityManifestPath("IdentityManifest", "", "research");
+// Research workbench
 Option<std::string, false> ResearchMapleRecordPath("MapleRecord", "", "research");
 Option<std::string, false> ResearchMapleReplayPath("MapleReplay", "", "research");
 Option<int64_t, false> ResearchMapleTraceMaxBytes("MapleTraceMaxBytes", 512_MB, "research");
 Option<int64_t, false> ResearchMapleDmaCheckpoint("MapleDmaCheckpoint", 0, "research");
-Option<std::string, false> ResearchMemoryRangesManifestPath("MemoryRangesManifest", "", "research");
-Option<std::string, false> ResearchMemoryRangesRecordPath("MemoryRangesRecord", "", "research");
-Option<int64_t, false> ResearchMemoryRangesMaxBytes("MemoryRangesMaxBytes",
-		1025ll * 1024 * 1024, "research");
-Option<std::string, false> ResearchSh4EventsManifestPath("Sh4EventsManifest", "", "research");
-Option<std::string, false> ResearchSh4EventsRecordPath("Sh4EventsRecord", "", "research");
-Option<int64_t, false> ResearchSh4EventsMaxBytes("Sh4EventsMaxBytes",
-		256ll * 1024 * 1024, "research");
 Option<bool, false> ResearchDynarecObservation("DynarecObservation", false,
 		"research");
-Option<std::string, false> ResearchSh4ObservationRecordPath(
-		"Sh4ObservationRecord", "", "research");
-Option<std::string, false> ResearchSh4ObservationManifestSetPath(
-		"Sh4ObservationManifestSet", "", "research");
-Option<int64_t, false> ResearchSh4ObservationMaxBytes(
-		"Sh4ObservationMaxBytes", 512ll * 1024 * 1024, "research");
-Option<int64_t, false> ResearchSh4ObservationStartDma(
-		"Sh4ObservationStartDma", 0, "research");
 Option<int64_t, false> ResearchSh4PcCheckpoint(
 		"Sh4PcCheckpoint", 0, "research");
 Option<int64_t, false> ResearchSh4PcCheckpointU32Address(
 		"Sh4PcCheckpointU32Address", 0, "research");
 Option<int64_t, false> ResearchSh4PcCheckpointU32Value(
 		"Sh4PcCheckpointU32Value", 0, "research");
-Option<std::string, false> ResearchSh4ProfileRecordPath(
-		"Sh4ProfileRecord", "", "research");
-Option<int64_t, false> ResearchSh4ProfileMaxBytes(
-		"Sh4ProfileMaxBytes", 256ll * 1024 * 1024, "research");
-Option<int64_t, false> ResearchSh4ProfileMaxBlocks(
-		"Sh4ProfileMaxBlocks", 1'000'000, "research");
-Option<int64_t, false> ResearchSh4ProfileMaxBranches(
-		"Sh4ProfileMaxBranches", 4'000'000, "research");
-Option<int64_t, false> ResearchSh4ProfileMaxExecutions(
-		"Sh4ProfileMaxExecutions", 1'000'000'000, "research");
-Option<std::string, false> ResearchPvrTaRecordPath(
-		"PvrTaRecord", "", "research");
-Option<std::string, false> ResearchPvrTaManifestPath(
-		"PvrTaManifest", "", "research");
-Option<int64_t, false> ResearchPvrTaMaxBytes(
-		"PvrTaMaxBytes", 512ll * 1024 * 1024, "research");
-Option<int64_t, false> ResearchPvrTaStartDma(
-		"PvrTaStartDma", 0, "research");
-Option<std::string, false> ResearchPvrPresentationRecordPath(
-		"PvrPresentationRecord", "", "research");
-Option<int64_t, false> ResearchPvrPresentationMaxBytes(
-		"PvrPresentationMaxBytes", 512ll * 1024 * 1024, "research");
-Option<std::string, false> ResearchPvrDrawRecordPath(
-		"PvrDrawRecord", "", "research");
-Option<int64_t, false> ResearchPvrDrawMaxBytes(
-		"PvrDrawMaxBytes", 512ll * 1024 * 1024, "research");
-Option<std::string, false> ResearchGdromRecordPath(
-		"GdromRecord", "", "research");
-Option<int64_t, false> ResearchGdromMaxBytes(
-		"GdromMaxBytes", 512ll * 1024 * 1024, "research");
-Option<std::string, false> ResearchAicaRecordPath(
-		"AicaRecord", "", "research");
-Option<int64_t, false> ResearchAicaMaxBytes(
-		"AicaMaxBytes", 512ll * 1024 * 1024, "research");
-Option<int64_t, false> ResearchAicaSampleFrames(
-		"AicaSampleFrames", 22050, "research");
-Option<std::string, false> ResearchCddaRecordPath(
-		"CddaRecord", "", "research");
-Option<int64_t, false> ResearchCddaMaxBytes(
-		"CddaMaxBytes", 64ll * 1024 * 1024, "research");
-Option<int64_t, false> ResearchCddaSampleFrames(
-		"CddaSampleFrames", 588, "research");
 Option<int64_t, false> ResearchDreamcastRtcSeed(
 		"DreamcastRtcSeed", -1, "research");
 Option<std::string, false> ResearchControlPipeName("ControlPipe", "", "research");

@@ -1,7 +1,5 @@
 #include "research/maple_trace.h"
 
-#include "research/identity_manifest.h"
-
 #include <algorithm>
 #include <array>
 #include <cerrno>
@@ -567,7 +565,7 @@ MapleTraceEvent parseEvent(std::uint32_t schemaVersion, MapleTraceEventType type
 }
 
 MapleTraceSummary parseTraceHeader(const std::uint8_t *bytes,
-		const Sha256Digest& expectedIdentity)
+		const Sha256Digest *expectedIdentity)
 {
 	ByteReader header(bytes, MapleTraceHeaderSize);
 	const std::vector<std::uint8_t> magic = header.byteVector(MapleTraceMagic.size());
@@ -608,7 +606,8 @@ MapleTraceSummary parseTraceHeader(const std::uint8_t *bytes,
 	const std::uint32_t storedHeaderCrc = header.u32();
 	require(header.remaining() == 0, "internal header parser mismatch");
 	require(storedHeaderCrc == crc32(bytes, 156), "header CRC mismatch");
-	require(sha256Equal(summary.identityDigest, expectedIdentity),
+	require(expectedIdentity == nullptr
+			|| sha256Equal(summary.identityDigest, *expectedIdentity),
 			"identity manifest digest mismatch");
 	return summary;
 }
@@ -733,8 +732,31 @@ private:
 #endif
 };
 
-MapleTrace loadProductionMapleTrace(const std::filesystem::path& path,
-		const Sha256Digest& expectedIdentity, std::uint64_t maximumBytes)
+static std::vector<std::uint8_t> readFileExact(const std::filesystem::path& path,
+		std::uint64_t maximumBytes)
+{
+	std::error_code error;
+	const std::uintmax_t size = std::filesystem::file_size(path, error);
+	if (error)
+		throw std::runtime_error("cannot read Maple trace: " + path.string());
+	if (size > maximumBytes)
+		throw std::runtime_error("Maple trace exceeds the size limit: " + path.string());
+	std::ifstream input(path, std::ios::binary);
+	if (!input)
+		throw std::runtime_error("cannot open Maple trace for reading: " + path.string());
+	std::vector<std::uint8_t> bytes(static_cast<std::size_t>(size));
+	if (!bytes.empty())
+	{
+		input.read(reinterpret_cast<char *>(bytes.data()),
+				static_cast<std::streamsize>(bytes.size()));
+		if (!input || static_cast<std::size_t>(input.gcount()) != bytes.size())
+			throw std::runtime_error("Maple trace changed while reading: " + path.string());
+	}
+	return bytes;
+}
+
+static MapleTrace loadTrace(const std::filesystem::path& path,
+		const Sha256Digest *expectedIdentity, std::uint64_t maximumBytes)
 {
 	const std::vector<std::uint8_t> bytes = readFileExact(path, maximumBytes);
 	require(bytes.size() >= MapleTraceHeaderSize, "file is smaller than the header");
@@ -770,8 +792,20 @@ MapleTrace loadProductionMapleTrace(const std::filesystem::path& path,
 	return trace;
 }
 
-MapleTraceSummary validateProductionMapleTraceFile(const std::filesystem::path& path,
+MapleTrace loadProductionMapleTrace(const std::filesystem::path& path,
+		std::uint64_t maximumBytes)
+{
+	return loadTrace(path, nullptr, maximumBytes);
+}
+
+MapleTrace loadProductionMapleTrace(const std::filesystem::path& path,
 		const Sha256Digest& expectedIdentity, std::uint64_t maximumBytes)
+{
+	return loadTrace(path, &expectedIdentity, maximumBytes);
+}
+
+static MapleTraceSummary validateTrace(const std::filesystem::path& path,
+		const Sha256Digest *expectedIdentity, std::uint64_t maximumBytes)
 {
 	const std::uint64_t sizeBefore = traceFileSize(path);
 	require(sizeBefore <= maximumBytes, "file exceeds size limit");
@@ -827,6 +861,18 @@ MapleTraceSummary validateProductionMapleTraceFile(const std::filesystem::path& 
 	summary.fileDigest = fileHasher.finalize();
 	validator.finish(summary);
 	return summary;
+}
+
+MapleTraceSummary validateProductionMapleTraceFile(const std::filesystem::path& path,
+		std::uint64_t maximumBytes)
+{
+	return validateTrace(path, nullptr, maximumBytes);
+}
+
+MapleTraceSummary validateProductionMapleTraceFile(const std::filesystem::path& path,
+		const Sha256Digest& expectedIdentity, std::uint64_t maximumBytes)
+{
+	return validateTrace(path, &expectedIdentity, maximumBytes);
 }
 
 MapleTraceWriter::MapleTraceWriter(const std::filesystem::path& path,

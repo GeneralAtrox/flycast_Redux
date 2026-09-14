@@ -1,5 +1,4 @@
 #include "research/sh4_lua_subscriptions.h"
-#include "research/sh4_observation_trace.h"
 #include "hw/sh4/sh4_if.h"
 #include "ResearchRuntimeStubs.h"
 
@@ -96,49 +95,6 @@ research::Sh4ObservationFilter interpreterInstructions()
 	return filter;
 }
 
-std::vector<std::uint8_t> recordInstructionPair(
-		const std::filesystem::path& path, bool withDiscoverySubscriber)
-{
-	research::Sh4ObservationTraceBinding binding;
-	binding.backend = research::Sh4ObservationBackend::Interpreter;
-	research::Sh4ObservationTraceWriter writer(path, binding);
-	{
-		research::Sh4ObservationFilter recorderFilter;
-		recorderFilter.backendMask = research::sh4ObservationBackendBit(
-				research::Sh4ObservationBackend::Interpreter);
-		NativeSubscription recorder(research::subscribeSh4Observations(
-				recorderFilter,
-				[&writer](const research::Sh4Observation& observation) {
-					writer.write(observation);
-				}));
-		std::unique_ptr<research::Sh4LuaSubscriptionQueue> discovery;
-		if (withDiscoverySubscriber)
-		{
-			discovery = std::make_unique<research::Sh4LuaSubscriptionQueue>();
-			discovery->subscribe(interpreterInstructions(),
-					[](research::Sh4LuaSubscriptionQueue::Token,
-							const research::Sh4Observation&) {});
-		}
-
-		research::Sh4Observation begin = instruction(0x8c010000);
-		begin.type = research::Sh4ObservationType::InstructionBegin;
-		begin.availableFields = research::Sh4Observation::HasNextPc
-				| research::Sh4Observation::HasRegisters;
-		begin.nextPc = 0x8c010002;
-		research::publishSh4Observation(begin);
-	research::Sh4Observation end = begin;
-	end.type = research::Sh4ObservationType::InstructionEnd;
-	end.tick = begin.tick + 1;
-		research::publishSh4Observation(end);
-		if (discovery != nullptr)
-			EXPECT_EQ(1u, discovery->pendingCount());
-	}
-	writer.finalize();
-	std::ifstream input(path, std::ios::binary);
-	return std::vector<std::uint8_t>(std::istreambuf_iterator<char>(input),
-			std::istreambuf_iterator<char>());
-}
-
 TEST(ResearchSh4LuaSubscriptions, NoSubscriberLeavesCanonicalFastPathInactive)
 {
 	ASSERT_EQ(0u, research::sh4ObservationSubscriberCount());
@@ -229,17 +185,6 @@ TEST(ResearchSh4LuaSubscriptions, CombinesMemoryAndInstructionPcFiltersBeforeQue
 	ASSERT_EQ(1u, delivered.size());
 	EXPECT_EQ(0x8c0101feu, delivered[0].instructionPc);
 	EXPECT_EQ(0x200eu, delivered[0].memoryAddress);
-}
-
-TEST(ResearchSh4LuaSubscriptions,
-		DiscoverySubscriberCannotChangeNativeTraceBytes)
-{
-	TemporaryDirectory directory;
-	const std::vector<std::uint8_t> withoutDiscovery = recordInstructionPair(
-			directory.file("without-discovery.fcso"), false);
-	const std::vector<std::uint8_t> withDiscovery = recordInstructionPair(
-			directory.file("with-discovery.fcso"), true);
-	EXPECT_EQ(withoutDiscovery, withDiscovery);
 }
 
 TEST(ResearchSh4LuaSubscriptions, OverflowDropsNewestAndReportsStablePrefix)

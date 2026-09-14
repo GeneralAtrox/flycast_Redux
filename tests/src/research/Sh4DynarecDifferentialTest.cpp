@@ -12,9 +12,7 @@
 #include "hw/sh4/sh4_sched.h"
 #include "oslib/oslib.h"
 #include "research/sh4_observation.h"
-#include "research/sh4_observation_compare.h"
 #include "research/sh4_observation_runtime.h"
-#include "research/sh4_observation_trace.h"
 
 #include <gtest/gtest.h>
 
@@ -79,56 +77,6 @@ public:
 		activeMapleDmaTickSample = nullptr;
 	}
 };
-
-class TemporaryTraceDirectory
-{
-public:
-	TemporaryTraceDirectory()
-	{
-		static std::atomic<unsigned> sequence {0};
-		const auto processId =
-#ifdef _WIN32
-				_getpid();
-#else
-				getpid();
-#endif
-		path = std::filesystem::temp_directory_path()
-				/ ("flycast-sh4-real-differential-"
-						+ std::to_string(processId) + "-"
-						+ std::to_string(sequence.fetch_add(1)));
-		std::error_code error;
-		std::filesystem::remove_all(path, error);
-		std::filesystem::create_directories(path);
-	}
-
-	~TemporaryTraceDirectory()
-	{
-		std::error_code error;
-		std::filesystem::remove_all(path, error);
-	}
-
-	std::filesystem::path file(const char *name) const { return path / name; }
-
-private:
-	std::filesystem::path path;
-};
-
-research::Sh4ObservationTraceBinding traceBinding(
-		research::Sh4ObservationBackend backend)
-{
-	research::Sh4ObservationTraceBinding binding;
-	binding.backend = backend;
-	const std::string identity = backend
-			== research::Sh4ObservationBackend::Interpreter
-			? "real-interpreter-fixture-identity" : "real-dynarec-fixture-identity";
-	binding.identityDigest = research::sha256(identity.data(), identity.size());
-	constexpr char Replay[] = "real-differential-replay";
-	constexpr char Manifests[] = "real-differential-manifest-set";
-	binding.replayDigest = research::sha256(Replay, sizeof(Replay) - 1);
-	binding.manifestSetDigest = research::sha256(Manifests,
-			sizeof(Manifests) - 1);
-	return binding;
-}
 
 void writeProgram(std::initializer_list<std::uint16_t> opcodes)
 {
@@ -717,43 +665,6 @@ void expectSameSemanticEvent(const research::Sh4Observation& interpreter,
 	EXPECT_EQ(interpreter.delaySlotPc, dynarec.delaySlotPc);
 }
 
-void expectIndependentEquivalent(
-		const std::vector<research::Sh4Observation>& interpreter,
-		const std::vector<research::Sh4Observation>& dynarec)
-{
-	TemporaryTraceDirectory temporary;
-	const std::filesystem::path interpreterPath = temporary.file("interpreter.fcso");
-	const std::filesystem::path dynarecPath = temporary.file("dynarec.fcso");
-	const auto interpreterBinding = traceBinding(
-			research::Sh4ObservationBackend::Interpreter);
-	const auto dynarecBinding = traceBinding(
-			research::Sh4ObservationBackend::Dynarec);
-	{
-		research::Sh4ObservationTraceWriter writer(interpreterPath,
-				interpreterBinding);
-		for (const research::Sh4Observation& event : interpreter)
-			writer.write(event);
-		writer.finalize();
-	}
-	{
-		research::Sh4ObservationTraceWriter writer(dynarecPath, dynarecBinding);
-		for (const research::Sh4Observation& event : dynarec)
-			writer.write(event);
-		writer.finalize();
-	}
-	research::Sh4ObservationEquivalenceContract contract;
-	contract.interpreterIdentityDigest = interpreterBinding.identityDigest;
-	contract.dynarecIdentityDigest = dynarecBinding.identityDigest;
-	contract.replayDigest = interpreterBinding.replayDigest;
-	contract.manifestSetDigest = interpreterBinding.manifestSetDigest;
-	const research::Sh4ObservationComparison comparison =
-			research::compareSh4ObservationTraces(interpreterPath, dynarecPath,
-					contract);
-	EXPECT_TRUE(comparison.equivalent);
-	EXPECT_FALSE(comparison.firstDivergence.has_value());
-	EXPECT_EQ(comparison.matchedEventCount, interpreter.size());
-}
-
 void expectSameSemanticStream(
 		const std::vector<research::Sh4Observation>& interpreter,
 		const std::vector<research::Sh4Observation>& dynarec)
@@ -778,7 +689,6 @@ void expectSameSemanticStream(
 		expectSameSemanticEvent(interpreter[index], dynarec[index], index);
 	}
 	ASSERT_EQ(interpreter.size(), dynarec.size());
-	expectIndependentEquivalent(interpreter, dynarec);
 }
 
 } // namespace

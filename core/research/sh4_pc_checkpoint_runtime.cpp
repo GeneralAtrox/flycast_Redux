@@ -4,7 +4,6 @@
 #include "cfg/option.h"
 #include "hw/sh4/sh4_mem.h"
 #include "log/Log.h"
-#include "research/identity_manifest.h"
 #include "research/maple_runtime.h"
 #include "research/sh4_observation_runtime.h"
 #include "types.h"
@@ -32,56 +31,10 @@ std::atomic<int> targetBackend {-1};
 std::atomic<bool> configured {false};
 std::atomic<bool> triggered {false};
 
-bool typedRecorderConfigured()
-{
-	const std::array<const std::string *, 11> outputs {
-		&config::ResearchMapleRecordPath.get(),
-		&config::ResearchMemoryRangesRecordPath.get(),
-		&config::ResearchSh4EventsRecordPath.get(),
-		&config::ResearchSh4ObservationRecordPath.get(),
-		&config::ResearchSh4ProfileRecordPath.get(),
-		&config::ResearchPvrTaRecordPath.get(),
-		&config::ResearchPvrPresentationRecordPath.get(),
-		&config::ResearchPvrDrawRecordPath.get(),
-		&config::ResearchGdromRecordPath.get(),
-		&config::ResearchAicaRecordPath.get(),
-		&config::ResearchCddaRecordPath.get(),
-	};
-	for (const std::string *output : outputs)
-		if (!output->empty())
-			return true;
-	return false;
-}
-
 Sh4ObservationBackend configuredBackend()
 {
 	return config::DynarecEnabled.get() ? Sh4ObservationBackend::Dynarec
 			: Sh4ObservationBackend::Interpreter;
-}
-
-std::uint32_t identityBoundCheckpointPc()
-{
-	if (config::ResearchIdentityManifestPath.get().empty())
-		throw FlycastException(
-				"research.Sh4PcCheckpoint requires research.IdentityManifest");
-	const IdentityManifest identity = loadIdentityManifest(std::filesystem::u8path(
-			config::ResearchIdentityManifestPath.get()));
-	const std::uint32_t configuredPc = static_cast<std::uint32_t>(
-			config::ResearchSh4PcCheckpoint.get());
-	if (identity.runtimeConfiguration.sh4PcCheckpoint != configuredPc)
-		throw FlycastException(
-				"research identity/runtime SH-4 PC checkpoint mismatch");
-	const std::uint32_t configuredAddress = static_cast<std::uint32_t>(
-			config::ResearchSh4PcCheckpointU32Address.get());
-	const std::uint32_t configuredValue = static_cast<std::uint32_t>(
-			config::ResearchSh4PcCheckpointU32Value.get());
-	if (identity.runtimeConfiguration.sh4PcCheckpointU32Address
-				!= configuredAddress
-			|| identity.runtimeConfiguration.sh4PcCheckpointU32Value
-					!= configuredValue)
-		throw FlycastException(
-				"research identity/runtime SH-4 PC checkpoint U32 gate mismatch");
-	return configuredPc;
 }
 
 bool checkpointU32GateMatches() noexcept
@@ -118,8 +71,6 @@ void configureSh4PcCheckpointRuntime()
 			|| (configuredPc & 1) != 0)
 		throw FlycastException(
 				"research.Sh4PcCheckpoint must be an aligned non-zero 32-bit guest PC");
-	if (!config::isTransient("research", "Sh4PcCheckpoint"))
-		throw FlycastException("research.Sh4PcCheckpoint must be transient");
 	const std::int64_t configuredAddress =
 			config::ResearchSh4PcCheckpointU32Address.get();
 	const std::int64_t configuredValue =
@@ -139,21 +90,14 @@ void configureSh4PcCheckpointRuntime()
 				|| configuredValue > std::numeric_limits<std::uint32_t>::max())
 			throw FlycastException(
 					"research SH-4 PC checkpoint U32 gate is outside aligned Dreamcast system RAM/U32 bounds");
-		if (!config::isTransient("research", "Sh4PcCheckpointU32Address")
-				|| !config::isTransient("research", "Sh4PcCheckpointU32Value"))
-			throw FlycastException(
-					"research SH-4 PC checkpoint U32 gate must be transient");
 	}
-	if (!typedRecorderConfigured())
-		throw FlycastException(
-				"research.Sh4PcCheckpoint requires a configured typed recorder output");
 	if (config::ThreadedRendering.get())
 		throw FlycastException(
 				"research.Sh4PcCheckpoint requires non-threaded rendering");
 	if (config::DynarecEnabled.get() && !config::ResearchDynarecObservation.get())
 		throw FlycastException(
-				"research.Sh4PcCheckpoint with dynarec requires existing typed per-instruction observation");
-	const std::uint32_t boundPc = identityBoundCheckpointPc();
+				"research.Sh4PcCheckpoint with dynarec requires research.DynarecObservation");
+	const std::uint32_t boundPc = static_cast<std::uint32_t>(configuredPc);
 	targetU32Address.store(static_cast<std::uint32_t>(configuredAddress),
 			std::memory_order_release);
 	targetU32Value.store(static_cast<std::uint32_t>(configuredValue),
@@ -170,8 +114,6 @@ void startSh4PcCheckpointRuntime(std::function<void()> cleanExitCallback)
 		return;
 	if (!cleanExitCallback)
 		throw FlycastException("SH-4 PC checkpoint requires a clean-exit callback");
-	if (identityBoundCheckpointPc() != targetPc.load(std::memory_order_acquire))
-		throw FlycastException("SH-4 PC checkpoint binding changed before start");
 	const Sh4ObservationBackend backend = configuredBackend();
 	{
 		const std::lock_guard<std::mutex> lock(callbackMutex);
@@ -200,17 +142,9 @@ void sh4PcCheckpointInstructionEnd(Sh4ObservationBackend backend,
 {
 	if (targetBackend.load(std::memory_order_acquire) != static_cast<int>(backend))
 		return;
-	// A deferred SH-4 observation capture changes to its authenticated precise
-	// timing model only at Sh4ObservationStartDma.  Do not let a common PC hit
-	// during boot terminate that capture before its native bus is active.  PC
-	// terminals backed only by another typed recorder retain immediate matching.
-	if (!config::ResearchSh4ObservationRecordPath.get().empty()
-			&& !sh4ObservationBusActive(backend))
-		return;
-	// A replay-backed typed capture is publishable only after every event in the
-	// authenticated input stream has been consumed. The requested PC may occur
-	// while the final asynchronous DMA is still open, so defer that hit rather
-	// than turning an otherwise clean PC stop into an incomplete replay.
+	// A replay finishes cleanly only after every recorded event has been
+	// consumed. The requested PC may occur while the final asynchronous DMA is
+	// still open, so defer that hit rather than cutting the replay short.
 	if (mapleReplaying() && !mapleReplayConsumed())
 		return;
 	if (!checkpointU32GateMatches())

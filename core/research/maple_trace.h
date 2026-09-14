@@ -172,8 +172,15 @@ struct MapleTrace
 	std::vector<MapleTraceEvent> events;
 };
 
+// The 32-byte tag in the header is kept for file-format compatibility with
+// traces recorded by earlier builds. Loading without an expected tag skips that
+// comparison; every structural and payload check still applies.
+MapleTrace loadProductionMapleTrace(const std::filesystem::path& path,
+		std::uint64_t maximumBytes = DefaultMaximumMapleTraceBytes);
 MapleTrace loadProductionMapleTrace(const std::filesystem::path& path,
 		const Sha256Digest& expectedIdentity,
+		std::uint64_t maximumBytes = DefaultMaximumMapleTraceBytes);
+MapleTraceSummary validateProductionMapleTraceFile(const std::filesystem::path& path,
 		std::uint64_t maximumBytes = DefaultMaximumMapleTraceBytes);
 MapleTraceSummary validateProductionMapleTraceFile(const std::filesystem::path& path,
 		const Sha256Digest& expectedIdentity,
@@ -182,7 +189,8 @@ MapleTraceSummary validateProductionMapleTraceFile(const std::filesystem::path& 
 class MapleTraceWriter
 {
 public:
-	MapleTraceWriter(const std::filesystem::path& path, const Sha256Digest& identityDigest,
+	MapleTraceWriter(const std::filesystem::path& path,
+			const Sha256Digest& identityDigest = Sha256Digest {},
 			std::uint64_t maximumBytes = DefaultMaximumMapleTraceBytes,
 			std::uint32_t schemaVersion = MapleTraceSchemaVersionV1);
 	~MapleTraceWriter();
