@@ -1,6 +1,6 @@
 #include "research/sh4_observation.h"
 #include "research/sh4_observation_runtime.h"
-#include "research/sh4_events_runtime.h"
+#include "research/sh4_observation_runtime.h"
 #include "cfg/option.h"
 #include "hw/sh4/sh4_cycles.h"
 #include "hw/sh4/sh4_if.h"
@@ -315,18 +315,24 @@ TEST(ResearchSh4Observation, InterpreterPublishesCanonicalCallAndReturnOrdering)
 	context.pc = 0x8c020002;
 	context.r[1] = 0x8c010100;
 	context.pr = 0x8c030000;
-	research::sh4EventsInstructionBegin(0x8c020000, 0x410b, 100, context);
+	research::sh4ObservationInstructionBegin(
+			research::Sh4ObservationBackend::Interpreter, 0x8c020000, 0x410b, 100, context);
 	context.pc = 0x8c010100;
-	research::sh4EventsInstructionEnd(0x8c020000, 0x410b, 104, context);
+	research::sh4ObservationInstructionEnd(
+			research::Sh4ObservationBackend::Interpreter, 0x8c020000, 0x410b, 104, context);
 
 	context.pc = 0x8c010112;
 	context.pr = 0x8c020004;
-	research::sh4EventsInstructionBegin(0x8c010110, 0x000b, 120, context);
+	research::sh4ObservationInstructionBegin(
+			research::Sh4ObservationBackend::Interpreter, 0x8c010110, 0x000b, 120, context);
 	context.pc = 0x8c020004;
-	research::sh4EventsInstructionEnd(0x8c010110, 0x000b, 124, context);
+	research::sh4ObservationInstructionEnd(
+			research::Sh4ObservationBackend::Interpreter, 0x8c010110, 0x000b, 124, context);
 	context.pc = 0x8c030002;
-	research::sh4EventsInstructionBegin(0x8c030000, 0x0009, 130, context);
-	research::sh4EventsInstructionAbort();
+	research::sh4ObservationInstructionBegin(
+			research::Sh4ObservationBackend::Interpreter, 0x8c030000, 0x0009, 130, context);
+	research::sh4ObservationInstructionAbort(
+			research::Sh4ObservationBackend::Interpreter);
 
 	ASSERT_EQ(8u, observed.size());
 	EXPECT_EQ(research::Sh4ObservationType::InstructionBegin, observed[0].type);
@@ -374,7 +380,9 @@ TEST(ResearchSh4Observation, SharedRuntimePublishesDynarecInstructionOwnership)
 			0x0009, 101, context);
 	// Interpreter opcode handlers are also used as dynarec fallbacks. Their
 	// legacy memory wrapper must inherit the owning dynarec frame.
-	research::sh4EventsMemoryAccess(0x8c100000, 4,
+	research::sh4ObservationMemoryAccess(
+			research::sh4ObservationCurrentInstructionBackend(
+					research::Sh4ObservationBackend::Interpreter), 0x8c100000, 4,
 			research::Sh4MemoryAccessKind::Read, 0x44332211);
 	research::sh4ObservationInstructionEnd(Backend::Dynarec, 0x8c010002,
 			0x0009, 102, context);

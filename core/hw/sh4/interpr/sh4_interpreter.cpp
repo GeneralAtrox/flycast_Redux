@@ -13,9 +13,7 @@
 #include "../sh4_cache.h"
 #include "debug/gdb_server.h"
 #include "../sh4_cycles.h"
-#include "research/memory_ranges_runtime.h"
 #include "research/sh4_observation_runtime.h"
-#include "research/sh4_events_runtime.h"
 #include "cfg/option.h"
 
 Sh4ICache icache;
@@ -41,13 +39,16 @@ void Sh4Interpreter::ExecuteOpcode(u16 op)
 	try
 	{
 		Sh4Cycles& cycles = executionCycles();
-		research::sh4EventsInstructionBegin(executedPc, op, cycles.now(), *ctx);
-		research::memoryRangesInstructionBoundary(executedPc, cycles.now());
+		research::sh4ObservationInstructionBegin(
+				research::Sh4ObservationBackend::Interpreter, executedPc, op,
+				cycles.now(), *ctx);
 		if (ctx->sr.FD == 1 && OpDesc[op]->IsFloatingPoint())
 			throw SH4ThrownException(executedPc, Sh4Ex_FpuDisabled);
 		OpPtr[op](ctx, op);
 		cycles.executeCycles(op);
-		research::sh4EventsInstructionEnd(executedPc, op, cycles.now(), *ctx);
+		research::sh4ObservationInstructionEnd(
+				research::Sh4ObservationBackend::Interpreter, executedPc, op,
+				cycles.now(), *ctx);
 		if (!config::DynarecEnabled.get()
 				&& research::sh4ObservationPreciseTimingActive(
 						research::Sh4ObservationBackend::Interpreter)

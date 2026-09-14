@@ -514,47 +514,15 @@ extern Option<bool, false> UseSafFilePicker;
 #endif
 extern OptionString LogServer;
 
-// Research toolkit (command-line/transient configuration only)
-extern Option<std::string, false> ResearchIdentityManifestPath;
+// Research workbench (usually supplied as transient -config options)
 extern Option<std::string, false> ResearchMapleRecordPath;
 extern Option<std::string, false> ResearchMapleReplayPath;
 extern Option<int64_t, false> ResearchMapleTraceMaxBytes;
 extern Option<int64_t, false> ResearchMapleDmaCheckpoint;
-extern Option<std::string, false> ResearchMemoryRangesManifestPath;
-extern Option<std::string, false> ResearchMemoryRangesRecordPath;
-extern Option<int64_t, false> ResearchMemoryRangesMaxBytes;
-extern Option<std::string, false> ResearchSh4EventsManifestPath;
-extern Option<std::string, false> ResearchSh4EventsRecordPath;
-extern Option<int64_t, false> ResearchSh4EventsMaxBytes;
 extern Option<bool, false> ResearchDynarecObservation;
-extern Option<std::string, false> ResearchSh4ObservationRecordPath;
-extern Option<std::string, false> ResearchSh4ObservationManifestSetPath;
-extern Option<int64_t, false> ResearchSh4ObservationMaxBytes;
-extern Option<int64_t, false> ResearchSh4ObservationStartDma;
 extern Option<int64_t, false> ResearchSh4PcCheckpoint;
 extern Option<int64_t, false> ResearchSh4PcCheckpointU32Address;
 extern Option<int64_t, false> ResearchSh4PcCheckpointU32Value;
-extern Option<std::string, false> ResearchSh4ProfileRecordPath;
-extern Option<int64_t, false> ResearchSh4ProfileMaxBytes;
-extern Option<int64_t, false> ResearchSh4ProfileMaxBlocks;
-extern Option<int64_t, false> ResearchSh4ProfileMaxBranches;
-extern Option<int64_t, false> ResearchSh4ProfileMaxExecutions;
-extern Option<std::string, false> ResearchPvrTaRecordPath;
-extern Option<std::string, false> ResearchPvrTaManifestPath;
-extern Option<int64_t, false> ResearchPvrTaMaxBytes;
-extern Option<int64_t, false> ResearchPvrTaStartDma;
-extern Option<std::string, false> ResearchPvrPresentationRecordPath;
-extern Option<int64_t, false> ResearchPvrPresentationMaxBytes;
-extern Option<std::string, false> ResearchPvrDrawRecordPath;
-extern Option<int64_t, false> ResearchPvrDrawMaxBytes;
-extern Option<std::string, false> ResearchGdromRecordPath;
-extern Option<int64_t, false> ResearchGdromMaxBytes;
-extern Option<std::string, false> ResearchAicaRecordPath;
-extern Option<int64_t, false> ResearchAicaMaxBytes;
-extern Option<int64_t, false> ResearchAicaSampleFrames;
-extern Option<std::string, false> ResearchCddaRecordPath;
-extern Option<int64_t, false> ResearchCddaMaxBytes;
-extern Option<int64_t, false> ResearchCddaSampleFrames;
 extern Option<int64_t, false> ResearchDreamcastRtcSeed;
 extern Option<std::string, false> ResearchControlPipeName;
 extern Option<std::string, false> ResearchControlNonce;
