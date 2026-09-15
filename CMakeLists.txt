@@ -337,6 +337,8 @@ if(NOT LIBRETRO)
 	target_sources(${PROJECT_NAME} PRIVATE
 			core/research/aica_observation.cpp
 			core/research/aica_observation.h
+			core/research/aica_observation_events.cpp
+			core/research/aica_observation_internal.h
 			core/research/cdda_observation.cpp
 			core/research/cdda_observation.h
 			core/research/gdrom_observation.cpp
@@ -347,8 +349,14 @@ if(NOT LIBRETRO)
 			core/research/maple_observation.h
 			core/research/maple_runtime.cpp
 			core/research/maple_runtime.h
-			core/research/maple_trace.cpp
+			core/research/maple_session.cpp
+			core/research/maple_session.h
 			core/research/maple_trace.h
+			core/research/maple_trace_format.cpp
+			core/research/maple_trace_internal.h
+			core/research/maple_trace_reader.cpp
+			core/research/maple_trace_validator.cpp
+			core/research/maple_trace_writer.cpp
 			core/research/pvr_draw_observation.cpp
 			core/research/pvr_draw_observation.h
 			core/research/pvr_framebuffer.cpp
@@ -369,10 +377,18 @@ if(NOT LIBRETRO)
 			core/research/sh4_interpreter_hooks.h
 			core/research/sh4_lua_subscriptions.cpp
 			core/research/sh4_lua_subscriptions.h
+			core/research/sh4_lua_subscriptions_cpu.cpp
+			core/research/sh4_lua_subscriptions_internal.h
+			core/research/sh4_lua_subscriptions_media.cpp
+			core/research/sh4_lua_subscriptions_pvr.cpp
 			core/research/sh4_observation.cpp
 			core/research/sh4_observation.h
+			core/research/sh4_observation_dynarec.cpp
+			core/research/sh4_observation_events.cpp
 			core/research/sh4_observation_runtime.cpp
 			core/research/sh4_observation_runtime.h
+			core/research/sh4_observation_runtime_internal.h
+			core/research/sh4_observation_timing.cpp
 			core/research/sh4_pc_checkpoint_runtime.cpp
 			core/research/sh4_pc_checkpoint_runtime.h
 			core/research/sh4_profile.cpp
@@ -1567,20 +1583,31 @@ if(BUILD_RESEARCH_TOOLS AND BUILD_TESTING AND NOT LIBRETRO)
 			tests/src/research/WorkbenchRecorderTest.cpp
 			tests/src/research/ResearchRuntimeStubs.cpp
 			core/research/aica_observation.cpp
+			core/research/aica_observation_events.cpp
 			core/research/cdda_observation.cpp
 			core/research/gdrom_observation.cpp
 			core/research/gdrom_hardware_observation.cpp
 			core/research/maple_runtime.cpp
 			core/research/maple_observation.cpp
-			core/research/maple_trace.cpp
+			core/research/maple_session.cpp
+			core/research/maple_trace_format.cpp
+			core/research/maple_trace_reader.cpp
+			core/research/maple_trace_validator.cpp
+			core/research/maple_trace_writer.cpp
 			core/research/pvr_ta_observation.cpp
 			core/research/pvr_draw_observation.cpp
 			core/research/pvr_presentation_observation.cpp
 			core/research/pvr_framebuffer.cpp
 			core/research/control/control_protocol.cpp
 			core/research/sh4_lua_subscriptions.cpp
+			core/research/sh4_lua_subscriptions_cpu.cpp
+			core/research/sh4_lua_subscriptions_media.cpp
+			core/research/sh4_lua_subscriptions_pvr.cpp
 			core/research/sh4_observation.cpp
+			core/research/sh4_observation_dynarec.cpp
+			core/research/sh4_observation_events.cpp
 			core/research/sh4_observation_runtime.cpp
+			core/research/sh4_observation_timing.cpp
 			core/research/sh4_pc_checkpoint_runtime.cpp
 			core/research/sh4_profile.cpp
 			core/research/workbench/rows_audio.cpp
