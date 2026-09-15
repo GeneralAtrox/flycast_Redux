@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "flycast-workbench": {
+      "command": "python",
+      "args": ["tools/workbench/mcp_server.py"]
+    }
+  }
+}
