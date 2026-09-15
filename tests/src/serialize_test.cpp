@@ -32,7 +32,10 @@ TEST_F(SerializeTest, SizeTest)
 	std::vector<char> data(30000000);
 	Serializer ser(data.data(), data.size());
 	dc_serialize(ser);
-	ASSERT_EQ(28050889u, ser.size());
+	// Upstream is 28050889. This fork's V60 save state adds 38 bytes of CD-DA
+	// research provenance in gdromv3.cpp and sgc_if.cpp (two u64 generations
+	// plus a 22-byte provenance record), read back only from V60 files.
+	ASSERT_EQ(28050927u, ser.size());
 }
 
 TEST(SerializerBufferTest, BufferOverflowThrowsException)

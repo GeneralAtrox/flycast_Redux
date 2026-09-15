@@ -24,3 +24,9 @@ CMakeUserPresets.json
 
 __pycache__/
 *.pyc
+
+
+# Runtime files Flycast writes when launched from the repo root
+/vmu_save_*.bin
+/*.cht
+/test.cfg

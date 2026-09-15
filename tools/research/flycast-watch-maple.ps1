@@ -1,3 +1,7 @@
+#Requires -Version 7.0
+# Uses ProcessStartInfo.ArgumentList and [IO.Path]::GetRelativePath, which
+# Windows PowerShell 5.1 lacks. Run with pwsh.
+
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
