@@ -73,12 +73,23 @@ Run the Python commands from `tools/workbench`, or `pip install -e tools/workben
 cmake -S . -B build-research -G "Visual Studio 17 2022" -A x64 `
   -DBUILD_RESEARCH_TOOLS=ON -DENABLE_CTEST=ON
 cmake --build build-research --config Release
-ctest --test-dir build-research -C Release -R flycast-research-tests --output-on-failure
+ctest --test-dir build-research -C Release -R flycast-research --output-on-failure
 ```
 
+That runs both research suites: `flycast-research-tests`, the standalone one,
+and `flycast-research-in-tree`, the research suites inside the emulator binary
+(dynarec differential, PowerVR TA, Lua API, GDB policy). Match
+`flycast-research` rather than `flycast-research-tests` or you only run the
+first. The rest of the upstream suite has failures that predate this fork, so
+it is deliberately not registered.
+
 `ENABLE_CTEST` turns the `flycast` binary into the in-tree test runner, so
-keep a second build tree without it for playing. `flycast-research-tests`
-is the standalone suite for the research code.
+keep a second build tree without it for playing.
+
+The 18 Lua API tests only exist when CMake finds Lua. A build under
+`build-deps/lua-*` is picked up automatically; otherwise configure warns and
+excludes both the `flycast.research` Lua API and its tests, so pass
+`-DLUA_INCLUDE_DIR` and `-DLUA_LIBRARY` if you have Lua elsewhere.
 
 ## Upstream
 

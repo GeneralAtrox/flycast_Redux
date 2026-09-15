@@ -22,6 +22,7 @@ using namespace sh4_lua_test;
 
 TEST(ResearchSh4LuaApi, CurrentSh4TickFailsCleanlyBeforeSchedulerInitialization)
 {
+	DetachedSchedulerGuard detached;
 	LuaTestDirectory directory;
 	LuaRuntimeGuard runtime;
 	set_user_config_dir(directory.directory().u8string());

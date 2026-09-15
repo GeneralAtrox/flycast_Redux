@@ -5,6 +5,7 @@
 #include "cfg/option.h"
 #include "json.hpp"
 #include "research/maple_observation.h"
+#include "hw/sh4/sh4_if.h"
 #include "research/sh4_observation.h"
 #include "stdclass.h"
 
@@ -45,6 +46,22 @@ public:
 
 private:
 	std::filesystem::path path;
+};
+
+// Detaches the SH-4 control block for the lifetime of the guard so a test can
+// exercise the "scheduler is not initialized" path. Without this the test only
+// passes when it runs before any suite that calls emu.init(), because the
+// control block stays initialized for the rest of the process.
+class DetachedSchedulerGuard
+{
+public:
+	DetachedSchedulerGuard() : saved(p_sh4rcb) { p_sh4rcb = nullptr; }
+	~DetachedSchedulerGuard() { p_sh4rcb = saved; }
+	DetachedSchedulerGuard(const DetachedSchedulerGuard&) = delete;
+	DetachedSchedulerGuard& operator=(const DetachedSchedulerGuard&) = delete;
+
+private:
+	Sh4RCB *saved;
 };
 
 class LuaRuntimeGuard

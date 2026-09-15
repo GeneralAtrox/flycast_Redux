@@ -659,7 +659,33 @@ if(NOT LIBRETRO)
 	endif()
 
 	if(USE_LUA)
+		# A Lua built into build-deps by hand is the usual case on Windows, where
+		# there is no system Lua. Look there before giving up, so the Lua tests
+		# are not silently dropped from the build.
+		file(GLOB FLYCAST_LOCAL_LUA_DIRS "${CMAKE_SOURCE_DIR}/build-deps/lua-*")
+		foreach(FLYCAST_LOCAL_LUA ${FLYCAST_LOCAL_LUA_DIRS})
+			if(NOT LUA_INCLUDE_DIR AND EXISTS "${FLYCAST_LOCAL_LUA}/src/lua.h")
+				set(LUA_INCLUDE_DIR "${FLYCAST_LOCAL_LUA}/src" CACHE PATH "Lua headers" FORCE)
+			endif()
+			if(NOT LUA_LIBRARY)
+				file(GLOB FLYCAST_LOCAL_LUA_LIB
+						"${FLYCAST_LOCAL_LUA}/build/Release/lua*.lib"
+						"${FLYCAST_LOCAL_LUA}/build/lua*.lib"
+						"${FLYCAST_LOCAL_LUA}/src/liblua*.a")
+				if(FLYCAST_LOCAL_LUA_LIB)
+					list(GET FLYCAST_LOCAL_LUA_LIB 0 FLYCAST_LOCAL_LUA_LIB)
+					set(LUA_LIBRARY "${FLYCAST_LOCAL_LUA_LIB}" CACHE FILEPATH "Lua library" FORCE)
+				endif()
+			endif()
+		endforeach()
 		find_package(Lua 5.2)
+		if(APPLE OR NOT LUA_FOUND)
+			# Without Lua the flycast.research API and its 18 tests compile to
+			# nothing, so a regression in them cannot fail the build. Say so.
+			message(WARNING "Lua not found: the flycast.research API and the "
+					"ResearchSh4LuaApi tests are excluded from this build. Pass "
+					"-DLUA_INCLUDE_DIR and -DLUA_LIBRARY to include them.")
+		endif()
 		if(NOT APPLE AND LUA_FOUND)
 			target_compile_definitions(${PROJECT_NAME} PRIVATE USE_LUA)
 			target_include_directories(${PROJECT_NAME} PRIVATE ${LUA_INCLUDE_DIR} core/deps/luabridge/Source)
@@ -1672,6 +1698,13 @@ if(BUILD_RESEARCH_TOOLS AND BUILD_TESTING AND NOT LIBRETRO)
 		target_compile_options(flycast-research-tests PRIVATE /utf-8)
 	endif()
 	add_test(NAME flycast-research-tests COMMAND flycast-research-tests)
+	if(ENABLE_CTEST)
+		# The emulator binary doubles as the in-tree test runner. Register only
+		# the research suites: the rest of the upstream suite has failures that
+		# predate this fork. ResearchSh4LuaApi appears only when Lua was found.
+		add_test(NAME flycast-research-in-tree
+				COMMAND ${PROJECT_NAME} --gtest_filter=Research*:*Gdb*)
+	endif()
 endif()
 
 if(NINTENDO_SWITCH)
