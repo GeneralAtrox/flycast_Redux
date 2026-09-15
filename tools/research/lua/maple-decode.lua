@@ -158,7 +158,11 @@ local function encode_json(value)
   end
   if kind == "boolean" then return value and "true" or "false" end
   if kind ~= "table" then error("unsupported JSON value type: " .. kind) end
-  if getmetatable(value) == array_metatable then
+  -- Each dofile() of maple-decode-tables.lua creates a fresh marker table, so
+  -- match on the marker field rather than the metatable's identity: arrays
+  -- built inside maple-decode-devices.lua carry a different table instance.
+  local metatable = getmetatable(value)
+  if metatable ~= nil and metatable.__maple_json_array then
     local items = {}
     for index = 1, #value do items[index] = encode_json(value[index]) end
     return "[" .. table.concat(items, ",") .. "]"
