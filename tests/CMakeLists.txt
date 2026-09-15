@@ -43,7 +43,13 @@ endif()
 
 if(BUILD_RESEARCH_TOOLS AND NOT LIBRETRO)
     target_sources(${PROJECT_NAME} PRIVATE
-			src/research/PvrTaObservationTest.cpp
+            src/research/PvrTaListBoundaryTest.cpp
+            src/research/PvrTaRenderTest.cpp
+            src/research/Sh4DynarecDifferentialMapleSupport.cpp
+            src/research/Sh4DynarecDifferentialSupport.cpp
             src/research/Sh4DynarecDifferentialTest.cpp
-            src/research/Sh4LuaApiTest.cpp)
+            src/research/Sh4LuaApiCausalSliceWatcherTest.cpp
+            src/research/Sh4LuaApiCoreTest.cpp
+            src/research/Sh4LuaApiMapleWatcherTest.cpp
+            src/research/Sh4LuaApiMemoryWatcherTest.cpp)
 endif()

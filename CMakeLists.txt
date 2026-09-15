@@ -1592,7 +1592,8 @@ if(BUILD_RESEARCH_TOOLS AND BUILD_TESTING AND NOT LIBRETRO)
 			tests/src/research/GdromObservationTest.cpp
 			tests/src/research/GdromHardwareObservationTest.cpp
 			tests/src/research/MapleObservationTest.cpp
-			tests/src/research/PvrTaObservationTest.cpp
+			tests/src/research/PvrTaListBoundaryTest.cpp
+			tests/src/research/PvrTaRenderTest.cpp
 			tests/src/research/PvrDrawObservationTest.cpp
 			tests/src/research/PvrPresentationObservationTest.cpp
 			tests/src/research/PvrFramebufferTest.cpp
