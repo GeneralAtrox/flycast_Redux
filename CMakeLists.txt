@@ -341,10 +341,14 @@ if(NOT LIBRETRO)
 			core/research/aica_observation_internal.h
 			core/research/cdda_observation.cpp
 			core/research/cdda_observation.h
+			core/research/cdda_observation_events.cpp
+			core/research/cdda_observation_internal.h
 			core/research/gdrom_observation.cpp
 			core/research/gdrom_observation.h
 			core/research/gdrom_hardware_observation.cpp
 			core/research/gdrom_hardware_observation.h
+			core/research/gdrom_hardware_observation_events.cpp
+			core/research/gdrom_hardware_observation_internal.h
 			core/research/maple_observation.cpp
 			core/research/maple_observation.h
 			core/research/maple_runtime.cpp
@@ -363,8 +367,12 @@ if(NOT LIBRETRO)
 			core/research/pvr_framebuffer.h
 			core/research/pvr_presentation_observation.cpp
 			core/research/pvr_presentation_observation.h
+			core/research/pvr_presentation_observation_events.cpp
+			core/research/pvr_presentation_observation_internal.h
 			core/research/pvr_ta_observation.cpp
 			core/research/pvr_ta_observation.h
+			core/research/pvr_ta_observation_events.cpp
+			core/research/pvr_ta_observation_internal.h
 			core/research/control/control_actions.cpp
 			core/research/control/control_actions.h
 			core/research/control/control_protocol.cpp
@@ -655,6 +663,19 @@ if(NOT LIBRETRO)
 		if(NOT APPLE AND LUA_FOUND)
 			target_compile_definitions(${PROJECT_NAME} PRIVATE USE_LUA)
 			target_include_directories(${PROJECT_NAME} PRIVATE ${LUA_INCLUDE_DIR} core/deps/luabridge/Source)
+			# The flycast.research Lua API lives outside core/lua so that lua.cpp
+			# keeps a minimal diff against upstream. It needs the same includes.
+			target_sources(${PROJECT_NAME} PRIVATE
+					core/research/lua/lua_research_api.cpp
+					core/research/lua/lua_research_api.h
+					core/research/lua/lua_research_delivery.cpp
+					core/research/lua/lua_research_events_media.cpp
+					core/research/lua/lua_research_events_pvr.cpp
+					core/research/lua/lua_research_events_sh4.cpp
+					core/research/lua/lua_research_fields.cpp
+					core/research/lua/lua_research_filters.cpp
+					core/research/lua/lua_research_filters_bus.cpp
+					core/research/lua/lua_research_internal.h)
 			list(TRANSFORM LUA_LIBRARIES REPLACE "\.dll" "")
 			target_link_libraries(${PROJECT_NAME} PRIVATE ${LUA_LIBRARIES})
 		endif()
@@ -1576,8 +1597,14 @@ if(BUILD_RESEARCH_TOOLS AND BUILD_TESTING AND NOT LIBRETRO)
 			tests/src/research/PvrPresentationObservationTest.cpp
 			tests/src/research/PvrFramebufferTest.cpp
 			tests/src/research/ResearchControlTest.cpp
-			tests/src/research/Sh4ObservationTest.cpp
+			tests/src/research/Sh4ObservationBusTest.cpp
+			tests/src/research/Sh4ObservationCallReturnTest.cpp
+			tests/src/research/Sh4ObservationExceptionTest.cpp
+			tests/src/research/Sh4ObservationRuntimeTest.cpp
+			tests/src/research/Sh4ObservationTimingTest.cpp
 			tests/src/research/Sh4LuaSubscriptionsTest.cpp
+			tests/src/research/Sh4LuaSubscriptionsBusTest.cpp
+			tests/src/research/Sh4LuaSubscriptionsGuestSnapshotTest.cpp
 			tests/src/research/Sh4PcCheckpointRuntimeTest.cpp
 			tests/src/research/Sh4ProfileTest.cpp
 			tests/src/research/WorkbenchRecorderTest.cpp
@@ -1585,8 +1612,10 @@ if(BUILD_RESEARCH_TOOLS AND BUILD_TESTING AND NOT LIBRETRO)
 			core/research/aica_observation.cpp
 			core/research/aica_observation_events.cpp
 			core/research/cdda_observation.cpp
+			core/research/cdda_observation_events.cpp
 			core/research/gdrom_observation.cpp
 			core/research/gdrom_hardware_observation.cpp
+			core/research/gdrom_hardware_observation_events.cpp
 			core/research/maple_runtime.cpp
 			core/research/maple_observation.cpp
 			core/research/maple_session.cpp
@@ -1595,8 +1624,10 @@ if(BUILD_RESEARCH_TOOLS AND BUILD_TESTING AND NOT LIBRETRO)
 			core/research/maple_trace_validator.cpp
 			core/research/maple_trace_writer.cpp
 			core/research/pvr_ta_observation.cpp
+			core/research/pvr_ta_observation_events.cpp
 			core/research/pvr_draw_observation.cpp
 			core/research/pvr_presentation_observation.cpp
+			core/research/pvr_presentation_observation_events.cpp
 			core/research/pvr_framebuffer.cpp
 			core/research/control/control_protocol.cpp
 			core/research/sh4_lua_subscriptions.cpp
