@@ -137,5 +137,7 @@ Code. A typical loop:
 ## Lua watchers
 
 `tools/research/lua/` scripts subscribe to the same buses from Lua and emit
-JSONL. They are useful for quick looks without a database. API reference:
+JSONL. They are useful for quick looks without a database. Their PowerShell
+launchers in `tools/research/` need PowerShell 7 (`pwsh`); under Windows
+PowerShell 5.1 they refuse to start rather than fail part-way. API reference:
 [../research/LuaSubscriptionsV1.md](../research/LuaSubscriptionsV1.md).

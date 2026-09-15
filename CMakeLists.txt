@@ -1635,6 +1635,7 @@ if(BUILD_RESEARCH_TOOLS AND BUILD_TESTING AND NOT LIBRETRO)
 			tests/src/research/Sh4PcCheckpointRuntimeTest.cpp
 			tests/src/research/Sh4ProfileTest.cpp
 			tests/src/research/WorkbenchRecorderTest.cpp
+			tests/src/research/WorkbenchRecorderBusesTest.cpp
 			tests/src/research/ResearchRuntimeStubs.cpp
 			core/research/aica_observation.cpp
 			core/research/aica_observation_events.cpp
