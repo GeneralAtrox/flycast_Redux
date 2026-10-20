@@ -166,9 +166,13 @@ void sh4PcCheckpointInstructionEnd(Sh4ObservationBackend backend,
 		return;
 	if (!checkpointU32GateMatches())
 		return;
-	std::uint32_t expected = pc;
-	if (expected == 0 || !targetPc.compare_exchange_strong(expected, 0,
-			std::memory_order_acq_rel, std::memory_order_acquire))
+	// Any SH-4 mirror of the target counts (P0, P1, P2: the same physical
+	// address), as ram_frames_runtime's frame PC: a game may run its code
+	// from 0x0c000000 while its symbols name the 0x8c000000 form.
+	std::uint32_t expected = targetPc.load(std::memory_order_acquire);
+	if (expected == 0 || ((pc ^ expected) & 0x1fffffffu) != 0
+			|| !targetPc.compare_exchange_strong(expected, 0,
+					std::memory_order_acq_rel, std::memory_order_acquire))
 		return;
 	triggered.store(true, std::memory_order_release);
 	NOTICE_LOG(SH4, "Reached read-only SH-4 PC checkpoint at %08x", pc);

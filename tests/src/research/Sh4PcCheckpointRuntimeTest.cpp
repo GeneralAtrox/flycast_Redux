@@ -139,4 +139,24 @@ TEST_F(ResearchSh4PcCheckpointRuntime, GuestU32GateDefersTheMatchingPc)
 	EXPECT_FALSE(research::sh4PcCheckpointRuntimeActive());
 }
 
+TEST_F(ResearchSh4PcCheckpointRuntime, AnyMirrorOfTheTargetFires)
+{
+	// A game running its code from P0 (0x0c...) reaches a target named in its
+	// P1 form (0x8c...): the same physical address.
+	config::ResearchSh4PcCheckpoint.set(0x8c01066e);
+	research::configureSh4PcCheckpointRuntime();
+	unsigned calls = 0;
+	research::startSh4PcCheckpointRuntime([&calls] { ++calls; });
+
+	research::sh4PcCheckpointInstructionEnd(
+			research::Sh4ObservationBackend::Interpreter, 0x0c010670);
+	EXPECT_EQ(0u, calls);
+	EXPECT_TRUE(research::sh4PcCheckpointRuntimeActive());
+	research::sh4PcCheckpointInstructionEnd(
+			research::Sh4ObservationBackend::Interpreter, 0x0c01066e);
+	EXPECT_EQ(1u, calls);
+	EXPECT_TRUE(research::sh4PcCheckpointRuntimeTriggered());
+	EXPECT_FALSE(research::sh4PcCheckpointRuntimeActive());
+}
+
 } // namespace
