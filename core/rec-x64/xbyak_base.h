@@ -580,7 +580,8 @@ protected:
 			if (ArchX64)
 			{
 #ifndef XBYAK32
-				mov(rcx, (uintptr_t)&sin_table);
+				mov(rcx, (uintptr_t)&fsca_cur); // the table FPSCR.RM selects
+				mov(rcx, qword[rcx]);
 				mov(rcx, qword[rcx + rax * 8]);
 #if ALLOC_F64 == false
 				mov(rdx, (uintptr_t)op.rd.reg_ptr(sh4ctx));
@@ -595,12 +596,14 @@ protected:
 			else
 			{
 #if ALLOC_F64 == true
-				movss(mapXRegister(op.rd, 0), dword[(size_t)&sin_table + eax * 8]);
-				movss(mapXRegister(op.rd, 1), dword[(size_t)&sin_table[0].u[1] + eax * 8]);
+				mov(ecx, dword[(size_t)&fsca_cur]); // the table FPSCR.RM selects
+				movss(mapXRegister(op.rd, 0), dword[ecx + eax * 8]);
+				movss(mapXRegister(op.rd, 1), dword[ecx + eax * 8 + 4]);
 #else
 				verify(!isAllocAny(op.rd));
-				mov(ecx, dword[(size_t)&sin_table + eax * 8]);
-				mov(edx, dword[(size_t)&sin_table[0].u[1] + eax * 8]);
+				mov(edx, dword[(size_t)&fsca_cur]); // the table FPSCR.RM selects
+				mov(ecx, dword[edx + eax * 8]);
+				mov(edx, dword[edx + eax * 8 + 4]);
 				mov(dword[op.rd.reg_ptr(sh4ctx)], ecx);
 				mov(dword[op.rd.reg_ptr(sh4ctx) + 1], edx);
 #endif

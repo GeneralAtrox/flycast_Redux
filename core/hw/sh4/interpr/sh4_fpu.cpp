@@ -355,8 +355,9 @@ sh4op(i1111_nnn0_1111_1101)
 			CHECK_FPU_32(ctx->fr[n]);
 			CHECK_FPU_32(ctx->fr[n + 1]);
 	#else
-			ctx->fr[n + 0] = sin_table[pi_index].u[0];
-			ctx->fr[n + 1] = sin_table[pi_index].u[1];
+			const f32_x2 *table = fsca_tables[ctx->fpscr.RM == 1 ? 1 : 0]; // the table FPSCR.RM selects
+			ctx->fr[n + 0] = table[pi_index].u[0];
+			ctx->fr[n + 1] = table[pi_index].u[1];
 	#endif
 
 	}

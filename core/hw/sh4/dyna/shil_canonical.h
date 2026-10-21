@@ -1034,8 +1034,8 @@ void,fsca_table,(float* fd,u32 fixed),
 
 	u32 pi_index=fixed&0xFFFF;
 
-	fd[0] = sin_table[pi_index].u[0];
-	fd[1] = sin_table[pi_index].u[1];
+	fd[0] = fsca_cur[pi_index].u[0];
+	fd[1] = fsca_cur[pi_index].u[1];
 )
 
 shil_compile

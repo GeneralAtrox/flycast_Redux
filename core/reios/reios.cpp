@@ -17,6 +17,7 @@
 
 #include "hw/sh4/sh4_if.h"
 #include "hw/sh4/sh4_mem.h"
+#include "hw/sh4/sh4_rom.h"
 #include "hw/holly/sb.h"
 #include "hw/naomi/naomi_cart.h"
 #include "hw/aica/aica.h"
@@ -510,6 +511,7 @@ static void reios_setup_state(u32 boot_addr)
 
 	ctx.fpscr.full = 0x00040001;
 	ctx.old_fpscr.full = 0x00040001;
+	fsca_select(ctx.fpscr.RM);
 }
 
 static void reios_setup_naomi(u32 boot_addr) {
@@ -632,6 +634,7 @@ static void reios_setup_naomi(u32 boot_addr) {
 
 	ctx.fpscr.full = 0x00040001;
 	ctx.old_fpscr.full = 0x00040001;
+	fsca_select(ctx.fpscr.RM);
 }
 
 static void reios_boot()

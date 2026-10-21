@@ -95,6 +95,8 @@ void SSAOptimizer::InsertMov32Op(const shil_param& rd, const shil_param& rs)
 }
 bool SSAOptimizer::ExecuteConstOp(shil_opcode* op)
 {
+	if (op->op == shop_fsca)
+		return false; // its table follows FPSCR.RM at run time (fsca_select)
 	if (!op->rs1.is_reg() && !op->rs2.is_reg() && !op->rs3.is_reg()
 			&& (op->rs1.is_imm() || op->rs2.is_imm() || op->rs3.is_imm())
 			&& op->rd.is_reg())
@@ -371,23 +373,6 @@ bool SSAOptimizer::ExecuteConstOp(shil_opcode* op)
 			{
 				f32 frd = shil_opcl_fsrra::f1::impl(reinterpret_cast<f32&>(rs1));
 				rd = reinterpret_cast<u32&>(frd);
-			}
-			break;
-		case shop_fsca:
-			{
-				f32 tmp[2];
-				shil_opcl_fsca::fsca_table::impl(tmp, rs1);
-				rd = reinterpret_cast<u32&>(tmp[0]);
-				u32 rd_1 = reinterpret_cast<u32&>(tmp[1]);
-				constprop_values[RegValue(op->rd, 1)] = rd_1;
-
-				shil_param op2_rd =  shil_param((Sh4RegType)(op->rd._reg + 1));
-				op2_rd.version[0] = op->rd.version[1];
-				InsertMov32Op(op2_rd, shil_param(rd_1));
-
-				// the previous insert might have invalidated our reference
-				op = &block->oplist[opnum - 1];
-				op->rd.type = FMT_F32;
 			}
 			break;
 		case shop_fabs:

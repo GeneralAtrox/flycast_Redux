@@ -13,6 +13,7 @@
 #include "../sh4_cache.h"
 #include "debug/gdb_server.h"
 #include "../sh4_cycles.h"
+#include "../sh4_rom.h"
 #include "research/sh4_observation_runtime.h"
 #include "cfg/option.h"
 
@@ -161,6 +162,7 @@ void Sh4Interpreter::Reset(bool hard)
 
 	ctx->fpscr.full = 0x00040001;
 	ctx->old_fpscr = ctx->fpscr;
+	fsca_select(ctx->fpscr.RM);
 
 	icache.Reset(hard);
 	ocache.Reset(hard);

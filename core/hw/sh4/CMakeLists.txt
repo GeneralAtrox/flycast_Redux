@@ -12,7 +12,7 @@ target_sources(${PROJECT_NAME} PRIVATE
         dyna/ssa.cpp
         dyna/ssa.h
         dyna/ssa_regalloc.h
-        fsca-table.h
+        fsca-rom-table.h
         interpr/sh4_fpu.cpp
         interpr/sh4_interpreter.cpp
         interpr/sh4_opcodes.cpp

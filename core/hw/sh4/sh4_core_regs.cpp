@@ -5,6 +5,7 @@
 #include "types.h"
 #include "sh4_core.h"
 #include "sh4_interrupts.h"
+#include "sh4_rom.h"
 #if defined(__ANDROID__) && HOST_CPU == CPU_ARM
 #include <fenv.h>
 #endif
@@ -137,6 +138,7 @@ void DYNACALL Sh4Context::UpdateFPSCR(Sh4Context *ctx)
 
 	ctx->old_fpscr = ctx->fpscr;
 	setHostRoundingMode(ctx->fpscr.RM, ctx->fpscr.DN);
+	fsca_select(ctx->fpscr.RM);
 }
 
 void Sh4Context::restoreHostRoundingMode()
@@ -144,6 +146,7 @@ void Sh4Context::restoreHostRoundingMode()
 	old_rm = 0xFF;
 	old_dn = 0xFF;
 	setHostRoundingMode(fpscr.RM, fpscr.DN);
+	fsca_select(fpscr.RM);
 }
 
 void setDefaultRoundingMode()

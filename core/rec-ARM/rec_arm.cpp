@@ -2098,12 +2098,13 @@ void Arm32Assembler::compileOp(RuntimeBlockInfo* block, shil_opcode* op, bool op
 
 		case shop_fsca:
 			//r1: base ptr
-			Mov(r1, (u32)sin_table & 0xFFFF);
+			Mov(r1, (u32)&fsca_cur & 0xFFFF);
 			if (op->rs1.is_imm())
 				Mov(r0, op->rs1._imm & 0xFFFF);
 			else
 				Uxth(r0, reg.mapReg(op->rs1));
-			Movt(r1, (u32)sin_table >> 16);
+			Movt(r1, (u32)&fsca_cur >> 16);
+			Ldr(r1, MemOperand(r1)); // the table FPSCR.RM selects
 
 			Add(r0, r1, Operand(r0, LSL, 3));
 

@@ -980,7 +980,8 @@ public:
 				break;
 
 			case shop_fsca:
-				Mov(x1, reinterpret_cast<uintptr_t>(&sin_table));
+				Mov(x1, reinterpret_cast<uintptr_t>(&fsca_cur)); // the table FPSCR.RM selects
+				Ldr(x1, MemOperand(x1));
 				if (op.rs1.is_reg())
 					Add(x1, x1, Operand(regalloc.MapRegister(op.rs1), UXTH, 3));
 				else
