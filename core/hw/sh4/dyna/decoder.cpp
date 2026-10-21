@@ -1081,6 +1081,7 @@ bool dec_DecodeBlock(RuntimeBlockInfo* rbi,u32 max_cycles)
 	blk->research_terminal_control_opcode = 0;
 	cycleCounter.reset();
 	PendingResearchDelay pendingResearchDelay;
+	size_t pcHookOps = 0; // research_pc_hook ops: not counted in the block's size
 	// If full MMU, don't allow the block to extend past the end of the current 4K page
 	u32 max_pc = mmu_enabled() ? ((state.cpu.rpc >> 12) + 1) << 12 : 0xFFFFFFFF;
 	
@@ -1096,7 +1097,7 @@ bool dec_DecodeBlock(RuntimeBlockInfo* rbi,u32 max_cycles)
 			{
 				const size_t blockSoftLimit = researchDynarecObservationEnabled()
 						? BLOCK_MAX_SH_OPS_RESEARCH_SOFT : BLOCK_MAX_SH_OPS_SOFT;
-				if ((blk->oplist.size() >= blockSoftLimit || blk->guest_cycles >= max_cycles || state.cpu.rpc >= max_pc)
+				if ((blk->oplist.size() - pcHookOps >= blockSoftLimit || blk->guest_cycles >= max_cycles || state.cpu.rpc >= max_pc)
 						&& !state.cpu.is_delayslot)
 				{
 					dec_End(state.cpu.rpc,BET_StaticJump,false);
@@ -1106,6 +1107,16 @@ bool dec_DecodeBlock(RuntimeBlockInfo* rbi,u32 max_cycles)
 					u32 op = readGuestOpcode(state.cpu.rpc);
 					const u32 instructionPc = state.cpu.rpc;
 					const u32 cyclesBefore = blk->guest_cycles;
+					if (!state.cpu.is_delayslot && research::sh4PcHookAt(instructionPc))
+					{
+						shil_opcode hook;
+						hook.op = shop_research_pc_hook;
+						hook.rs1 = shil_param(instructionPc);
+						hook.guest_offs = instructionPc - blk->vaddr;
+						hook.delay_slot = false;
+						blk->oplist.push_back(hook);
+						pcHookOps++;
+					}
 					if (researchDynarecObservationEnabled())
 					{
 						EmitResearchMarker(shop_research_begin, instructionPc,

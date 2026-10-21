@@ -125,6 +125,14 @@ static void eventCallback(const char *tag)
 	}
 }
 
+void withLock(const std::function<void()>& fn)
+{
+	if (L == nullptr)
+		return;
+	lock_guard lock(mutex);
+	fn();
+}
+
 void overlay()
 {
 	if (L != nullptr)

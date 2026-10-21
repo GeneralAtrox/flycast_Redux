@@ -242,6 +242,23 @@ shil_opc(research_memory_end_write)
 shil_recimp()
 shil_opc_end()
 
+// flycast.research.pc_hook (research/sh4_pc_hook.h): a call ahead of a hooked
+// instruction. No guest cycles; the decoder leaves it out of the block's size.
+shil_opc(research_pc_hook)
+shil_canonical
+(
+void,f1,(u32 pc),
+	research::sh4PcHookRun(pc);
+)
+
+shil_compile
+(
+	shil_cf_arg_u32(rs1);
+	shil_cf(f1);
+)
+
+shil_opc_end()
+
 //mem io
 shil_opc(readm)	
 shil_recimp()

@@ -245,6 +245,7 @@ void registerNamespace(lua_State *state)
 				.addCFunction("subscription_stats", researchSubscriptionStats)
 				.addCFunction("current_sh4_tick_decimal", researchCurrentSh4TickDecimal)
 				.addCFunction("runtime_configuration", researchRuntimeConfiguration)
+				.addCFunction("pc_hook", researchPcHook)
 			.endNamespace()
 		.endNamespace();
 }
@@ -261,6 +262,7 @@ void clear() noexcept
 				luaL_unref(researchLuaState, LUA_REGISTRYINDEX, callback.second);
 		}
 		researchCallbackRefs.clear();
+		pcHookClear();
 	}
 	catch (...)
 	{

@@ -38,6 +38,10 @@ extern bool researchSubscriptionsAllowed;
 
 const char *observationTypeName(research::Sh4ObservationType type);
 
+// flycast.research.pc_hook (lua_research_pc_hook.cpp).
+int researchPcHook(lua_State *state);
+void pcHookClear() noexcept;
+
 const char *backendName(research::Sh4ObservationBackend backend);
 
 void setStringField(lua_State *state, const char *name,

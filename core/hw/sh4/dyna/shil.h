@@ -1,5 +1,6 @@
 #pragma once
 #include "hw/sh4/sh4_if.h"
+#include "research/sh4_pc_hook.h"
 
 struct shil_opcode;
 typedef void shil_chfp(shil_opcode* op);

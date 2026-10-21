@@ -399,6 +399,8 @@ if(NOT LIBRETRO)
 			core/research/sh4_observation_timing.cpp
 			core/research/sh4_pc_checkpoint_runtime.cpp
 			core/research/sh4_pc_checkpoint_runtime.h
+			core/research/sh4_pc_hook.cpp
+			core/research/sh4_pc_hook.h
 			core/research/sh4_profile.cpp
 			core/research/sh4_profile.h
 			core/research/sh4_profile_runtime_hooks.cpp
@@ -694,6 +696,7 @@ if(NOT LIBRETRO)
 			target_sources(${PROJECT_NAME} PRIVATE
 					core/research/lua/lua_research_api.cpp
 					core/research/lua/lua_research_api.h
+					core/research/lua/lua_research_pc_hook.cpp
 					core/research/lua/lua_research_delivery.cpp
 					core/research/lua/lua_research_events_media.cpp
 					core/research/lua/lua_research_events_pvr.cpp
@@ -1668,6 +1671,7 @@ if(BUILD_RESEARCH_TOOLS AND BUILD_TESTING AND NOT LIBRETRO)
 			core/research/sh4_observation_runtime.cpp
 			core/research/sh4_observation_timing.cpp
 			core/research/sh4_pc_checkpoint_runtime.cpp
+			core/research/sh4_pc_hook.cpp
 			core/research/sh4_profile.cpp
 			core/research/workbench/rows_audio.cpp
 			core/research/workbench/rows_gdrom.cpp

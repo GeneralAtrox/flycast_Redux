@@ -17,6 +17,7 @@
     along with Flycast.  If not, see <https://www.gnu.org/licenses/>.
 */
 #pragma once
+#include <functional>
 #include <string>
 
 namespace lua
@@ -27,6 +28,8 @@ void init();
 void term();
 void exec(const std::string& path);
 void overlay();
+// Runs fn with the Lua state locked (flycast.research.pc_hook's emulator-thread call).
+void withLock(const std::function<void()>& fn);
 
 #else
 
