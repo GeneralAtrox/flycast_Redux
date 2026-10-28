@@ -1,4 +1,4 @@
-// flycast.research.pc_hook({pc, ..}, function(pc) .. end): the function runs
+// flycast.research.pc_hook({pc, ..}, function(pc, r4, r5) .. end): the function runs
 // on the emulator thread just before each hooked instruction, with the Lua
 // state locked, so flycast.memory reads see guest memory at that instruction
 // (research/sh4_pc_hook.h). Set it at the script's top level, before the game
@@ -19,14 +19,16 @@ namespace research::lua_api
 
 static int pcHookRef = LUA_NOREF;
 
-static void callPcHook(u32 pc)
+static void callPcHook(u32 pc, u32 r4, u32 r5)
 {
 	lua_State *state = researchLuaState;
 	if (state == nullptr || pcHookRef == LUA_NOREF)
 		return;
 	lua_rawgeti(state, LUA_REGISTRYINDEX, pcHookRef);
 	lua_pushnumber(state, static_cast<lua_Number>(pc));
-	if (lua_pcall(state, 1, 0, 0) != 0)
+	lua_pushnumber(state, static_cast<lua_Number>(r4));
+	lua_pushnumber(state, static_cast<lua_Number>(r5));
+	if (lua_pcall(state, 3, 0, 0) != 0)
 	{
 		const char *message = lua_tostring(state, -1);
 		WARN_LOG(COMMON, "Lua pc_hook at %08x: %s", pc, message != nullptr ? message : "error");
@@ -60,8 +62,8 @@ int researchPcHook(lua_State *state)
 		pcHookClear();
 		lua_pushvalue(state, 2);
 		pcHookRef = luaL_ref(state, LUA_REGISTRYINDEX);
-		sh4PcHookSet(pcs, static_cast<unsigned>(count), [](u32 pc) {
-			lua::withLock([pc] { callPcHook(pc); });
+		sh4PcHookSet(pcs, static_cast<unsigned>(count), [](u32 pc, u32 r4, u32 r5) {
+			lua::withLock([pc, r4, r5] { callPcHook(pc, r4, r5); });
 		});
 		return 0;
 	}

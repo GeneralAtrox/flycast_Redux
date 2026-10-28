@@ -247,12 +247,14 @@ shil_opc_end()
 shil_opc(research_pc_hook)
 shil_canonical
 (
-void,f1,(u32 pc),
-	research::sh4PcHookRun(pc);
+void,f1,(u32 pc,u32 r4,u32 r5),
+	research::sh4PcHookRun(pc, r4, r5);
 )
 
 shil_compile
 (
+	shil_cf_arg_u32(rs3);
+	shil_cf_arg_u32(rs2);
 	shil_cf_arg_u32(rs1);
 	shil_cf(f1);
 )

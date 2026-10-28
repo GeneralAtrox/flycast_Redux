@@ -1112,6 +1112,8 @@ bool dec_DecodeBlock(RuntimeBlockInfo* rbi,u32 max_cycles)
 						shil_opcode hook;
 						hook.op = shop_research_pc_hook;
 						hook.rs1 = shil_param(instructionPc);
+						hook.rs2 = mk_reg(reg_r4); // the call arguments r4, r5 at the hook
+						hook.rs3 = mk_reg(reg_r5);
 						hook.guest_offs = instructionPc - blk->vaddr;
 						hook.delay_slot = false;
 						blk->oplist.push_back(hook);
